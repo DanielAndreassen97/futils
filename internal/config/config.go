@@ -16,7 +16,7 @@ import (
 // Environment pairs a user-chosen alias (menu label) with one or more
 // Fabric workspaces it resolves to. Multiple workspaces per alias is the
 // common case for real Fabric deployments — e.g. a "DEV" environment
-// often spans both a DataMart workspace (notebooks) and a SemMod
+// often spans both a Config workspace (notebooks) and a SemMod
 // workspace (semantic models). Run / Refresh aggregate items across
 // every workspace under the chosen alias.
 type Environment struct {

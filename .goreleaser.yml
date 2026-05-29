@@ -34,6 +34,7 @@ brews:
       name: homebrew-tap
     homepage: https://github.com/DanielAndreassen97/futils
     description: Interactive CLI for working with Microsoft Fabric — run notebooks, move items, manage workspaces
+    license: MIT
     install: |
       bin.install "futils"
 

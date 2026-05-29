@@ -10,7 +10,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
 - **Refresh tables** — pick a semantic model, multi-select tables (with `All Dim` / `All Fakta` / `All Log` group toggles), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
 - **Move items** — copy a Report, Semantic Model, or Notebook from one workspace to another. For Reports, optionally rebind to a different semantic model in the destination.
 - **Favourites** — pin the notebooks and parameters you actually use, so the run flow surfaces them first instead of scrolling through 200+ items.
-- **Per-customer config** — multiple customers, each with their own workspace pattern (e.g. `DW - {env} - DataMart`) and environment ladder (e.g. `DEV, TEST, PROD`).
+- **Per-customer config** — multiple customers, each with their own workspace pattern (e.g. `DW - {env} - Config`) and environment ladder (e.g. `DEV, TEST, PROD`).
 - **Workspace aliases** — per-environment override when the pattern doesn't fit (e.g. `PROD → "Production Reports"`).
 - **OAuth2 browser auth** — Entra ID via the Azure CLI public client. Tokens cached in your OS keychain, silently refreshed for months.
 - **Cross-platform** — macOS, Linux, Windows.
@@ -77,7 +77,7 @@ futils help         # Show available commands
 Config is stored at `~/.config/futils/config.json` (macOS/Linux) or `%APPDATA%\futils\config.json` (Windows).
 
 Each customer needs:
-- **Workspace pattern** — Power BI workspace name with `{env}` placeholder (e.g. `DW - {env} - DataMart`)
+- **Workspace pattern** — Power BI workspace name with `{env}` placeholder (e.g. `DW - {env} - Config`)
 - **Environments** — list of environments (e.g. `DEV, TEST, PROD`)
 - **Aliases** (optional) — per-environment workspace name override when the pattern doesn't fit
 
