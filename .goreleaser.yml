@@ -1,0 +1,55 @@
+version: 2
+builds:
+  - main: .
+    binary: futils
+    # Reproducible builds: -trimpath strips the CI runner's absolute paths from
+    # the binary, and mod_timestamp stamps embedded timestamps from the commit
+    # instead of build time — together they let a security-conscious user
+    # independently rebuild and byte-match the released artifact.
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "futils_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+brews:
+  - repository:
+      owner: DanielAndreassen97
+      name: homebrew-tap
+    homepage: https://github.com/DanielAndreassen97/futils
+    description: Interactive CLI for working with Microsoft Fabric — run notebooks, move items, manage workspaces
+    install: |
+      bin.install "futils"
+
+scoops:
+  - repository:
+      owner: DanielAndreassen97
+      name: scoop-bucket
+    homepage: https://github.com/DanielAndreassen97/futils
+    description: Interactive CLI for working with Microsoft Fabric — run notebooks, move items, manage workspaces
+
+checksum:
+  name_template: "checksums.txt"
+
+# Generate an SPDX SBOM per archive (uses syft, installed in CI by the
+# download-syft step in release.yml). Gives downstream users a verifiable
+# software bill of materials alongside each release artifact.
+sboms:
+  - id: archive
+    artifacts: archive

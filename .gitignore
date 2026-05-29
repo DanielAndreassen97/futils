@@ -1,0 +1,7 @@
+futils
+*.exe
+dist/
+.DS_Store
+
+# Local-only working notes (brainstorms, plans, design specs, commit previews)
+docs/

@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Keep the SHA-pinned actions in release.yml current via reviewable PRs, so
+  # pinning to immutable commits doesn't mean silently running stale (and
+  # potentially vulnerable) action versions forever.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+  # Surface Go module updates (e.g. the next x/sys advisory) before they ship.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
