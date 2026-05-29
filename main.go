@@ -17,6 +17,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/cmd"
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -34,6 +37,11 @@ func main() {
 	args := os.Args[1:]
 
 	if len(args) == 0 {
+		// Build provenance is only read by the banner, which only the
+		// interactive menu renders — so compute it here rather than on
+		// every subcommand's startup path.
+		bt, rev, mod := buildProvenance()
+		ui.BuildInfo = bannerBuildInfo(version, bt, rev, mod)
 		cmd.MainMenu(configPath)
 		return
 	}
@@ -61,7 +69,7 @@ func main() {
 	case "help", "--help", "-h":
 		cmd.Help()
 	case "version", "--version", "-v":
-		fmt.Printf("futils %s\n", version)
+		fmt.Println(versionString())
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		os.Exit(1)
@@ -75,4 +83,80 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// buildProvenance reads where this binary came from: its own mtime (the
+// build time) plus the git revision and dirty flag that `go build` embeds.
+func buildProvenance() (buildTime time.Time, revision string, modified bool) {
+	if exe, err := os.Executable(); err == nil {
+		if fi, statErr := os.Stat(exe); statErr == nil {
+			buildTime = fi.ModTime()
+		}
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				revision = s.Value
+			case "vcs.modified":
+				modified = s.Value == "true"
+			}
+		}
+	}
+	return
+}
+
+func versionString() string {
+	bt, rev, mod := buildProvenance()
+	return formatVersion(version, bt, rev, mod)
+}
+
+// shortRevision trims a git SHA to 7 chars for compact display.
+func shortRevision(revision string) string {
+	if len(revision) > 7 {
+		return revision[:7]
+	}
+	return revision
+}
+
+// bannerBuildInfo is the compact one-line freshness hint shown under the
+// banner for dev builds (empty for release, where the tag says it all):
+// "built 2006-01-02 15:04 · <short-sha>" with a trailing * for a dirty tree.
+func bannerBuildInfo(version string, buildTime time.Time, revision string, modified bool) string {
+	if version != "dev" {
+		return ""
+	}
+	var parts []string
+	if !buildTime.IsZero() {
+		parts = append(parts, "built "+buildTime.Format("2006-01-02 15:04"))
+	}
+	if revision != "" {
+		short := shortRevision(revision)
+		if modified {
+			short += "*"
+		}
+		parts = append(parts, short)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// formatVersion renders the version line. Pure (no I/O) so it's unit-tested.
+// Release builds print just "futils <tag>"; dev builds append build time and
+// the short git revision (marked "(modified)" when built from a dirty tree).
+func formatVersion(version string, buildTime time.Time, revision string, modified bool) string {
+	if version != "dev" {
+		return "futils " + version
+	}
+	var b strings.Builder
+	b.WriteString("futils dev")
+	if !buildTime.IsZero() {
+		fmt.Fprintf(&b, "\n  built:    %s", buildTime.Format("2006-01-02 15:04:05"))
+	}
+	if revision != "" {
+		fmt.Fprintf(&b, "\n  revision: %s", shortRevision(revision))
+		if modified {
+			b.WriteString(" (modified)")
+		}
+	}
+	return b.String()
 }

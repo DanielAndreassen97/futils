@@ -28,6 +28,12 @@ const (
 	collisionRename    = "__rename"
 	collisionCancel    = "__cancel"
 	rebindSkip         = "__skip"
+
+	// labelColW is the rebind picker's label column width: unselected rows
+	// fit their label into this many columns so the workspace names align,
+	// while the selected row pads to it but isn't truncated (revealing the
+	// full name under the cursor).
+	labelColW = 40
 )
 
 // Supported item types in v1. Items outside this set are filtered
@@ -115,7 +121,7 @@ func MoveWithAPI(configPath string, client APIClient) error {
 	rebindDatasetID := ""
 	rebindLabel := ""
 	if srcItem.Type == "Report" {
-		rebindDatasetID, rebindLabel, err = pickRebindTarget(client, token, workspaces)
+		rebindDatasetID, rebindLabel, err = pickRebindTarget(client, token, dstWS, workspaces)
 		if err != nil {
 			return err
 		}
@@ -301,21 +307,34 @@ func findItemByName(client APIClient, token, workspaceID, itemType, name string)
 // Lists semantic models across ALL workspaces the user can see —
 // the Power BI Rebind endpoint accepts cross-workspace datasetIds, and
 // in practice models often live in shared workspaces separate
-// from where Reports get developed.
+// from where Reports get developed. The destination workspace is listed
+// first so its models surface at the top of the picker: after a move you
+// almost always rebind to a model that lives in the destination.
 //
 // Returns (datasetID, label, err). label is "<model> (<workspace>)"
 // so the post-move summary shows where the binding pointed.
 // ("", "", nil) means user picked Skip.
-func pickRebindTarget(client APIClient, token string, workspaces []fabric.Workspace) (string, string, error) {
+func pickRebindTarget(client APIClient, token string, dstWS fabric.Workspace, workspaces []fabric.Workspace) (string, string, error) {
 	spinner := ui.NewSpinner("Listing semantic models across workspaces...")
 	spinner.Start()
 	type modelRow struct {
 		model  fabric.Item
 		wsName string
 	}
+
+	// Destination first, then the rest — so the destination's models sort to
+	// the top. dstWS is always one of workspaces, so skip its duplicate.
+	ordered := make([]fabric.Workspace, 0, len(workspaces))
+	ordered = append(ordered, dstWS)
+	for _, ws := range workspaces {
+		if ws.ID != dstWS.ID {
+			ordered = append(ordered, ws)
+		}
+	}
+
 	var all []modelRow
 	failed := 0
-	for _, ws := range workspaces {
+	for _, ws := range ordered {
 		items, err := client.ListItemsByType(token, ws.ID, "SemanticModel")
 		if err != nil {
 			// Skip workspaces the user can't read items from —
@@ -373,13 +392,13 @@ func rebindRowRenderer(opt ui.FilterOption, selected bool) string {
 		if wsName == "" {
 			return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(opt.Label)
 		}
-		row := fmt.Sprintf("%-40s  %s", opt.Label, wsName)
+		row := fmt.Sprintf("%-*s  %s", labelColW, opt.Label, wsName)
 		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(row)
 	}
 	if wsName == "" {
 		return opt.Label
 	}
-	return fmt.Sprintf("%-40s  %s", opt.Label,
+	return fmt.Sprintf("%s  %s", ui.FitWidth(opt.Label, labelColW),
 		lipgloss.NewStyle().Foreground(ui.DimColor).Render(wsName))
 }
 

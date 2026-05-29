@@ -469,3 +469,77 @@ func TestMove_RebindToModelInDifferentWorkspace(t *testing.T) {
 		t.Errorf("expected rebind to sm-canonical from shared workspace, got %q", api.lastRebindDataset)
 	}
 }
+
+// TestMove_RebindPicker_DestinationModelsFirst asserts the rebind picker
+// surfaces the destination workspace's semantic models at the top of the
+// list (right after Skip), even when the destination is listed last among
+// all workspaces. Cross-workspace rebind stays available — destination-first
+// is just the ordering, since after a move you almost always rebind to a
+// model that lives in the destination.
+func TestMove_RebindPicker_DestinationModelsFirst(t *testing.T) {
+	api := &fakeMoveAPI{
+		token: "fake",
+		// Destination (ws-b "feature/jane") is listed LAST on purpose: the
+		// old behaviour iterated workspaces in order, so its models came last.
+		workspaces: []fabric.Workspace{
+			{ID: "ws-a", DisplayName: "DW - DEV"},
+			{ID: "ws-shared", DisplayName: "DW - Shared Models"},
+			{ID: "ws-b", DisplayName: "feature/jane"},
+		},
+		items: map[string][]fabric.Item{
+			"ws-a":      {{ID: "r-1", DisplayName: "HR", Type: "Report", WorkspaceID: "ws-a"}},
+			"ws-shared": {{ID: "sm-shared", DisplayName: "Shared Model", Type: "SemanticModel", WorkspaceID: "ws-shared"}},
+			"ws-b":      {{ID: "sm-dest", DisplayName: "Dest Model", Type: "SemanticModel", WorkspaceID: "ws-b"}},
+		},
+	}
+
+	// withMovePickers installs the save/restore plus the number/prompt/confirm
+	// stubs; we override only the filter picker to capture the rebind option
+	// order (and bail out via Skip).
+	restore := withMovePickers(t, nil, nil, "")
+	defer restore()
+
+	picks := []string{"DW - DEV", "HR", "feature/jane"} // source ws, item, destination ws
+	pickIdx := 0
+	var rebindOptions []ui.FilterOption
+	moveFilterPicker = func(_ string, options []ui.FilterOption, _ ui.FilterRowRenderer) (string, error) {
+		// The rebind picker is the only one carrying the Skip sentinel —
+		// capture its option order and bail out via Skip.
+		for _, o := range options {
+			if o.Value == rebindSkip {
+				rebindOptions = options
+				return rebindSkip, nil
+			}
+		}
+		if pickIdx >= len(picks) {
+			return "", fmt.Errorf("unexpected filter picker call beyond %d picks", len(picks))
+		}
+		target := picks[pickIdx]
+		pickIdx++
+		for _, o := range options {
+			if o.Label == target {
+				return o.Value, nil
+			}
+		}
+		return "", fmt.Errorf("no option labeled %q", target)
+	}
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+
+	if len(rebindOptions) < 3 {
+		t.Fatalf("expected Skip + two models, got %d options", len(rebindOptions))
+	}
+	if rebindOptions[0].Value != rebindSkip {
+		t.Errorf("expected Skip first, got %q", rebindOptions[0].Label)
+	}
+	first := rebindOptions[1]
+	wsName, _ := first.Meta.(string)
+	if wsName != "feature/jane" {
+		t.Errorf("expected destination workspace's model first, got Label=%q (workspace %q)", first.Label, wsName)
+	}
+	if first.Label != "Dest Model" {
+		t.Errorf("expected 'Dest Model' first, got %q", first.Label)
+	}
+}

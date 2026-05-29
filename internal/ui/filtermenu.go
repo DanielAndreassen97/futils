@@ -35,6 +35,26 @@ func DefaultFilterRowRenderer(opt FilterOption, selected bool) string {
 	return opt.Label
 }
 
+// FitWidth sizes s to exactly width display columns: padded with trailing
+// spaces when shorter, or truncated with a trailing … when longer. Rune-aware
+// (counts runes, not bytes) so accented names still line up in a column.
+func FitWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	switch {
+	case len(r) == width:
+		return s
+	case len(r) < width:
+		return s + strings.Repeat(" ", width-len(r))
+	case width == 1:
+		return "…"
+	default:
+		return string(r[:width-1]) + "…"
+	}
+}
+
 type filterMenuModel struct {
 	title    string
 	input    textinput.Model

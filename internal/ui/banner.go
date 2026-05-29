@@ -22,6 +22,10 @@ var dimStyle = lipgloss.NewStyle().
 // Version is set by main at startup.
 var Version = "dev"
 
+// BuildInfo is an optional compact freshness line shown under the version in
+// the banner — set by main for dev builds, empty (and hidden) for releases.
+var BuildInfo string
+
 // Each letter: 8 rows, 7 columns. A '1' pixel is filled; '0' is empty.
 // Letters are hand-drawn at chunky 2-px stroke weight to match the
 // aesthetic of the frefresh banner — thin strokes look anaemic against
@@ -302,7 +306,11 @@ func Banner() string {
 	hintText := "↑↓ navigate • 1-9 select • enter confirm • esc back • q quit"
 	hint := dimStyle.Render(hintText)
 
-	return "\n" + banner + "\n" +
-		centerPad(len([]rune(verText)), bannerWidth) + ver + "\n" +
-		centerPad(len([]rune(hintText)), bannerWidth) + hint
+	out := "\n" + banner + "\n" +
+		centerPad(len([]rune(verText)), bannerWidth) + ver
+	if BuildInfo != "" {
+		out += "\n" + centerPad(len([]rune(BuildInfo)), bannerWidth) + dimStyle.Render(BuildInfo)
+	}
+	out += "\n" + centerPad(len([]rune(hintText)), bannerWidth) + hint
+	return out
 }
