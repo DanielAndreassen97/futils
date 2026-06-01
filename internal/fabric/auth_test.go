@@ -150,7 +150,7 @@ func TestRandomState(t *testing.T) {
 // security-critical parameters: S256 PKCE method, the exact state and
 // challenge passed in, response_type=code, and the loopback redirect URI.
 func TestBuildAuthorizeURL(t *testing.T) {
-	raw := buildAuthorizeURL("http://127.0.0.1:5000", "the-state", "the-challenge")
+	raw := buildAuthorizeURL("http://localhost:5000", "the-state", "the-challenge")
 	if !strings.HasPrefix(raw, authorizeURL+"?") {
 		t.Fatalf("authorize URL does not start with the AAD authorize endpoint: %q", raw)
 	}
@@ -165,7 +165,7 @@ func TestBuildAuthorizeURL(t *testing.T) {
 		"state":                 "the-state",
 		"code_challenge":        "the-challenge",
 		"client_id":             clientID,
-		"redirect_uri":          "http://127.0.0.1:5000",
+		"redirect_uri":          "http://localhost:5000",
 	}
 	for k, want := range checks {
 		if got := q.Get(k); got != want {

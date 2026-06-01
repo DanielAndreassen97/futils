@@ -229,12 +229,15 @@ func browserAuth(profile string) (string, error) {
 		return "", fmt.Errorf("failed to start local server: %w", err)
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	// Use the literal IPv4 loopback in the redirect URI so the callback
-	// matches the listener bind exactly. "localhost" can resolve to ::1
-	// first on macOS / Windows hosts with IPv6 enabled, in which case the
-	// browser hits a closed port and the select below hangs until timeout.
-	// AAD accepts 127.0.0.1 for public-client loopback redirects.
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d", port)
+	// Bind the listener to the IPv4 loopback for a deterministic address,
+	// but advertise "localhost" in the redirect URI. AAD only ignores the
+	// port component when matching loopback redirects for "localhost"; for a
+	// literal 127.0.0.1 the port must match exactly, which is impossible with
+	// the ephemeral port above. The Azure CLI public-client app (clientID)
+	// also only registers http://localhost, so sending 127.0.0.1 here trips
+	// AADSTS50011 (redirect URI mismatch). The browser resolves localhost to
+	// 127.0.0.1 and reaches this listener.
+	redirectURI := fmt.Sprintf("http://localhost:%d", port)
 	state, err := randomState()
 	if err != nil {
 		return "", err
