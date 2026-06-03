@@ -113,7 +113,9 @@ func main() {
 		}
 	}
 
-	instanceURL, err := fabric.RunNotebook(token, wsID, item.ID, inputs)
+	// fetch-nb is a thin diagnostic tool: it submits with no default-lakehouse
+	// override (the interactive `run` flow handles broken-binding resolution).
+	instanceURL, err := fabric.RunNotebook(token, wsID, item.ID, inputs, nil)
 	check(err)
 	fmt.Fprintf(os.Stderr, "Job started: %s\n", instanceURL)
 

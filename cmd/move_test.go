@@ -54,7 +54,7 @@ func (f *fakeMoveAPI) ListNotebooks(_, ws string) ([]fabric.Item, error) {
 func (f *fakeMoveAPI) GetNotebookIpynb(string, string, string) ([]byte, error) {
 	return nil, errors.New("not used by move tests")
 }
-func (f *fakeMoveAPI) RunNotebook(string, string, string, []fabric.JobInput) (string, error) {
+func (f *fakeMoveAPI) RunNotebook(string, string, string, []fabric.JobInput, *fabric.DefaultLakehouse) (string, error) {
 	return "", errors.New("not used by move tests")
 }
 func (f *fakeMoveAPI) GetJobInstance(string, string) (fabric.JobInstanceStatus, error) {
