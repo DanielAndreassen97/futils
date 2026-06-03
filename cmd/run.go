@@ -52,7 +52,7 @@ type APIClient interface {
 	ListWorkspaces(token string) ([]fabric.Workspace, error)
 	ListNotebooks(token, workspaceID string) ([]fabric.Item, error)
 	GetNotebookIpynb(token, workspaceID, itemID string) ([]byte, error)
-	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput) (string, error)
+	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error)
 	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
 
 	// Move flow.
@@ -88,8 +88,8 @@ func (RealAPIClient) ListNotebooks(token, workspaceID string) ([]fabric.Item, er
 func (RealAPIClient) GetNotebookIpynb(token, workspaceID, itemID string) ([]byte, error) {
 	return fabric.GetNotebookIpynb(token, workspaceID, itemID)
 }
-func (RealAPIClient) RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput) (string, error) {
-	return fabric.RunNotebook(token, workspaceID, itemID, inputs)
+func (RealAPIClient) RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error) {
+	return fabric.RunNotebook(token, workspaceID, itemID, inputs, lakehouse)
 }
 func (RealAPIClient) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
 	return fabric.GetJobInstance(token, instanceURL)
@@ -215,6 +215,17 @@ func RunWithAPI(configPath string, client APIClient) error {
 		fmt.Println(infoStyle.Render("Notebook has no parameters cell — will run with no overrides."))
 	}
 
+	// Detect and repair a broken default-lakehouse binding: a notebook that
+	// pins a lakehouse GUID but ships an empty workspace id fails a headless
+	// submit at session attach ("LakehouseWorkspaceId is not a valid GUID").
+	// We resolve the lakehouse's real home workspace and pass it as a per-run
+	// override. Notebooks with a complete binding — or none at all — are left
+	// untouched; futils only intervenes for this one pattern.
+	lakehouse, err := resolveLakehouseOverride(client, token, ipynb, workspaceID)
+	if err != nil {
+		return err
+	}
+
 	fmt.Println()
 	fmt.Println(infoStyle.Render("Run summary"))
 	fmt.Printf("  Customer:    %s\n", customerName)
@@ -222,6 +233,9 @@ func RunWithAPI(configPath string, client APIClient) error {
 	fmt.Printf("  Workspace:   %s\n", workspaceName)
 	fmt.Printf("  Notebook:    %s\n", notebook.DisplayName)
 	fmt.Printf("  Overrides:   %s\n", describeOverrides(overrides))
+	if lakehouse != nil {
+		fmt.Printf("  Lakehouse:   %s (binding had no workspace — resolved to %s)\n", lakehouse.Name, lakehouse.WorkspaceID)
+	}
 	fmt.Println()
 
 	confirmed, err := ui.Confirm("Start notebook run?")
@@ -247,7 +261,7 @@ func RunWithAPI(configPath string, client APIClient) error {
 	func() {
 		defer spinner.Stop()
 
-		instanceURL, err := client.RunNotebook(token, workspaceID, notebook.ID, overrides)
+		instanceURL, err := client.RunNotebook(token, workspaceID, notebook.ID, overrides, lakehouse)
 		if err != nil {
 			runErr = fmt.Errorf("submit job: %w", err)
 			return
@@ -454,6 +468,75 @@ func filterParamsByFavorite(params []fabric.Parameter, customer config.Customer,
 		}
 	}
 	return out
+}
+
+// lakehouseItemType is the Fabric item type used to filter ListItemsByType
+// when hunting for a notebook's default lakehouse by GUID.
+const lakehouseItemType = "Lakehouse"
+
+// resolveLakehouseOverride inspects a notebook's .ipynb metadata and, only
+// when it finds the broken binding pattern (a lakehouse GUID pinned with no
+// workspace id), resolves the lakehouse's real home workspace and returns a
+// per-run DefaultLakehouse override. Returns (nil, nil) for a complete
+// binding, a notebook with no lakehouse, or unparseable metadata — in every
+// such case futils sends no override and the notebook's own binding stands.
+func resolveLakehouseOverride(client APIClient, token string, ipynb []byte, runWorkspaceID string) (*fabric.DefaultLakehouse, error) {
+	binding, err := fabric.ParseLakehouseBinding(ipynb)
+	if err != nil || !binding.NeedsWorkspaceResolution() {
+		return nil, nil //nolint:nilerr // unparseable metadata → leave binding alone
+	}
+
+	spinner := ui.NewSpinner("Resolving notebook's default lakehouse...")
+	spinner.Start()
+	lh, err := resolveDefaultLakehouse(client, token, binding.LakehouseID, runWorkspaceID)
+	spinner.Stop()
+	return lh, err
+}
+
+// resolveDefaultLakehouse finds which workspace a lakehouse GUID lives in.
+// A lakehouse item id is globally unique, so at most one workspace matches.
+// The run workspace is checked first — the overwhelmingly common case, and a
+// single API call — before falling back to scanning every accessible
+// workspace. A clear error (rather than a guessed workspace) is returned when
+// the lakehouse can't be found anywhere the user has access.
+func resolveDefaultLakehouse(client APIClient, token, lakehouseID, runWorkspaceID string) (*fabric.DefaultLakehouse, error) {
+	if lh, ok := findLakehouseInWorkspace(client, token, runWorkspaceID, lakehouseID); ok {
+		return lh, nil
+	}
+
+	workspaces, err := client.ListWorkspaces(token)
+	if err != nil {
+		return nil, fmt.Errorf("list workspaces to resolve default lakehouse: %w", err)
+	}
+	for _, ws := range workspaces {
+		if ws.ID == runWorkspaceID {
+			continue // already checked first
+		}
+		if lh, ok := findLakehouseInWorkspace(client, token, ws.ID, lakehouseID); ok {
+			return lh, nil
+		}
+	}
+	return nil, fmt.Errorf(
+		"notebook pins default lakehouse %s but its binding has no workspace, "+
+			"and that lakehouse wasn't found in any workspace you can access — "+
+			"fix the notebook's default lakehouse, or check your permissions",
+		lakehouseID)
+}
+
+// findLakehouseInWorkspace looks for a lakehouse with the given GUID in one
+// workspace. A listing error is treated as "not here" so a single
+// inaccessible workspace during a scan doesn't abort the whole resolution.
+func findLakehouseInWorkspace(client APIClient, token, workspaceID, lakehouseID string) (*fabric.DefaultLakehouse, bool) {
+	items, err := client.ListItemsByType(token, workspaceID, lakehouseItemType)
+	if err != nil {
+		return nil, false
+	}
+	for _, it := range items {
+		if it.ID == lakehouseID {
+			return &fabric.DefaultLakehouse{Name: it.DisplayName, ID: it.ID, WorkspaceID: workspaceID}, true
+		}
+	}
+	return nil, false
 }
 
 // describeOverrides produces a short human-readable summary of what's

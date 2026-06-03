@@ -295,6 +295,59 @@ func parsePythonLiteral(raw string) (typ string, val any, ok bool) {
 	return "", nil, false
 }
 
+// LakehouseBinding mirrors the default-lakehouse fields a Fabric notebook
+// stores under metadata.dependencies.lakehouse. Git-committed notebooks
+// frequently ship with Name and WorkspaceID empty while LakehouseID still
+// holds a GUID — the workspace id is environment-specific, so authoring or
+// deployment tooling leaves it blank. That half-filled state runs fine
+// interactively (the portal backfills the current workspace) but fails a
+// headless job submit at session attach: "LakehouseWorkspaceId is not a
+// valid GUID".
+type LakehouseBinding struct {
+	// LakehouseID is metadata.default_lakehouse — the lakehouse item GUID,
+	// or "" when the notebook pins no default lakehouse at all.
+	LakehouseID string
+	Name        string
+	// WorkspaceID is the lakehouse's home workspace. Empty is the broken
+	// state we detect and repair.
+	WorkspaceID string
+}
+
+// NeedsWorkspaceResolution reports the specific broken-binding pattern worth
+// repairing: a lakehouse is pinned but its workspace id is missing. A
+// complete binding (both set) and a notebook with no lakehouse at all (both
+// empty) both return false — callers should leave those untouched.
+func (b LakehouseBinding) NeedsWorkspaceResolution() bool {
+	return b.LakehouseID != "" && b.WorkspaceID == ""
+}
+
+// ParseLakehouseBinding extracts the default-lakehouse binding from a Fabric
+// notebook's .ipynb metadata. Returns a zero binding (not an error) when the
+// notebook declares no lakehouse dependency — same "absence is not failure"
+// contract as ParseParameters.
+func ParseLakehouseBinding(content []byte) (LakehouseBinding, error) {
+	var nb struct {
+		Metadata struct {
+			Dependencies struct {
+				Lakehouse struct {
+					DefaultLakehouse            string `json:"default_lakehouse"`
+					DefaultLakehouseName        string `json:"default_lakehouse_name"`
+					DefaultLakehouseWorkspaceID string `json:"default_lakehouse_workspace_id"`
+				} `json:"lakehouse"`
+			} `json:"dependencies"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(content, &nb); err != nil {
+		return LakehouseBinding{}, fmt.Errorf("parse notebook metadata: %w", err)
+	}
+	lh := nb.Metadata.Dependencies.Lakehouse
+	return LakehouseBinding{
+		LakehouseID: lh.DefaultLakehouse,
+		Name:        lh.DefaultLakehouseName,
+		WorkspaceID: lh.DefaultLakehouseWorkspaceID,
+	}, nil
+}
+
 // unquotePython handles the common subset of Python string literals: single
 // or double quotes with the usual backslash escapes. It isn't a full Python
 // lexer — \x, \u, \N{} and similar aren't supported because notebook

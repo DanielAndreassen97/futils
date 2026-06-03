@@ -548,6 +548,52 @@ type paramValue struct {
 	Type  string `json:"type"`
 }
 
+// DefaultLakehouse is the per-run lakehouse override sent under
+// executionData.configuration.defaultLakehouse. Supplying it mounts the named
+// lakehouse for this one job, overriding whatever (possibly broken) binding
+// the notebook carries in its own metadata. Used to repair notebooks that pin
+// a lakehouse GUID but lost the workspace id — see ResolveDefaultLakehouse in
+// the run flow. Shape mirrors fabric-cli / the %%configure magic
+// ({name, id, workspaceId}); the generic REST reference treats executionData
+// as job-type-opaque, so this is the notebook-job-specific schema in practice.
+type DefaultLakehouse struct {
+	Name        string `json:"name,omitempty"`
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspaceId"`
+}
+
+// runConfiguration is the executionData.configuration block. Only the fields
+// futils sets are modelled; omitempty keeps it absent unless a value is set.
+type runConfiguration struct {
+	DefaultLakehouse *DefaultLakehouse `json:"defaultLakehouse,omitempty"`
+}
+
+// runBody is the full RunNotebook request body.
+type runBody struct {
+	ExecutionData struct {
+		Parameters    map[string]paramValue `json:"parameters,omitempty"`
+		Configuration *runConfiguration     `json:"configuration,omitempty"`
+	} `json:"executionData"`
+}
+
+// buildRunBody assembles (and marshals) the RunNotebook request body from the
+// per-run parameter overrides and an optional default-lakehouse override.
+// Extracted from RunNotebook so the wire shape is unit-testable without HTTP.
+func buildRunBody(inputs []JobInput, lakehouse *DefaultLakehouse) ([]byte, error) {
+	var body runBody
+	if len(inputs) > 0 {
+		params := make(map[string]paramValue, len(inputs))
+		for _, in := range inputs {
+			params[in.Name] = paramValue{Value: in.Value, Type: in.Type}
+		}
+		body.ExecutionData.Parameters = params
+	}
+	if lakehouse != nil {
+		body.ExecutionData.Configuration = &runConfiguration{DefaultLakehouse: lakehouse}
+	}
+	return json.Marshal(body)
+}
+
 // RunNotebook triggers an on-demand notebook job and returns the job
 // instance URL (from the 202 Location header) so callers can poll for
 // completion.
@@ -563,29 +609,26 @@ type paramValue struct {
 //	  "executionData": {
 //	    "parameters": {
 //	      "param_name": {"value": <typed>, "type": "string|bool|int|float"}
+//	    },
+//	    "configuration": {
+//	      "defaultLakehouse": {"name": ..., "id": ..., "workspaceId": ...}
 //	    }
 //	  }
 //	}
-func RunNotebook(token, workspaceID, itemID string, inputs []JobInput) (string, error) {
+//
+// lakehouse is optional: pass nil to leave the notebook's own metadata
+// binding untouched (the normal case), or a resolved DefaultLakehouse to
+// override the session's default lakehouse for this run — used to repair
+// notebooks whose binding pins a lakehouse but lost its workspace id.
+func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse *DefaultLakehouse) (string, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return "", err
 	}
 	if err := validateUUID(itemID, "item ID"); err != nil {
 		return "", err
 	}
-	params := make(map[string]paramValue, len(inputs))
-	for _, in := range inputs {
-		params[in.Name] = paramValue{Value: in.Value, Type: in.Type}
-	}
 
-	body := struct {
-		ExecutionData struct {
-			Parameters map[string]paramValue `json:"parameters,omitempty"`
-		} `json:"executionData"`
-	}{}
-	body.ExecutionData.Parameters = params
-
-	payload, err := json.Marshal(body)
+	payload, err := buildRunBody(inputs, lakehouse)
 	if err != nil {
 		return "", fmt.Errorf("marshal run body: %w", err)
 	}

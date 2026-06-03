@@ -121,3 +121,78 @@ func TestMergeFavorites_DropsUnselectedEntries(t *testing.T) {
 		t.Errorf("expected only NB_A, got %#v", got)
 	}
 }
+
+func TestResolveDefaultLakehouse_FoundInRunWorkspace(t *testing.T) {
+	f := &fakeMoveAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-run"}, {ID: "ws-other"}},
+		items: map[string][]fabric.Item{
+			"ws-run": {{ID: "lh-1", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+		},
+	}
+	lh, err := resolveDefaultLakehouse(f, "tok", "lh-1", "ws-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lh == nil || lh.WorkspaceID != "ws-run" || lh.ID != "lh-1" || lh.Name != "LH_ConfigLog" {
+		t.Errorf("expected lakehouse resolved to run workspace, got %#v", lh)
+	}
+}
+
+func TestResolveDefaultLakehouse_FoundInAnotherWorkspace(t *testing.T) {
+	// The whole point of resolving rather than guessing: a default lakehouse
+	// can live in a different workspace than the one we run in.
+	f := &fakeMoveAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-run"}, {ID: "ws-shared"}},
+		items: map[string][]fabric.Item{
+			"ws-run":    {{ID: "other-lh", DisplayName: "LH_Local", Type: "Lakehouse"}},
+			"ws-shared": {{ID: "lh-1", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+		},
+	}
+	lh, err := resolveDefaultLakehouse(f, "tok", "lh-1", "ws-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lh == nil || lh.WorkspaceID != "ws-shared" {
+		t.Errorf("expected resolution to the shared workspace, got %#v", lh)
+	}
+}
+
+func TestResolveDefaultLakehouse_NotFoundErrors(t *testing.T) {
+	// Lakehouse is nowhere the user can see → a clear error, never a guessed
+	// workspace.
+	f := &fakeMoveAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-run"}},
+		items:      map[string][]fabric.Item{},
+	}
+	if _, err := resolveDefaultLakehouse(f, "tok", "lh-gone", "ws-run"); err == nil {
+		t.Error("expected an error when the lakehouse can't be found, got nil")
+	}
+}
+
+func TestResolveLakehouseOverride_CompleteBindingIsNoOp(t *testing.T) {
+	// A notebook whose binding already carries a workspace must produce no
+	// override — futils only intervenes on the broken pattern.
+	ipynb := []byte(`{"metadata":{"dependencies":{"lakehouse":{` +
+		`"default_lakehouse":"lh-1","default_lakehouse_name":"LH","default_lakehouse_workspace_id":"ws-run"}}}}`)
+	f := &fakeMoveAPI{}
+	lh, err := resolveLakehouseOverride(f, "tok", ipynb, "ws-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lh != nil {
+		t.Errorf("expected no override for a complete binding, got %#v", lh)
+	}
+}
+
+func TestResolveLakehouseOverride_NoLakehouseIsNoOp(t *testing.T) {
+	// No lakehouse pinned → run with none, never invent one.
+	ipynb := []byte(`{"metadata":{"kernelspec":{"name":"synapse_pyspark"}}}`)
+	f := &fakeMoveAPI{}
+	lh, err := resolveLakehouseOverride(f, "tok", ipynb, "ws-run")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lh != nil {
+		t.Errorf("expected no override when no lakehouse is pinned, got %#v", lh)
+	}
+}
