@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -39,6 +40,8 @@ type refreshCheckItem struct {
 type refreshTableModel struct {
 	message    string
 	items      []refreshCheckItem
+	input      textinput.Model
+	filtered   []int // indices into items, after filtering; cursor indexes THIS
 	cursor     int
 	selection  TableSelection
 	goBack     bool
@@ -114,14 +117,87 @@ func buildRefreshItems(tables []string, categorizer Categorizer) ([]refreshCheck
 
 func newRefreshTableModel(message string, tables []string, categorizer Categorizer) refreshTableModel {
 	items, groupMap, parentMap, allGroups, allItems := buildRefreshItems(tables, categorizer)
-	return refreshTableModel{
+	ti := textinput.New()
+	ti.Placeholder = "filter…"
+	ti.Focus()
+	ti.Prompt = "› "
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(AccentColor)
+	m := refreshTableModel{
 		message:   message,
 		items:     items,
+		input:     ti,
+		filtered:  make([]int, 0, len(items)),
 		groupMap:  groupMap,
 		parentMap: parentMap,
 		allGroups: allGroups,
 		allItems:  allItems,
 	}
+	return m.refilter()
+}
+
+// inFiltered reports whether the items-index idx is currently visible.
+func (m refreshTableModel) inFiltered(idx int) bool {
+	for _, fi := range m.filtered {
+		if fi == idx {
+			return true
+		}
+	}
+	return false
+}
+
+// visibleChildren returns the children of a group header that survive the
+// current filter. Used so a filtered group-toggle only touches what's shown.
+func (m refreshTableModel) visibleChildren(groupIdx int) []int {
+	var out []int
+	for _, ci := range m.groupMap[groupIdx] {
+		if m.inFiltered(ci) {
+			out = append(out, ci)
+		}
+	}
+	return out
+}
+
+// refilter recomputes m.filtered from the search input. An empty needle
+// shows the full hierarchy (degenerate to today's behavior). A non-empty
+// needle keeps table rows whose name contains it, plus the group headers
+// that still have a matching child; the global "All tables" row is hidden
+// because "all matches" isn't the same as a full-model refresh.
+func (m refreshTableModel) refilter() refreshTableModel {
+	needle := strings.ToLower(strings.TrimSpace(m.input.Value()))
+	m.filtered = m.filtered[:0]
+	if needle == "" {
+		for i := range m.items {
+			m.filtered = append(m.filtered, i)
+		}
+	} else {
+		matchGroup := map[int]bool{}
+		for i, it := range m.items {
+			if it.kind == refreshItemTable && strings.Contains(strings.ToLower(it.tableName), needle) {
+				matchGroup[m.parentMap[i]] = true
+			}
+		}
+		for i, it := range m.items {
+			switch it.kind {
+			case refreshItemAll:
+				// hidden while filtering
+			case refreshItemGroup:
+				if matchGroup[i] {
+					m.filtered = append(m.filtered, i)
+				}
+			case refreshItemTable:
+				if strings.Contains(strings.ToLower(it.tableName), needle) {
+					m.filtered = append(m.filtered, i)
+				}
+			}
+		}
+	}
+	if m.cursor >= len(m.filtered) {
+		m.cursor = len(m.filtered) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	return m
 }
 
 // isLocked returns true for items the user can't toggle directly because
@@ -163,6 +239,38 @@ func (m *refreshTableModel) toggle(idx int) {
 	}
 }
 
+// toggleAt toggles the row at the given position within m.filtered. With an
+// empty filter it defers to the normal cascade in toggle(). With an active
+// filter, a group header instead bulk-toggles only its *visible* matches and
+// leaves the persistent group.checked cascade flag alone — that flag means
+// "all children", which would be wrong when only a subset is shown.
+func (m *refreshTableModel) toggleAt(pos int) {
+	if pos < 0 || pos >= len(m.filtered) {
+		return
+	}
+	idx := m.filtered[pos]
+	filtering := strings.TrimSpace(m.input.Value()) != ""
+
+	if filtering && m.items[idx].kind == refreshItemGroup {
+		visible := m.visibleChildren(idx)
+		allChecked := len(visible) > 0
+		for _, ci := range visible {
+			if !m.items[ci].checked {
+				allChecked = false
+				break
+			}
+		}
+		for _, ci := range visible {
+			if m.isLocked(ci) {
+				continue
+			}
+			m.items[ci].checked = !allChecked
+		}
+		return
+	}
+	m.toggle(idx)
+}
+
 // TableSelection is what TableCheckbox returns. FullRefresh=true means
 // "no objects in the refresh body" (i.e. refresh the entire model). Otherwise
 // Tables is the explicit list passed to the Enhanced Refresh API.
@@ -199,52 +307,89 @@ func (m refreshTableModel) collectSelection() TableSelection {
 	return TableSelection{Tables: tables, Summary: strings.Join(summaryParts, ", ")}
 }
 
-func (m refreshTableModel) Init() tea.Cmd { return nil }
+func (m refreshTableModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m refreshTableModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
+		return m, nil
 	case tea.KeyMsg:
+		// The always-on filter owns printable keys, so navigation is on the
+		// arrow/page keys only — letter shortcuts (j/k/b/q) would be typed
+		// into the search box instead.
 		switch msg.String() {
-		case "up", "k":
-			m.cursor = (m.cursor - 1 + len(m.items)) % len(m.items)
-		case "down", "j":
-			m.cursor = (m.cursor + 1) % len(m.items)
-		case "alt+up", "alt+k", "pgup":
+		case "up":
+			if len(m.filtered) > 0 {
+				m.cursor = (m.cursor - 1 + len(m.filtered)) % len(m.filtered)
+			}
+			return m, nil
+		case "down":
+			if len(m.filtered) > 0 {
+				m.cursor = (m.cursor + 1) % len(m.filtered)
+			}
+			return m, nil
+		case "alt+up", "pgup":
 			m.cursor -= checkboxJumpSize
 			if m.cursor < 0 {
 				m.cursor = 0
 			}
-		case "alt+down", "alt+j", "pgdown":
+			return m, nil
+		case "alt+down", "pgdown":
 			m.cursor += checkboxJumpSize
-			if m.cursor >= len(m.items) {
-				m.cursor = len(m.items) - 1
+			if m.cursor >= len(m.filtered) {
+				m.cursor = len(m.filtered) - 1
 			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			return m, nil
 		case " ":
-			m.toggle(m.cursor)
+			m.toggleAt(m.cursor)
+			return m, nil
 		case "enter":
 			m.selection = m.collectSelection()
 			m.done = true
 			return m, tea.Quit
-		case "esc", "b":
+		case "esc":
 			m.goBack = true
 			m.done = true
 			return m, tea.Quit
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			m.quit = true
 			m.done = true
 			return m, tea.Quit
 		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m = m.refilter()
+	return m, cmd
 }
 
-func (m refreshTableModel) renderItem(i int) string {
-	item := m.items[i]
-	locked := m.isLocked(i)
+func (m refreshTableModel) renderItem(idx int, isCursor bool) string {
+	item := m.items[idx]
+	locked := m.isLocked(idx)
 	checked := item.checked || locked
-	isCursor := i == m.cursor
+	filtering := strings.TrimSpace(m.input.Value()) != ""
+
+	// While filtering, a group header carries no cascade flag — its box
+	// reflects whether every *visible* match below it is checked, and its
+	// label shows the match count instead of the group total.
+	groupLabel := item.label
+	if filtering && item.kind == refreshItemGroup {
+		vis := m.visibleChildren(idx)
+		allChecked := len(vis) > 0
+		for _, ci := range vis {
+			if !m.items[ci].checked && !m.isLocked(ci) {
+				allChecked = false
+				break
+			}
+		}
+		checked = allChecked
+		groupLabel = fmt.Sprintf("All %s (%d matches)", item.group, len(vis))
+	}
 
 	pointer := "  "
 	if isCursor {
@@ -257,9 +402,12 @@ func (m refreshTableModel) renderItem(i int) string {
 	}
 
 	var label string
-	if item.kind == refreshItemAll || item.kind == refreshItemGroup {
+	switch item.kind {
+	case refreshItemAll:
 		label = fmt.Sprintf("── %s ──", item.label)
-	} else {
+	case refreshItemGroup:
+		label = fmt.Sprintf("── %s ──", groupLabel)
+	default:
 		label = fmt.Sprintf("    %s", item.label)
 	}
 
@@ -285,12 +433,21 @@ func (m refreshTableModel) View() string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "  %s  %s\n\n", m.message, checkboxHintStyle.Render("(space to toggle, alt+↑↓ to jump)"))
+	fmt.Fprintf(&b, "  %s\n", m.message)
+	fmt.Fprintf(&b, "  %s\n", m.input.View())
+	fmt.Fprintf(&b, "  %s\n\n", checkboxHintStyle.Render("type to filter • space toggle • ↑↓ navigate • enter confirm • esc back"))
 
-	maxVisible := m.termHeight - 3
-	if maxVisible <= 0 || maxVisible >= len(m.items) {
-		for i := range m.items {
-			fmt.Fprintf(&b, "%s\n", m.renderItem(i))
+	dimStyle := lipgloss.NewStyle().Foreground(DimColor)
+	if len(m.filtered) == 0 {
+		fmt.Fprintf(&b, "  %s\n", dimStyle.Render("(no matches)"))
+		return b.String()
+	}
+
+	// Header rows above the list: message, input, hint, blank.
+	maxVisible := m.termHeight - 5
+	if maxVisible <= 0 || maxVisible >= len(m.filtered) {
+		for i, idx := range m.filtered {
+			fmt.Fprintf(&b, "%s\n", m.renderItem(idx, i == m.cursor))
 		}
 		return b.String()
 	}
@@ -304,22 +461,21 @@ func (m refreshTableModel) View() string {
 		start = 0
 	}
 	end := start + itemSlots
-	if end > len(m.items) {
-		end = len(m.items)
+	if end > len(m.filtered) {
+		end = len(m.filtered)
 		start = end - itemSlots
 		if start < 0 {
 			start = 0
 		}
 	}
-	dimStyle := lipgloss.NewStyle().Foreground(DimColor)
 	if start > 0 {
 		fmt.Fprintf(&b, "  %s\n", dimStyle.Render(fmt.Sprintf("↑ %d more above", start)))
 	}
 	for i := start; i < end; i++ {
-		fmt.Fprintf(&b, "%s\n", m.renderItem(i))
+		fmt.Fprintf(&b, "%s\n", m.renderItem(m.filtered[i], i == m.cursor))
 	}
-	if end < len(m.items) {
-		fmt.Fprintf(&b, "  %s\n", dimStyle.Render(fmt.Sprintf("↓ %d more below", len(m.items)-end)))
+	if end < len(m.filtered) {
+		fmt.Fprintf(&b, "  %s\n", dimStyle.Render(fmt.Sprintf("↓ %d more below", len(m.filtered)-end)))
 	}
 	return b.String()
 }
