@@ -1,0 +1,17 @@
+package deploy
+
+import "github.com/DanielAndreassen97/futils/internal/fabric"
+
+// FabricClient is the narrow set of Fabric operations the deploy package needs.
+// It is satisfied structurally by cmd.APIClient, so the TUI passes its existing
+// client straight through without an adapter.
+type FabricClient interface {
+	ListItems(token, workspaceID string) ([]fabric.Item, error)
+	ListItemsByType(token, workspaceID, itemType string) ([]fabric.Item, error)
+	ListWorkspaces(token string) ([]fabric.Workspace, error)
+	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
+	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error)
+	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
+	RebindReport(token, workspaceID, reportID, datasetID string) error
+	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
+}

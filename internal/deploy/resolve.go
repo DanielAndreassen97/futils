@@ -1,0 +1,126 @@
+package deploy
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/DanielAndreassen97/futils/internal/fabric"
+)
+
+// Resolver expands fabric-cicd dynamic variables against the TARGET workspace
+// at deploy time. It caches workspace and item lookups so repeated variables
+// don't re-hit the API.
+type Resolver struct {
+	client   FabricClient
+	token    string
+	target   fabric.Workspace
+	wsByName map[string]string        // displayName -> id (lazy)
+	itemsWS  map[string][]fabric.Item // workspaceID -> items (lazy)
+}
+
+func NewResolver(client FabricClient, token string, target fabric.Workspace) *Resolver {
+	return &Resolver{
+		client:  client,
+		token:   token,
+		target:  target,
+		itemsWS: map[string][]fabric.Item{},
+	}
+}
+
+// Resolve expands a single dynamic-variable value. A value that doesn't begin
+// with "$" is returned unchanged (literal replacement value).
+func (r *Resolver) Resolve(value string) (string, error) {
+	if !strings.HasPrefix(value, "$") {
+		return value, nil
+	}
+	switch {
+	case value == "$workspace.$id":
+		return r.target.ID, nil
+	case strings.HasPrefix(value, "$workspace.") && strings.HasSuffix(value, ".$id"):
+		name := strings.TrimSuffix(strings.TrimPrefix(value, "$workspace."), ".$id")
+		return r.workspaceID(name)
+	case strings.HasPrefix(value, "$items."):
+		return r.resolveItem(value)
+	default:
+		return "", fmt.Errorf("unsupported dynamic variable %q (Phase 1 supports $workspace/$items)", value)
+	}
+}
+
+// resolveItem handles "$items.<Type>.<Name>.<attr>" where attr is one of
+// $id, $sqlendpoint, $sqlendpointid. Name may contain dots, so we split on the
+// known trailing attribute, not greedily.
+func (r *Resolver) resolveItem(value string) (string, error) {
+	body := strings.TrimPrefix(value, "$items.")
+	var attr string
+	for _, a := range []string{".$sqlendpointid", ".$sqlendpoint", ".$id"} {
+		if strings.HasSuffix(body, a) {
+			attr = strings.TrimPrefix(a, ".$")
+			body = strings.TrimSuffix(body, a)
+			break
+		}
+	}
+	if attr == "" {
+		return "", fmt.Errorf("dynamic variable %q has no recognised attribute", value)
+	}
+	// body is now "<Type>.<Name>"; Type has no dots, Name may.
+	dot := strings.Index(body, ".")
+	if dot < 0 {
+		return "", fmt.Errorf("dynamic variable %q missing item name", value)
+	}
+	itemType, itemName := body[:dot], body[dot+1:]
+
+	item, err := r.findItem(r.target.ID, itemType, itemName)
+	if err != nil {
+		return "", err
+	}
+	switch attr {
+	case "id":
+		return item.ID, nil
+	case "sqlendpoint", "sqlendpointid":
+		host, id, err := r.client.GetLakehouseSqlEndpoint(r.token, r.target.ID, item.ID)
+		if err != nil {
+			return "", fmt.Errorf("sql endpoint for %s: %w", itemName, err)
+		}
+		if attr == "sqlendpoint" {
+			return host, nil
+		}
+		return id, nil
+	}
+	return "", fmt.Errorf("unreachable")
+}
+
+func (r *Resolver) workspaceID(name string) (string, error) {
+	if r.wsByName == nil {
+		ws, err := r.client.ListWorkspaces(r.token)
+		if err != nil {
+			return "", err
+		}
+		r.wsByName = make(map[string]string, len(ws))
+		for _, w := range ws {
+			r.wsByName[w.DisplayName] = w.ID
+		}
+	}
+	id, ok := r.wsByName[name]
+	if !ok {
+		return "", fmt.Errorf("workspace %q not found", name)
+	}
+	return id, nil
+}
+
+func (r *Resolver) findItem(wsID, itemType, itemName string) (fabric.Item, error) {
+	items, ok := r.itemsWS[wsID]
+	if !ok {
+		var err error
+		items, err = r.client.ListItems(r.token, wsID)
+		if err != nil {
+			return fabric.Item{}, err
+		}
+		r.itemsWS[wsID] = items
+	}
+	for _, it := range items {
+		if it.Type == itemType && it.DisplayName == itemName {
+			return it, nil
+		}
+	}
+	return fabric.Item{}, fmt.Errorf("%s %q not found in target workspace", itemType, itemName)
+}
