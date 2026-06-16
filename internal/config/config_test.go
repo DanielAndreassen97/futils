@@ -268,6 +268,41 @@ func TestSaveWritesNewShapeAfterMigration(t *testing.T) {
 // workspace_name: string}] — which gets folded into a one-element
 // Workspaces slice. Real user configs in the wild are on this shape
 // before the futils v0.1 → v0.2 upgrade, so the migration must hold.
+func TestCustomerRepoPathRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	in := Config{Customers: map[string]Customer{
+		"acme": {RepoPath: "/home/dan/repos/acme"},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := out.Customers["acme"].RepoPath; got != "/home/dan/repos/acme" {
+		t.Errorf("RepoPath = %q, want %q", got, "/home/dan/repos/acme")
+	}
+}
+
+func TestCustomerWithoutRepoPathLoads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// Legacy config with no repo_path field at all.
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if out.Customers["acme"].RepoPath != "" {
+		t.Errorf("RepoPath should default to empty, got %q", out.Customers["acme"].RepoPath)
+	}
+}
+
 func TestLoadMigratesSingleWorkspaceShape(t *testing.T) {
 	legacy := `{
 		"customers": {

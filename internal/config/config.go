@@ -30,6 +30,7 @@ type Environment struct {
 type Customer struct {
 	Environments []Environment      `json:"environments"`
 	Favorites    []NotebookFavorite `json:"favorites,omitempty"`
+	RepoPath     string             `json:"repo_path,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -93,11 +94,13 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		WorkspacePattern string             `json:"workspace_pattern"`
 		Environments     []json.RawMessage  `json:"environments"`
 		Favorites        []NotebookFavorite `json:"favorites,omitempty"`
+		RepoPath         string             `json:"repo_path,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	c.Favorites = aux.Favorites
+	c.RepoPath = aux.RepoPath
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
