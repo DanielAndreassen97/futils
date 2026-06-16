@@ -80,6 +80,36 @@ func TestExecuteAppliesParametersAndEncodes(t *testing.T) {
 	}
 }
 
+func TestExecuteUpdatesExistingItem(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{{
+		Action:     ActionUpdate,
+		ExistingID: "existing-id",
+		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
+	}}
+	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("result: %+v", res)
+	}
+	if res[0].Action != ActionUpdate || res[0].ID != "existing-id" {
+		t.Errorf("expected update of existing-id, got %+v", res[0])
+	}
+	if len(rf.created) != 0 {
+		t.Errorf("update path must not create, got %d creates", len(rf.created))
+	}
+	if _, ok := rf.updates["existing-id"]; !ok {
+		t.Errorf("definition was not pushed to existing-id; updates=%v", rf.updates)
+	}
+}
+
 func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},

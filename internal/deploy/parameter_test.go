@@ -89,6 +89,23 @@ func TestApplyFindReplaceSkipsOnTypeMismatch(t *testing.T) {
 	}
 }
 
+func TestApplyFindReplaceIgnoreCase(t *testing.T) {
+	p := Parameters{FindReplace: []FindReplace{{
+		FindValue:    "dev-guid",
+		ReplaceValue: map[string]string{"_ALL_": "X"},
+		IsRegex:      "true",
+		IgnoreCase:   "true",
+	}}}
+	identity := func(s string) (string, error) { return s, nil }
+	out, err := p.ApplyFindReplace("TEST", LocalItem{Type: "Notebook"}, "f.py", []byte("id=DEV-GUID"), identity)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if string(out) != "id=X" {
+		t.Errorf("ignore_case regex should match DEV-GUID; got %q", out)
+	}
+}
+
 func TestApplyFindReplaceResolvesDynamicValue(t *testing.T) {
 	p := Parameters{FindReplace: []FindReplace{{
 		FindValue:    "DEV-GUID",
