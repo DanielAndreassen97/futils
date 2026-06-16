@@ -23,6 +23,7 @@ func MainMenu(configPath string) {
 			{Label: "Run notebook", Value: "run"},
 			{Label: "Refresh tables", Value: "refresh"},
 			{Label: "Move item", Value: "move"},
+			{Label: "Deploy", Value: "deploy"},
 
 			{Label: "Settings", IsHeader: true},
 			{Label: "Manage favourites", Value: "favorites"},
@@ -54,6 +55,8 @@ func MainMenu(configPath string) {
 			cmdErr = Refresh(configPath)
 		case "move":
 			cmdErr = Move(configPath)
+		case "deploy":
+			cmdErr = Deploy(configPath)
 		case "favorites":
 			cmdErr = Favorites(configPath)
 		case "customers":
