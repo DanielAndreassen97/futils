@@ -3,6 +3,8 @@ package deploy
 import (
 	"fmt"
 	"os/exec"
+	"path"
+	"sort"
 	"strings"
 )
 
@@ -74,10 +76,71 @@ func (s *Source) Fetch() error {
 }
 
 // ReadFile returns the bytes of a repo-relative path at the deploy ref.
-func (s *Source) ReadFile(path string) ([]byte, error) {
-	out, err := s.git("show", s.ref+":"+path)
+func (s *Source) ReadFile(p string) ([]byte, error) {
+	out, err := s.git("show", s.ref+":"+p)
 	if err != nil {
-		return nil, fmt.Errorf("read %s@%s: %w", path, s.ref, err)
+		return nil, fmt.Errorf("read %s@%s: %w", p, s.ref, err)
 	}
 	return out, nil
+}
+
+// DiscoverItems lists every tree path at the deploy ref, treats each folder
+// containing a .platform as an item, and reads that folder's files (excluding
+// .platform) as definition parts. Part paths are relative to the item folder.
+func (s *Source) DiscoverItems() ([]LocalItem, error) {
+	out, err := s.git("ls-tree", "-r", "--name-only", s.ref)
+	if err != nil {
+		return nil, fmt.Errorf("list tree: %w", err)
+	}
+	var all []string
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line != "" {
+			all = append(all, line)
+		}
+	}
+
+	// Group files by the item folder that owns them (folder = dir of .platform).
+	itemFolders := map[string]bool{}
+	for _, p := range all {
+		if path.Base(p) == ".platform" {
+			itemFolders[path.Dir(p)] = true
+		}
+	}
+
+	var items []LocalItem
+	for folder := range itemFolders {
+		platRaw, err := s.ReadFile(folder + "/.platform")
+		if err != nil {
+			return nil, err
+		}
+		meta, err := parsePlatform(platRaw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", folder, err)
+		}
+		item := LocalItem{
+			Type:        meta.Type,
+			DisplayName: meta.DisplayName,
+			Description: meta.Description,
+			LogicalID:   meta.LogicalID,
+			FolderPath:  folder,
+		}
+		prefix := folder + "/"
+		for _, p := range all {
+			if !strings.HasPrefix(p, prefix) {
+				continue
+			}
+			rel := strings.TrimPrefix(p, prefix)
+			if rel == ".platform" {
+				continue
+			}
+			content, err := s.ReadFile(p)
+			if err != nil {
+				return nil, err
+			}
+			item.Parts = append(item.Parts, Part{Path: rel, Content: content})
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].FolderPath < items[j].FolderPath })
+	return items, nil
 }
