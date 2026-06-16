@@ -115,6 +115,11 @@ func (f *fakeMoveAPI) WaitForRefresh(string, string, string, string) (fabric.Ref
 	return fabric.RefreshStatus{}, errors.New("WaitForRefresh not used by move tests")
 }
 
+// Deploy flow methods — not used by move tests.
+func (f *fakeMoveAPI) GetLakehouseSqlEndpoint(string, string, string) (string, string, error) {
+	return "", "", errors.New("GetLakehouseSqlEndpoint not used by move tests")
+}
+
 // withMovePickers installs deterministic pickers for the duration
 // of a single test. The filter picker picks the option whose Label
 // matches filterPick (or first option if filterPick is empty); the

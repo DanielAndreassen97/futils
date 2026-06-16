@@ -691,6 +691,44 @@ func GetJobInstance(token, instanceURL string) (JobInstanceStatus, error) {
 	return s, nil
 }
 
+// GetLakehouseSqlEndpoint returns the SQL analytics endpoint (host, id) of a
+// lakehouse. Used to resolve fabric-cicd's $sqlendpoint / $sqlendpointid
+// dynamic variables during deployment.
+func GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, string, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return "", "", err
+	}
+	if err := validateUUID(lakehouseID, "lakehouse ID"); err != nil {
+		return "", "", err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, lakehouseID)
+	body, err := doGet(token, url)
+	if err != nil {
+		return "", "", err
+	}
+	return parseLakehouseSqlEndpoint(body)
+}
+
+func parseLakehouseSqlEndpoint(body []byte) (string, string, error) {
+	var resp struct {
+		Properties struct {
+			SQLEndpointProperties struct {
+				ConnectionString string `json:"connectionString"`
+				ID               string `json:"id"`
+			} `json:"sqlEndpointProperties"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", "", fmt.Errorf("parse lakehouse: %w", err)
+	}
+	host := resp.Properties.SQLEndpointProperties.ConnectionString
+	id := resp.Properties.SQLEndpointProperties.ID
+	if host == "" {
+		return "", "", fmt.Errorf("lakehouse has no SQL endpoint yet (still provisioning?)")
+	}
+	return host, id, nil
+}
+
 // RebindReport repoints a Report at a different semantic model
 // (dataset). This is the Power BI REST API, not Fabric Core — the
 // base URL is api.powerbi.com. As of 2026-05 the call accepts the

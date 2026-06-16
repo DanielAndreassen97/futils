@@ -68,6 +68,9 @@ type APIClient interface {
 	QueryRefreshableTables(token, workspaceID, datasetID string) ([]string, error)
 	TriggerRefresh(token, workspaceID, datasetID string, tables []string) (string, error)
 	WaitForRefresh(token, workspaceID, datasetID, requestID string) (fabric.RefreshStatus, error)
+
+	// Deploy flow.
+	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
 }
 
 // RealAPIClient just forwards to the internal/fabric package functions.
@@ -123,6 +126,9 @@ func (RealAPIClient) TriggerRefresh(token, workspaceID, datasetID string, tables
 }
 func (RealAPIClient) WaitForRefresh(token, workspaceID, datasetID, requestID string) (fabric.RefreshStatus, error) {
 	return fabric.WaitForRefresh(token, workspaceID, datasetID, requestID, 5*time.Second, 30*time.Minute)
+}
+func (RealAPIClient) GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, string, error) {
+	return fabric.GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID)
 }
 
 // DefaultAPI is what Run() uses when called from the main menu. Test code
