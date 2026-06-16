@@ -48,3 +48,63 @@ func TestParseParametersEmpty(t *testing.T) {
 		t.Errorf("expected no rules, got %d", len(p.FindReplace))
 	}
 }
+
+func TestApplyFindReplaceLiteralAndRegex(t *testing.T) {
+	p := Parameters{FindReplace: []FindReplace{
+		{ // literal, Notebook-only
+			FindValue:    "DEV-GUID",
+			ReplaceValue: map[string]string{"TEST": "TEST-GUID"},
+			ItemType:     StringOrSlice{"Notebook"},
+		},
+		{ // regex, all envs via _ALL_
+			FindValue:    `lakehouse://([0-9]+)`,
+			ReplaceValue: map[string]string{"_ALL_": "lakehouse://X"},
+			IsRegex:      "true",
+		},
+	}}
+	identity := func(s string) (string, error) { return s, nil }
+
+	nb := LocalItem{Type: "Notebook", DisplayName: "NB_A"}
+	in := []byte("id=DEV-GUID path=lakehouse://123")
+	out, err := p.ApplyFindReplace("TEST", nb, "notebook-content.py", in, identity)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if string(out) != "id=TEST-GUID path=lakehouse://X" {
+		t.Errorf("got %q", out)
+	}
+}
+
+func TestApplyFindReplaceSkipsOnTypeMismatch(t *testing.T) {
+	p := Parameters{FindReplace: []FindReplace{{
+		FindValue:    "DEV-GUID",
+		ReplaceValue: map[string]string{"TEST": "TEST-GUID"},
+		ItemType:     StringOrSlice{"Notebook"},
+	}}}
+	identity := func(s string) (string, error) { return s, nil }
+	report := LocalItem{Type: "Report", DisplayName: "R"}
+	out, _ := p.ApplyFindReplace("TEST", report, "report.json", []byte("DEV-GUID"), identity)
+	if string(out) != "DEV-GUID" {
+		t.Errorf("type filter should have skipped; got %q", out)
+	}
+}
+
+func TestApplyFindReplaceResolvesDynamicValue(t *testing.T) {
+	p := Parameters{FindReplace: []FindReplace{{
+		FindValue:    "DEV-GUID",
+		ReplaceValue: map[string]string{"_ALL_": "$items.Lakehouse.LH_Config.$id"},
+	}}}
+	resolve := func(s string) (string, error) {
+		if s == "$items.Lakehouse.LH_Config.$id" {
+			return "resolved-guid", nil
+		}
+		return s, nil
+	}
+	out, err := p.ApplyFindReplace("TEST", LocalItem{Type: "Notebook"}, "f.py", []byte("DEV-GUID"), resolve)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if string(out) != "resolved-guid" {
+		t.Errorf("got %q", out)
+	}
+}
