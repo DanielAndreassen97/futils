@@ -24,6 +24,23 @@ func isGitRepo(dir string) bool {
 	return err == nil
 }
 
+// gitRepoRoot walks up from dir to find the nearest ancestor (inclusive) that
+// is a git repo, returning its path and true. Returns ("", false) if dir is not
+// inside any git repo.
+func gitRepoRoot(dir string) (string, bool) {
+	d := dir
+	for {
+		if isGitRepo(d) {
+			return d, true
+		}
+		parent := filepath.Dir(d)
+		if parent == d { // reached filesystem root
+			return "", false
+		}
+		d = parent
+	}
+}
+
 // dirOptions builds the FilterMenu rows for browsing cur: a "use this folder"
 // action (annotated with whether cur is a git repo), an "up one level" action
 // (omitted at the filesystem root), then one row per visible subdirectory.
@@ -43,8 +60,12 @@ func dirOptions(cur string) ([]FilterOption, error) {
 	sort.Strings(subdirs)
 
 	selLabel := "✓ Use this folder (not a git repo)"
-	if isGitRepo(cur) {
-		selLabel = "✓ Use this folder (git repo)"
+	if root, ok := gitRepoRoot(cur); ok {
+		if root == cur {
+			selLabel = "✓ Use this folder (git repo)"
+		} else {
+			selLabel = fmt.Sprintf("✓ Use this folder (inside repo %s → uses repo root)", filepath.Base(root))
+		}
 	}
 	opts := []FilterOption{{Label: selLabel, Value: dirSelectValue, Meta: "action"}}
 	if cur != filepath.Dir(cur) {
@@ -114,6 +135,9 @@ func PickDirectory(title, startDir string) (string, error) {
 		}
 		next, done := nextDir(cur, choice)
 		if done {
+			if root, ok := gitRepoRoot(next); ok {
+				return root, nil
+			}
 			return next, nil
 		}
 		cur = next

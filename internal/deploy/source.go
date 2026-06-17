@@ -37,13 +37,29 @@ type Source struct {
 func NewSource(repo string) (*Source, error) {
 	g := realGitRunner(repo)
 	if _, err := g("rev-parse", "--git-dir"); err != nil {
-		return nil, fmt.Errorf("%q is not a git repository: %w", repo, err)
+		return nil, fmt.Errorf("%q is not inside a git repository: %w", repo, err)
+	}
+	if root := repoRoot(g); root != "" && root != repo {
+		repo = root
+		g = realGitRunner(root)
 	}
 	branch, err := detectDefaultBranch(g)
 	if err != nil {
 		return nil, err
 	}
 	return &Source{repo: repo, ref: "origin/" + branch, git: g}, nil
+}
+
+// repoRoot returns the repository's top-level directory via the runner, or ""
+// if it can't be determined. Used so a path pointing inside a repo (a
+// subfolder) resolves to the root — ls-tree/show then agree on root-relative
+// paths.
+func repoRoot(g gitRunner) string {
+	out, err := g("rev-parse", "--show-toplevel")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // detectDefaultBranch resolves origin's HEAD (e.g. main), falling back to
