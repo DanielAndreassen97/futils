@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"sync"
 
@@ -18,6 +19,11 @@ var deployItemScope = map[string]bool{
 	"Notebook": true, "DataPipeline": true, "SemanticModel": true, "Report": true,
 }
 
+// comparableTypes are the item types futils content-diffs (mirrors fabric-cicd's
+// COMPARABLE_TYPES). Other existing types are shown as Exists rather than diffed —
+// they're shell types or lack a reliable normalizer yet.
+var comparableTypes = map[string]bool{"Notebook": true, "DataPipeline": true}
+
 // deployGroup is one folder→workspace mapping resolved for a run: the items
 // discovered under that folder, the target workspace, the compare rows, and the
 // deployed item list (needed by BuildPlan).
@@ -26,6 +32,7 @@ type deployGroup struct {
 	Target   fabric.Workspace
 	Rows     []deploy.CompareRow
 	Deployed []fabric.Item
+	Params   deploy.Parameters
 }
 
 // Deploy is the top-level entry point for the `deploy` subcommand.
@@ -132,19 +139,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
-	// parameter.yml is optional. The environment alias the user picked IS the
-	// parameter.yml env key (e.g. "TEST" applies the TEST replace_value blocks),
-	// so we don't prompt for it separately.
-	var params deploy.Parameters
-	if raw, perr := src.ReadFile("parameter.yml"); perr == nil {
-		params, err = deploy.ParseParameters(raw)
-		if err != nil {
-			return err
-		}
-	}
 	env := alias
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, params)
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, src)
 	if err != nil {
 		return err
 	}
@@ -154,7 +151,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
-	results, err := runDeploy(client, token, env, groups, params, dryRun, pickGroupedRows, ui.Confirm)
+	results, err := runDeploy(client, token, env, groups, dryRun, pickGroupedRows, ui.Confirm)
 	printDeployResults(results)
 	if err != nil {
 		return err
@@ -169,13 +166,27 @@ const diffConcurrency = 4
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, params deploy.Parameters) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, src *deploy.Source) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
 		if err != nil {
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
+
+		// parameter.yml lives at the deployment-folder root (fabric-cicd's
+		// repository_directory), e.g. FabricBackEnd/parameter.yml — NOT the git root.
+		var params deploy.Parameters
+		paramPath := path.Join(m.Folder, "parameter.yml")
+		if raw, perr := src.ReadFile(paramPath); perr == nil {
+			params, err = deploy.ParseParameters(raw)
+			if err != nil {
+				return nil, fmt.Errorf("parse %s: %w", paramPath, err)
+			}
+		} else {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("No %s found — comparing %s/ without substitution (GUIDs may differ across environments).", paramPath, m.Folder)))
+		}
+
 		items := deploy.ItemsInFolder(all, m.Folder)
 		deployed, err := client.ListItems(token, target.ID)
 		if err != nil {
@@ -188,6 +199,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			Target:   target,
 			Rows:     rows,
 			Deployed: deployed,
+			Params:   params,
 		})
 	}
 	return groups, nil
@@ -201,7 +213,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow) {
 	var existsIdx []int
 	for i := range rows {
-		if rows[i].Class == deploy.ClassExists {
+		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
 			existsIdx = append(existsIdx, i)
 		}
 	}
@@ -310,7 +322,6 @@ func runDeploy(
 	client deploy.FabricClient,
 	token, env string,
 	groups []deployGroup,
-	params deploy.Parameters,
 	dryRun bool,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, error),
 	confirm func(string) (bool, error),
@@ -357,7 +368,7 @@ func runDeploy(
 		plan := deploy.BuildPlan(items, g.Deployed)
 		sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
 		sp.Start()
-		results, execErr := deploy.Execute(client, token, g.Target, env, plan, params)
+		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params)
 		sp.Stop()
 		allResults = append(allResults, results...)
 		if execErr != nil {
@@ -468,7 +479,7 @@ func printGroupedCompare(groups []deployGroup) {
 		classStyle(deploy.ClassChanged).Render("Changed") + "  " +
 		classStyle(deploy.ClassUnchanged).Render("Unchanged") + "  " +
 		classStyle(deploy.ClassOrphan).Render("Orphan") + "  " +
-		classStyle(deploy.ClassExists).Render("Exists(unverified)")
+		classStyle(deploy.ClassExists).Render("Exists")
 	fmt.Println("  " + legend)
 	fmt.Println()
 	for _, g := range groups {

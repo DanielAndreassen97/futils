@@ -76,7 +76,7 @@ func TestRunDeployHappyPath(t *testing.T) {
 		}
 		return out, nil
 	}
-	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, false, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, false, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestRunDeployDryRunDoesNotExecute(t *testing.T) {
 		t.Fatal("selectItems must not be called in dry-run")
 		return nil, nil
 	}
-	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, true, mustNotCall, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, true, mustNotCall, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 		}
 		return out, nil
 	}
-	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, false, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, false, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
