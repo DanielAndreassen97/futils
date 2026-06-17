@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -49,7 +50,8 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	repoPath := customer.RepoPath
 	if repoPath == "" {
-		repoPath, err = defaultPromptInput("Path to the Fabric git repo", "/Users/you/Repos/...")
+		startDir, _ := os.UserHomeDir()
+		repoPath, err = ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
 		if err != nil {
 			return err
 		}
