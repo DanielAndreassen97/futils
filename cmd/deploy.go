@@ -3,11 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // deployItemScope is the set of types Phase 1 publishes / flags as orphans.
@@ -124,11 +126,6 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		}
 	}
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces)
-	if err != nil {
-		return err
-	}
-
 	// parameter.yml is optional; only ask for an env key when it has rules.
 	var params deploy.Parameters
 	hasParams := false
@@ -147,6 +144,11 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		}
 	}
 
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, params)
+	if err != nil {
+		return err
+	}
+
 	dryRun, err := pickDeployMode()
 	if err != nil {
 		return err
@@ -160,9 +162,14 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
+const diffConcurrency = 8
+
 // buildDeployGroups turns each folder→workspace mapping into a compare group:
-// items under that folder vs the mapped workspace's deployed items.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace) ([]deployGroup, error) {
+// items under that folder vs the mapped workspace's deployed items. For items
+// that already exist it runs a content-diff (concurrent definition fetches +
+// per-part normalized comparison) to refine ClassExists into ClassChanged or
+// ClassUnchanged; items it can't verify stay ClassExists.
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, params deploy.Parameters) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -174,14 +181,77 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 		if err != nil {
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
 		}
+		rows := deploy.Compare(items, deployed, deployItemScope)
+		diffExistingRows(client, token, target, env, params, rows)
 		groups = append(groups, deployGroup{
 			Folder:   m.Folder,
 			Target:   target,
-			Rows:     deploy.Compare(items, deployed, deployItemScope),
+			Rows:     rows,
 			Deployed: deployed,
 		})
 	}
 	return groups, nil
+}
+
+// diffExistingRows fetches the deployed definition of every ClassExists row
+// (concurrently, bounded) and reclassifies it ClassChanged or ClassUnchanged by
+// comparing against the local item's substituted parts. Rows whose definition
+// can't be fetched or substituted stay ClassExists (unverified). Mutates rows
+// in place.
+func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow) {
+	var existsIdx []int
+	for i := range rows {
+		if rows[i].Class == deploy.ClassExists {
+			existsIdx = append(existsIdx, i)
+		}
+	}
+	if len(existsIdx) == 0 {
+		return
+	}
+
+	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
+	sp.Start()
+	defs := make([]*fabric.Definition, len(existsIdx))
+	sem := make(chan struct{}, diffConcurrency)
+	var wg sync.WaitGroup
+	for j, idx := range existsIdx {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j, idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "")
+			if err == nil {
+				defs[j] = def
+			}
+		}(j, idx)
+	}
+	wg.Wait()
+	sp.Stop()
+
+	// Map each source logicalId to its deployed GUID so cross-item references in
+	// the local definition match what's live in the workspace.
+	compareIDs := map[string]string{}
+	for _, r := range rows {
+		if r.Class == deploy.ClassExists && r.Local.LogicalID != "" {
+			compareIDs[r.Local.LogicalID] = r.DeployedID
+		}
+	}
+	resolver := deploy.NewResolver(client, token, target)
+	for j, idx := range existsIdx {
+		if defs[j] == nil {
+			continue // couldn't fetch — leave ClassExists (unverified)
+		}
+		localParts, err := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver)
+		if err != nil {
+			continue // unverified
+		}
+		if deploy.PartsChanged(localParts, defs[j]) {
+			rows[idx].Class = deploy.ClassChanged
+		} else {
+			rows[idx].Class = deploy.ClassUnchanged
+		}
+	}
 }
 
 // setupDeployMappings asks the user which workspace each repo folder deploys to,
@@ -332,10 +402,12 @@ func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, error) {
 			if r.Class == deploy.ClassOrphan {
 				continue
 			}
-			label := fmt.Sprintf("%-22s %-7s %-14s %s", g.Target.DisplayName, r.Class, r.ItemType(), r.Name())
+			label := fmt.Sprintf("%-22s %-9s %-14s %s", g.Target.DisplayName, r.Class, r.ItemType(), r.Name())
 			labels = append(labels, label)
 			byLabel[label] = entry{gi, r.Local}
-			initial = append(initial, label)
+			if r.Class != deploy.ClassUnchanged {
+				initial = append(initial, label)
+			}
 		}
 	}
 	if len(labels) == 0 {
@@ -353,8 +425,33 @@ func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, error) {
 	return out, nil
 }
 
-// printGroupedCompare renders the compare result grouped by target workspace.
+// classStyle colors a compare row by its classification: green=new,
+// yellow=changed, grey=unchanged, red=orphan, cyan=exists-but-unverified.
+func classStyle(c deploy.Class) lipgloss.Style {
+	switch c {
+	case deploy.ClassNew:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	case deploy.ClassChanged:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	case deploy.ClassUnchanged:
+		return lipgloss.NewStyle().Foreground(ui.DimColor)
+	case deploy.ClassOrphan:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	default: // ClassExists (unverified)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	}
+}
+
+// printGroupedCompare renders the compare result grouped by target workspace,
+// colored by classification with a legend.
 func printGroupedCompare(groups []deployGroup) {
+	fmt.Println()
+	legend := classStyle(deploy.ClassNew).Render("New") + "  " +
+		classStyle(deploy.ClassChanged).Render("Changed") + "  " +
+		classStyle(deploy.ClassUnchanged).Render("Unchanged") + "  " +
+		classStyle(deploy.ClassOrphan).Render("Orphan") + "  " +
+		classStyle(deploy.ClassExists).Render("Exists(unverified)")
+	fmt.Println("  " + legend)
 	fmt.Println()
 	for _, g := range groups {
 		header := g.Target.DisplayName
@@ -367,7 +464,8 @@ func printGroupedCompare(groups []deployGroup) {
 			continue
 		}
 		for _, r := range g.Rows {
-			fmt.Printf("  %-7s %-14s %s\n", r.Class, r.ItemType(), r.Name())
+			line := fmt.Sprintf("  %-9s %-14s %s", r.Class, r.ItemType(), r.Name())
+			fmt.Println(classStyle(r.Class).Render(line))
 		}
 	}
 	fmt.Println()
