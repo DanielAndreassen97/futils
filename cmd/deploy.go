@@ -176,7 +176,9 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 
 // runDeploy prints the grouped compare, stops if dryRun, otherwise lets the
 // user cherry-pick across groups, confirms, and executes each group against its
-// own workspace. Returns the aggregated per-item results.
+// own workspace. Returns the aggregated per-item results. On a mid-run Execute
+// failure it returns the results accumulated so far alongside the error, so
+// callers should print results before checking err.
 func runDeploy(
 	client deploy.FabricClient,
 	token, env string,
