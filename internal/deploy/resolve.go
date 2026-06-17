@@ -132,5 +132,5 @@ func (r *Resolver) findItem(wsID, itemType, itemName string) (fabric.Item, error
 			return it, nil
 		}
 	}
-	return fabric.Item{}, fmt.Errorf("%s %q not found in target workspace", itemType, itemName)
+	return fabric.Item{}, fmt.Errorf("%s %q not found in workspace %s", itemType, itemName, wsID)
 }

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -126,23 +127,22 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		}
 	}
 
-	// parameter.yml is optional; only ask for an env key when it has rules.
+	mappings, err = pickDeployScope(mappings)
+	if err != nil {
+		return err
+	}
+
+	// parameter.yml is optional. The environment alias the user picked IS the
+	// parameter.yml env key (e.g. "TEST" applies the TEST replace_value blocks),
+	// so we don't prompt for it separately.
 	var params deploy.Parameters
-	hasParams := false
 	if raw, perr := src.ReadFile("parameter.yml"); perr == nil {
 		params, err = deploy.ParseParameters(raw)
 		if err != nil {
 			return err
 		}
-		hasParams = len(params.FindReplace) > 0 || len(params.KeyValueReplace) > 0 || len(params.SparkPool) > 0
 	}
-	env := ""
-	if hasParams {
-		env, err = promptEnvKey()
-		if err != nil {
-			return err
-		}
-	}
+	env := alias
 
 	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, params)
 	if err != nil {
@@ -196,8 +196,8 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 // diffExistingRows fetches the deployed definition of every ClassExists row
 // (concurrently, bounded) and reclassifies it ClassChanged or ClassUnchanged by
 // comparing against the local item's substituted parts. Rows whose definition
-// can't be fetched or substituted stay ClassExists (unverified). Mutates rows
-// in place.
+// can't be fetched or substituted stay ClassExists (unverified) and a warning
+// is printed with the count and first reason. Mutates rows in place.
 func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow) {
 	var existsIdx []int
 	for i := range rows {
@@ -211,7 +211,11 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 
 	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
 	sp.Start()
-	defs := make([]*fabric.Definition, len(existsIdx))
+	type fetched struct {
+		def *fabric.Definition
+		err error
+	}
+	results := make([]fetched, len(existsIdx))
 	sem := make(chan struct{}, diffConcurrency)
 	var wg sync.WaitGroup
 	for j, idx := range existsIdx {
@@ -221,9 +225,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			defer wg.Done()
 			defer func() { <-sem }()
 			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "")
-			if err == nil {
-				defs[j] = def
-			}
+			results[j] = fetched{def: def, err: err}
 		}(j, idx)
 	}
 	wg.Wait()
@@ -238,19 +240,35 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 	}
 	resolver := deploy.NewResolver(client, token, target)
+
+	var unverified int
+	var firstErr error
 	for j, idx := range existsIdx {
-		if defs[j] == nil {
-			continue // couldn't fetch — leave ClassExists (unverified)
+		if results[j].err != nil {
+			unverified++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", rows[idx].Name(), results[j].err)
+			}
+			continue
 		}
-		localParts, err := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver)
-		if err != nil {
-			continue // unverified
+		localParts, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver)
+		if perr != nil {
+			unverified++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("%s: %w", rows[idx].Name(), perr)
+			}
+			continue
 		}
-		if deploy.PartsChanged(localParts, defs[j]) {
+		if deploy.PartsChanged(localParts, results[j].def) {
 			rows[idx].Class = deploy.ClassChanged
 		} else {
 			rows[idx].Class = deploy.ClassUnchanged
 		}
+	}
+	if unverified > 0 {
+		fmt.Println(warningStyle.Render(fmt.Sprintf(
+			"%d of %d item(s) in %s couldn't be content-compared (shown as Exists). First reason: %v",
+			unverified, len(existsIdx), target.DisplayName, firstErr)))
 	}
 }
 
@@ -471,9 +489,28 @@ func printGroupedCompare(groups []deployGroup) {
 	fmt.Println()
 }
 
-// promptEnvKey asks for the parameter.yml environment key (e.g. TEST, PROD).
-func promptEnvKey() (string, error) {
-	return defaultPromptInput("parameter.yml environment key (e.g. TEST, PROD)", "TEST")
+// pickDeployScope lets the user deploy a single folder→workspace mapping or all
+// of them. With one mapping it's a no-op. Returns the chosen subset.
+func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, error) {
+	if len(mappings) <= 1 {
+		return mappings, nil
+	}
+	opts := []ui.MenuOption{{Label: fmt.Sprintf("All (%d mappings)", len(mappings)), Value: "__all"}}
+	for i, m := range mappings {
+		opts = append(opts, ui.MenuOption{Label: fmt.Sprintf("%s/ → %s", m.Folder, m.Workspace), Value: fmt.Sprintf("%d", i)})
+	}
+	choice, err := ui.NumberMenu("Deploy which folder?", opts)
+	if err != nil {
+		return nil, err
+	}
+	if choice == "__all" {
+		return mappings, nil
+	}
+	idx, err := strconv.Atoi(choice)
+	if err != nil || idx < 0 || idx >= len(mappings) {
+		return nil, fmt.Errorf("invalid selection %q", choice)
+	}
+	return []config.DeployMapping{mappings[idx]}, nil
 }
 
 func printDeployResults(results []deploy.Result) {
