@@ -63,6 +63,30 @@ type NotebookFavorite struct {
 	Parameters []string `json:"parameters,omitempty"`
 }
 
+// AllWorkspaces returns every workspace this environment spans: the explicit
+// Workspaces (which may include reference-only workspaces such as a Data
+// workspace that is not a deploy target) unioned with every Deployment target,
+// de-duplicated, preserving first-seen order. Used to build the env-wide name
+// index for reference rebinding.
+func (e Environment) AllWorkspaces() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(w string) {
+		if w == "" || seen[w] {
+			return
+		}
+		seen[w] = true
+		out = append(out, w)
+	}
+	for _, w := range e.Workspaces {
+		add(w)
+	}
+	for _, d := range e.Deployments {
+		add(d.Workspace)
+	}
+	return out
+}
+
 // Workspaces returns the workspace display names mapped to an alias,
 // plus a boolean indicating whether the alias was found. Callers that
 // previously expected a single workspace should now iterate the slice

@@ -424,3 +424,19 @@ func TestReferenceOverridesAbsentLegacyConfig(t *testing.T) {
 		t.Errorf("expected no overrides, got %#v", c.ReferenceOverrides)
 	}
 }
+
+func TestAllWorkspacesUnionsAndDedupes(t *testing.T) {
+	e := Environment{
+		Alias:      "DEV",
+		Workspaces: []string{"DP - DEV - Config", "DP - DEV - Data"},
+		Deployments: []DeployMapping{
+			{Folder: "Backend", Workspace: "DP - DEV - Config"}, // dup of a Workspaces entry
+			{Folder: "Frontend", Workspace: "DP - DEV - SemMod"}, // new
+		},
+	}
+	got := e.AllWorkspaces()
+	want := []string{"DP - DEV - Config", "DP - DEV - Data", "DP - DEV - SemMod"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllWorkspaces() = %#v, want %#v", got, want)
+	}
+}
