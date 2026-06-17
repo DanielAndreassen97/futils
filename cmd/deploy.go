@@ -49,7 +49,8 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	}
 
 	repoPath := customer.RepoPath
-	if repoPath == "" {
+	pickedRepo := repoPath == ""
+	if pickedRepo {
 		startDir, _ := os.UserHomeDir()
 		repoPath, err = ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
 		if err != nil {
@@ -60,6 +61,15 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	src, err := deploy.NewSource(repoPath)
 	if err != nil {
 		return err
+	}
+	// Remember the repo on the customer so the picker is skipped next time.
+	if pickedRepo {
+		customer.RepoPath = src.Repo()
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			fmt.Println(warningStyle.Render("Couldn't save repo path: " + err.Error()))
+		} else {
+			fmt.Println(infoStyle.Render(fmt.Sprintf("Saved repo path for %s: %s", customerName, src.Repo())))
+		}
 	}
 	sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s...", src.Ref()))
 	sp.Start()

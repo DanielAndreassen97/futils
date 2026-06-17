@@ -95,6 +95,13 @@ func TestDetectDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestSourceRepoAccessor(t *testing.T) {
+	s := &Source{repo: "/Users/dan/Repos/Datavarehus", ref: "origin/main"}
+	if s.Repo() != "/Users/dan/Repos/Datavarehus" {
+		t.Errorf("Repo() = %q", s.Repo())
+	}
+}
+
 func TestReadFileAtRef(t *testing.T) {
 	g := &fakeGit{responses: map[string]string{
 		"show origin/main:parameter.yml": "find_replace: []\n",

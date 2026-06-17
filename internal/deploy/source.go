@@ -82,6 +82,10 @@ func detectDefaultBranch(g gitRunner) (string, error) {
 // Ref returns the resolved deploy ref, e.g. "origin/main".
 func (s *Source) Ref() string { return s.ref }
 
+// Repo returns the resolved repository root (git top-level) this source reads
+// from. Used to persist the path so the picker can be skipped next time.
+func (s *Source) Repo() string { return s.repo }
+
 // Fetch updates remote-tracking refs so the deploy ref reflects the latest
 // merged state. Always run before discovery.
 func (s *Source) Fetch() error {
