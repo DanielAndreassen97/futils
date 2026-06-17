@@ -113,6 +113,28 @@ func (c Customer) DeployMappings(alias string) ([]DeployMapping, bool) {
 	return nil, false
 }
 
+// OverrideForGUID returns the reference override registered for a baseline
+// GUID, and whether one was found.
+func (c Customer) OverrideForGUID(guid string) (ReferenceOverride, bool) {
+	for _, o := range c.ReferenceOverrides {
+		if o.SourceGUID == guid {
+			return o, true
+		}
+	}
+	return ReferenceOverride{}, false
+}
+
+// EnvironmentByAlias returns the environment with the given alias, and whether
+// it was found. Used to resolve the baseline environment's full workspace set.
+func (c Customer) EnvironmentByAlias(alias string) (Environment, bool) {
+	for _, e := range c.Environments {
+		if e.Alias == alias {
+			return e, true
+		}
+	}
+	return Environment{}, false
+}
+
 // FavoriteFor returns the favourite entry for the given notebook name,
 // and a boolean indicating whether it was found.
 func (c Customer) FavoriteFor(name string) (NotebookFavorite, bool) {

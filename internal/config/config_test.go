@@ -440,3 +440,30 @@ func TestAllWorkspacesUnionsAndDedupes(t *testing.T) {
 		t.Errorf("AllWorkspaces() = %#v, want %#v", got, want)
 	}
 }
+
+func TestOverrideForGUID(t *testing.T) {
+	c := Customer{ReferenceOverrides: []ReferenceOverride{
+		{SourceGUID: "guid-a", ItemType: "Lakehouse", ItemName: "LH_Silver"},
+	}}
+	got, ok := c.OverrideForGUID("guid-a")
+	if !ok || got.ItemName != "LH_Silver" {
+		t.Fatalf("OverrideForGUID(guid-a) = %#v ok=%v", got, ok)
+	}
+	if _, ok := c.OverrideForGUID("missing"); ok {
+		t.Error("expected missing GUID to return ok=false")
+	}
+}
+
+func TestEnvironmentByAlias(t *testing.T) {
+	c := Customer{Environments: []Environment{
+		{Alias: "DEV", Workspaces: []string{"A"}},
+		{Alias: "PROD", Workspaces: []string{"B"}},
+	}}
+	got, ok := c.EnvironmentByAlias("PROD")
+	if !ok || len(got.Workspaces) != 1 || got.Workspaces[0] != "B" {
+		t.Fatalf("EnvironmentByAlias(PROD) = %#v ok=%v", got, ok)
+	}
+	if _, ok := c.EnvironmentByAlias("STAGE"); ok {
+		t.Error("expected unknown alias to return ok=false")
+	}
+}
