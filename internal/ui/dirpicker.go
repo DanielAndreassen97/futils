@@ -2,71 +2,120 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
-	"github.com/charmbracelet/bubbles/filepicker"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// dirPickerModel wraps bubbles' filepicker for directory-only selection,
-// adding futils' esc=back / ctrl+c=quit conventions. Enter selects the
-// highlighted directory; l/→ descends; h/←/backspace goes up.
-type dirPickerModel struct {
-	title    string
-	fp       filepicker.Model
-	selected string
-	goBack   bool
-	quit     bool
+// Sentinel Values for the two non-directory actions in the picker. NUL prefix
+// can't collide with a real folder name.
+const (
+	dirSelectValue = "\x00select"
+	dirUpValue     = "\x00up"
+)
+
+// isGitRepo reports whether dir contains a .git entry. A worktree's .git is a
+// file rather than a directory, so we stat without checking the mode.
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
-func (m dirPickerModel) Init() tea.Cmd { return m.fp.Init() }
-
-func (m dirPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.String() {
-		case "ctrl+c":
-			m.quit = true
-			return m, tea.Quit
-		case "esc":
-			m.goBack = true
-			return m, tea.Quit
+// dirOptions builds the FilterMenu rows for browsing cur: a "use this folder"
+// action (annotated with whether cur is a git repo), an "up one level" action
+// (omitted at the filesystem root), then one row per visible subdirectory.
+// Hidden dirs (dot-prefixed) are skipped to cut noise; git repos are tagged via
+// Meta so the renderer can mark them.
+func dirOptions(cur string) ([]FilterOption, error) {
+	entries, err := os.ReadDir(cur)
+	if err != nil {
+		return nil, err
+	}
+	var subdirs []string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			subdirs = append(subdirs, e.Name())
 		}
 	}
-	var cmd tea.Cmd
-	m.fp, cmd = m.fp.Update(msg)
-	if didSelect, path := m.fp.DidSelectFile(msg); didSelect {
-		m.selected = path
-		return m, tea.Quit
+	sort.Strings(subdirs)
+
+	selLabel := "✓ Use this folder (not a git repo)"
+	if isGitRepo(cur) {
+		selLabel = "✓ Use this folder (git repo)"
 	}
-	return m, cmd
+	opts := []FilterOption{{Label: selLabel, Value: dirSelectValue, Meta: "action"}}
+	if cur != filepath.Dir(cur) {
+		opts = append(opts, FilterOption{Label: "⬆ .. (up one level)", Value: dirUpValue, Meta: "action"})
+	}
+	for _, name := range subdirs {
+		meta := ""
+		if isGitRepo(filepath.Join(cur, name)) {
+			meta = "git"
+		}
+		opts = append(opts, FilterOption{Label: name, Value: name, Meta: meta})
+	}
+	return opts, nil
 }
 
-func (m dirPickerModel) View() string {
-	hint := "↑↓/jk move • →/l open • ←/h up • enter select • esc back"
-	return fmt.Sprintf("  %s\n  %s\n\n%s", m.title, checkboxHintStyle.Render(hint), m.fp.View())
+// nextDir resolves a FilterMenu choice into the next directory and whether the
+// selection is final.
+func nextDir(cur, choice string) (next string, done bool) {
+	switch choice {
+	case dirSelectValue:
+		return cur, true
+	case dirUpValue:
+		return filepath.Dir(cur), false
+	default:
+		return filepath.Join(cur, choice), false
+	}
 }
 
-// PickDirectory shows an in-terminal directory browser rooted at startDir and
-// returns the absolute path the user selects. Returns ErrGoBack on esc and
-// ErrQuit on ctrl+c.
+// dirRowRenderer marks git repos with a ● and dims the action rows. Selection
+// takes precedence with a uniform accent highlight (FilterMenu contract).
+func dirRowRenderer(opt FilterOption, selected bool) string {
+	if selected {
+		return lipgloss.NewStyle().Foreground(AccentColor).Bold(true).Render(opt.Label)
+	}
+	switch opt.Meta {
+	case "git":
+		return lipgloss.NewStyle().Foreground(AccentColor).Render("● ") + opt.Label
+	case "action":
+		return lipgloss.NewStyle().Foreground(DimColor).Render(opt.Label)
+	default:
+		return "  " + opt.Label
+	}
+}
+
+// PickDirectory shows a searchable, navigable directory browser rooted at
+// startDir and returns the absolute path the user selects. Type to filter the
+// current folder's contents; Enter on a subfolder descends into it; choose
+// "Use this folder" to pick the current directory. Git repos are marked with a
+// ● . Returns ErrGoBack on esc, ErrQuit on ctrl+c.
 func PickDirectory(title, startDir string) (string, error) {
-	fp := filepicker.New()
-	fp.CurrentDirectory = startDir
-	fp.DirAllowed = true
-	fp.FileAllowed = false
-	fp.AutoHeight = false
-	fp.SetHeight(14)
-
-	model := dirPickerModel{title: title, fp: fp}
-	final, err := tea.NewProgram(model).Run()
-	if err != nil {
-		return "", err
+	cur := startDir
+	if cur == "" {
+		var err error
+		cur, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine a start directory: %w", err)
+		}
 	}
-	result := final.(dirPickerModel)
-	if result.quit {
-		return "", ErrQuit
+	for {
+		opts, err := dirOptions(cur)
+		if err != nil {
+			return "", err
+		}
+		choice, err := FilterMenu(fmt.Sprintf("%s — %s", title, cur), opts, dirRowRenderer)
+		if err != nil {
+			return "", err // ErrGoBack / ErrQuit propagate
+		}
+		next, done := nextDir(cur, choice)
+		if done {
+			return next, nil
+		}
+		cur = next
 	}
-	if result.goBack {
-		return "", ErrGoBack
-	}
-	return result.selected, nil
 }
