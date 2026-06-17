@@ -37,3 +37,16 @@ func TestItemsInFolderEmptyMatchesAll(t *testing.T) {
 		t.Errorf("empty folder should match all, got %d", len(got))
 	}
 }
+
+func TestTopLevelFolders(t *testing.T) {
+	items := []LocalItem{
+		{FolderPath: "FabricBackEnd/NB_A.Notebook"},
+		{FolderPath: "FabricBackEnd/sub/NB_B.Notebook"},
+		{FolderPath: "FabricFrontEnd/R.Report"},
+		{FolderPath: "RootItem.Notebook"}, // at repo root → skipped
+	}
+	got := TopLevelFolders(items)
+	if len(got) != 2 || got[0] != "FabricBackEnd" || got[1] != "FabricFrontEnd" {
+		t.Errorf("got %v, want [FabricBackEnd FabricFrontEnd]", got)
+	}
+}

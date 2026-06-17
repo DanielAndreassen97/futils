@@ -96,7 +96,25 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
 
-	groups, err := buildDeployGroups(client, token, customer, alias, all, workspaces)
+	mappings, _ := customer.DeployMappings(alias)
+	if len(mappings) == 0 {
+		mappings, err = setupDeployMappings(all, workspaces)
+		if err != nil {
+			return err
+		}
+		if len(mappings) == 0 {
+			return fmt.Errorf("no folder mappings configured for %q — nothing to deploy", alias)
+		}
+		if idx := findEnvIndex(customer, alias); idx >= 0 {
+			customer.Environments[idx].Deployments = mappings
+			if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+				return fmt.Errorf("save deployment mappings: %w", err)
+			}
+			fmt.Println(infoStyle.Render(fmt.Sprintf("Saved %d mapping(s) to env %q.", len(mappings), alias)))
+		}
+	}
+
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces)
 	if err != nil {
 		return err
 	}
@@ -132,29 +150,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
-// buildDeployGroups resolves the chosen environment's folder→workspace mappings
-// into compare groups. If the env has no mappings, it falls back to the Phase-1
-// behavior: pick one target workspace and compare the whole repo against it.
-func buildDeployGroups(client APIClient, token string, customer config.Customer, alias string, all []deploy.LocalItem, workspaces []fabric.Workspace) ([]deployGroup, error) {
-	mappings, _ := customer.DeployMappings(alias)
-
-	if len(mappings) == 0 {
-		fmt.Println(infoStyle.Render(fmt.Sprintf("Env %q has no folder→workspace mappings — deploying the whole repo to one workspace.", alias)))
-		target, err := pickWorkspace("Select target workspace", workspaces, "")
-		if err != nil {
-			return nil, err
-		}
-		deployed, err := client.ListItems(token, target.ID)
-		if err != nil {
-			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
-		}
-		return []deployGroup{{
-			Target:   target,
-			Rows:     deploy.Compare(all, deployed, deployItemScope),
-			Deployed: deployed,
-		}}, nil
-	}
-
+// buildDeployGroups turns each folder→workspace mapping into a compare group:
+// items under that folder vs the mapped workspace's deployed items.
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -174,6 +172,35 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 		})
 	}
 	return groups, nil
+}
+
+// setupDeployMappings asks the user which workspace each repo folder deploys to,
+// using the folders discovered in the repo as the pick-list. Folders the user
+// skips are left unmapped. Returns the chosen mappings (possibly empty).
+func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace) ([]config.DeployMapping, error) {
+	folders := deploy.TopLevelFolders(all)
+	if len(folders) == 0 {
+		return nil, fmt.Errorf("couldn't detect any folders to map in the repo — add mappings via Edit customer instead")
+	}
+	const skipValue = "\x00skip"
+	fmt.Println(infoStyle.Render("Set up which repo folder deploys to which workspace:"))
+	var mappings []config.DeployMapping
+	for _, folder := range folders {
+		opts := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: skipValue}}
+		for _, w := range workspaces {
+			opts = append(opts, ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName})
+		}
+		chosen, err := ui.FilterMenu(fmt.Sprintf("Deploy %s/ to which workspace?", folder), opts, ui.DefaultFilterRowRenderer)
+		if err != nil {
+			return nil, err
+		}
+		if chosen == skipValue {
+			continue
+		}
+		mappings = append(mappings, config.DeployMapping{Folder: folder, Workspace: chosen})
+		fmt.Printf("  %s/ → %s\n", folder, chosen)
+	}
+	return mappings, nil
 }
 
 // runDeploy prints the grouped compare, stops if dryRun, otherwise lets the
