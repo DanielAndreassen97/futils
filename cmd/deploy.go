@@ -162,7 +162,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
-const diffConcurrency = 8
+const diffConcurrency = 4
 
 // buildDeployGroups turns each folder→workspace mapping into a compare group:
 // items under that folder vs the mapped workspace's deployed items. For items

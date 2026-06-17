@@ -9,6 +9,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,9 +36,31 @@ const (
 	// maxResponseSize caps any single response read at 10 MB. Definition
 	// payloads are base64, so this is generous.
 	maxResponseSize = 10 << 20
+
+	maxThrottleRetries = 5
+	maxThrottleWait    = 60 * time.Second
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// throttleDelay computes how long to wait before retrying a 429. It honors the
+// Retry-After header (delta-seconds form) when present and positive, capped at
+// maxThrottleWait; otherwise it falls back to capped exponential backoff
+// (1s, 2s, 4s, …) by attempt number.
+func throttleDelay(retryAfter string, attempt int) time.Duration {
+	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
+		d := time.Duration(secs) * time.Second
+		if d > maxThrottleWait {
+			return maxThrottleWait
+		}
+		return d
+	}
+	d := time.Duration(1<<uint(attempt)) * time.Second
+	if d > maxThrottleWait {
+		return maxThrottleWait
+	}
+	return d
+}
 
 // Workspace is a minimal projection of the Fabric workspace resource.
 type Workspace struct {
@@ -413,44 +436,50 @@ func doGet(token, rawURL string) ([]byte, error) {
 	if parsed, err := neturl.Parse(rawURL); err == nil {
 		rawURL = parsed.String()
 	}
-	body, status, err := doGetOnce(token, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	// On 401, the token captured at flow start has likely expired during
-	// a long-running poll. Mint a fresh one via cached/refresh-grant
-	// (browser auth is NOT triggered here — that requires interactive
-	// terminal context) and retry once.
-	if status == http.StatusUnauthorized {
-		if fresh, ok := retryWithFreshToken(); ok {
-			body, status, err = doGetOnce(fresh, rawURL)
-			if err != nil {
-				return nil, err
+	for attempt := 0; ; attempt++ {
+		body, status, retryAfter, err := doGetOnce(token, rawURL)
+		if err != nil {
+			return nil, err
+		}
+		// On 401, the token captured at flow start has likely expired during
+		// a long-running poll. Mint a fresh one via cached/refresh-grant
+		// (browser auth is NOT triggered here — that requires interactive
+		// terminal context) and retry once.
+		if status == http.StatusUnauthorized {
+			if fresh, ok := retryWithFreshToken(); ok {
+				body, status, retryAfter, err = doGetOnce(fresh, rawURL)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
+		if status == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			time.Sleep(throttleDelay(retryAfter, attempt))
+			continue
+		}
+		if status >= 400 {
+			return nil, fmt.Errorf("GET %s → %d: %s", rawURL, status, string(body))
+		}
+		return body, nil
 	}
-	if status >= 400 {
-		return nil, fmt.Errorf("GET %s → %d: %s", rawURL, status, string(body))
-	}
-	return body, nil
 }
 
-func doGetOnce(token, rawURL string) ([]byte, int, error) {
+func doGetOnce(token, rawURL string) ([]byte, int, string, error) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("invalid URL: %w", err)
+		return nil, 0, "", fmt.Errorf("invalid URL: %w", err)
 	}
 	req.Header = authHeader(token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
+		return nil, resp.StatusCode, "", fmt.Errorf("read body: %w", err)
 	}
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, resp.Header.Get("Retry-After"), nil
 }
 
 // doLRO is the long-running-operation primitive used by CreateItem,
@@ -479,7 +508,7 @@ func doLRO(token, rawURL string, reqBody io.Reader, maxAttempts int) ([]byte, er
 }
 
 func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
-	// Drain the body up front so the 401-retry path can replay it.
+	// Drain the body up front so the 401/429-retry path can replay it.
 	// All current callers pass either nil or a bytes.NewReader, so this
 	// is at worst a no-op copy.
 	var bodyBytes []byte
@@ -490,16 +519,25 @@ func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, er
 			return nil, nil, fmt.Errorf("read request body: %w", err)
 		}
 	}
-	resp, body, err := doPostOnce(token, rawURL, bodyBytes)
-	if err != nil {
-		return resp, body, err
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		if fresh, ok := retryWithFreshToken(); ok {
-			resp, body, err = doPostOnce(fresh, rawURL, bodyBytes)
+	for attempt := 0; ; attempt++ {
+		resp, body, err := doPostOnce(token, rawURL, bodyBytes)
+		if err != nil {
+			return resp, body, err
 		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			if fresh, ok := retryWithFreshToken(); ok {
+				resp, body, err = doPostOnce(fresh, rawURL, bodyBytes)
+				if err != nil {
+					return resp, body, err
+				}
+			}
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			time.Sleep(throttleDelay(resp.Header.Get("Retry-After"), attempt))
+			continue
+		}
+		return resp, body, nil
 	}
-	return resp, body, err
 }
 
 func doPostOnce(token, rawURL string, bodyBytes []byte) (*http.Response, []byte, error) {

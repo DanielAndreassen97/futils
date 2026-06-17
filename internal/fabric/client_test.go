@@ -1,6 +1,27 @@
 package fabric
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestThrottleDelayHonorsRetryAfter(t *testing.T) {
+	if got := throttleDelay("10", 0); got != 10*time.Second {
+		t.Errorf("got %v, want 10s", got)
+	}
+}
+
+func TestThrottleDelayCapsRetryAfter(t *testing.T) {
+	if got := throttleDelay("9999", 0); got != maxThrottleWait {
+		t.Errorf("got %v, want %v", got, maxThrottleWait)
+	}
+}
+
+func TestThrottleDelayBackoffWithoutHeader(t *testing.T) {
+	if got := throttleDelay("", 2); got != 4*time.Second { // 1<<2
+		t.Errorf("got %v, want 4s", got)
+	}
+}
 
 func TestParseLakehouseSqlEndpoint(t *testing.T) {
 	body := []byte(`{
