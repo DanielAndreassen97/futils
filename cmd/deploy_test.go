@@ -12,6 +12,7 @@ type deployFakeAPI struct {
 	workspaces []fabric.Workspace
 	items      map[string][]fabric.Item // workspaceID -> items
 	created    []string                 // displayNames created
+	createdWS  map[string]string        // displayName -> workspaceID
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -34,6 +35,10 @@ func (f *deployFakeAPI) GetItemDefinition(token, ws, id, format string) (*fabric
 }
 func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
 	f.created = append(f.created, name)
+	if f.createdWS == nil {
+		f.createdWS = map[string]string{}
+	}
+	f.createdWS[name] = ws
 	return fabric.Item{ID: name + "-id", DisplayName: name, Type: typ, WorkspaceID: ws}, nil
 }
 func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
@@ -44,20 +49,34 @@ func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string,
 	return "", "", nil
 }
 
+func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed []fabric.Item) deployGroup {
+	return deployGroup{
+		Folder:   folder,
+		Target:   fabric.Workspace{ID: wsID, DisplayName: wsName},
+		Rows:     deploy.Compare(local, deployed, deployItemScope),
+		Deployed: deployed,
+	}
+}
+
 func TestRunDeployHappyPath(t *testing.T) {
+	fake := &deployFakeAPI{}
 	local := []deploy.LocalItem{
 		{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}
-	fake := &deployFakeAPI{
-		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
-		items:      map[string][]fabric.Item{"ws-test": {}},
+	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
+	selectAll := func(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
+		out := map[int][]deploy.LocalItem{}
+		for i, g := range gs {
+			for _, r := range g.Rows {
+				if r.Class != deploy.ClassOrphan {
+					out[i] = append(out[i], r.Local)
+				}
+			}
+		}
+		return out, nil
 	}
-	// Pre-select all rows.
-	selectRows := func(rows []deploy.CompareRow) ([]deploy.CompareRow, error) { return rows, nil }
-
-	res, err := runDeploy(fake, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"},
-		"TEST", local, deploy.Parameters{}, selectRows, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, false, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -66,5 +85,57 @@ func TestRunDeployHappyPath(t *testing.T) {
 	}
 	if len(fake.created) != 1 {
 		t.Errorf("expected 1 create, got %d", len(fake.created))
+	}
+}
+
+func TestRunDeployDryRunDoesNotExecute(t *testing.T) {
+	fake := &deployFakeAPI{}
+	local := []deploy.LocalItem{{Type: "Notebook", DisplayName: "NB_A",
+		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}}
+	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
+	mustNotCall := func([]deployGroup) (map[int][]deploy.LocalItem, error) {
+		t.Fatal("selectItems must not be called in dry-run")
+		return nil, nil
+	}
+	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, true, mustNotCall, func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if res != nil {
+		t.Errorf("dry-run should return nil results, got %+v", res)
+	}
+	if len(fake.created) != 0 {
+		t.Errorf("dry-run must not create, got %d", len(fake.created))
+	}
+}
+
+func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
+	fake := &deployFakeAPI{}
+	backend := []deploy.LocalItem{{Type: "Notebook", DisplayName: "NB_A",
+		Parts: []deploy.Part{{Path: "c.py", Content: []byte("x=1")}}}}
+	frontend := []deploy.LocalItem{{Type: "Report", DisplayName: "R_A",
+		Parts: []deploy.Part{{Path: "definition.pbir", Content: []byte("{}")}}}}
+	groups := []deployGroup{
+		makeGroup("Backend", "ws-config", "Config", backend, nil),
+		makeGroup("Frontend", "ws-semmod", "SemMod", frontend, nil),
+	}
+	selectAll := func(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
+		out := map[int][]deploy.LocalItem{}
+		for i, g := range gs {
+			for _, r := range g.Rows {
+				out[i] = append(out[i], r.Local)
+			}
+		}
+		return out, nil
+	}
+	res, err := runDeploy(fake, "tok", "", groups, deploy.Parameters{}, false, selectAll, func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("want 2 results, got %d", len(res))
+	}
+	if fake.createdWS["NB_A"] != "ws-config" || fake.createdWS["R_A"] != "ws-semmod" {
+		t.Errorf("wrong target workspaces: %v", fake.createdWS)
 	}
 }

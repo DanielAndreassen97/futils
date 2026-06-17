@@ -14,11 +14,22 @@ var deployItemScope = map[string]bool{
 	"Notebook": true, "DataPipeline": true, "SemanticModel": true, "Report": true,
 }
 
+// deployGroup is one folder→workspace mapping resolved for a run: the items
+// discovered under that folder, the target workspace, the compare rows, and the
+// deployed item list (needed by BuildPlan).
+type deployGroup struct {
+	Folder   string
+	Target   fabric.Workspace
+	Rows     []deploy.CompareRow
+	Deployed []fabric.Item
+}
+
 // Deploy is the top-level entry point for the `deploy` subcommand.
 func Deploy(configPath string) error { return DeployWithAPI(configPath, DefaultAPI) }
 
-// DeployWithAPI is the testable entry: pick customer -> resolve source from
-// origin/main -> pick target workspace -> compare -> cherry-pick -> publish.
+// DeployWithAPI: pick customer → resolve source from origin/main → pick
+// environment → resolve its folder→workspace mappings → compare per group →
+// dry-run or cherry-pick+publish.
 func DeployWithAPI(configPath string, client APIClient) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -31,6 +42,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	customerName, customer, err := selectCustomer(cfg)
 	if err != nil {
 		return err
+	}
+	if len(customer.Environments) == 0 {
+		return fmt.Errorf("customer %q has no environments — add one via Edit customer first", customerName)
 	}
 
 	repoPath := customer.RepoPath
@@ -47,14 +61,14 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	}
 	sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s...", src.Ref()))
 	sp.Start()
-	var local []deploy.LocalItem
+	var all []deploy.LocalItem
 	var fetchErr, discErr error
 	func() {
 		defer sp.Stop()
 		if fetchErr = src.Fetch(); fetchErr != nil {
 			return
 		}
-		local, discErr = src.DiscoverItems()
+		all, discErr = src.DiscoverItems()
 	}()
 	if fetchErr != nil {
 		return fetchErr
@@ -62,26 +76,30 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	if discErr != nil {
 		return discErr
 	}
-	if len(local) == 0 {
+	if len(all) == 0 {
 		return fmt.Errorf("no Fabric items found at %s", src.Ref())
+	}
+
+	alias, err := pickEnvironment(customer)
+	if err != nil {
+		return err
 	}
 
 	token, err := client.GetAccessToken(customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
-
 	workspaces, err := client.ListWorkspaces(token)
 	if err != nil {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
-	target, err := pickWorkspace("Select target workspace", workspaces, "")
+
+	groups, err := buildDeployGroups(client, token, customer, alias, all, workspaces)
 	if err != nil {
 		return err
 	}
 
-	// parameter.yml is optional. Only ask for an environment key when it
-	// exists and actually has rules — otherwise the key would go unused.
+	// parameter.yml is optional; only ask for an env key when it has rules.
 	var params deploy.Parameters
 	hasParams := false
 	if raw, perr := src.ReadFile("parameter.yml"); perr == nil {
@@ -91,7 +109,6 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		}
 		hasParams = len(params.FindReplace) > 0 || len(params.KeyValueReplace) > 0 || len(params.SparkPool) > 0
 	}
-
 	env := ""
 	if hasParams {
 		env, err = promptEnvKey()
@@ -100,55 +117,100 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		}
 	}
 
-	results, err := runDeploy(client, token, target, env, local, params, pickDeployRows, ui.Confirm)
+	dryRun, err := pickDeployMode()
 	if err != nil {
 		return err
 	}
+
+	results, err := runDeploy(client, token, env, groups, params, dryRun, pickGroupedRows, ui.Confirm)
 	printDeployResults(results)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
-// runDeploy is the non-interactive core: compare, cherry-pick (via selectRows),
-// confirm, and execute. Separated so tests drive it without bubbletea.
+// buildDeployGroups resolves the chosen environment's folder→workspace mappings
+// into compare groups. If the env has no mappings, it falls back to the Phase-1
+// behavior: pick one target workspace and compare the whole repo against it.
+func buildDeployGroups(client APIClient, token string, customer config.Customer, alias string, all []deploy.LocalItem, workspaces []fabric.Workspace) ([]deployGroup, error) {
+	mappings, _ := customer.DeployMappings(alias)
+
+	if len(mappings) == 0 {
+		fmt.Println(infoStyle.Render(fmt.Sprintf("Env %q has no folder→workspace mappings — deploying the whole repo to one workspace.", alias)))
+		target, err := pickWorkspace("Select target workspace", workspaces, "")
+		if err != nil {
+			return nil, err
+		}
+		deployed, err := client.ListItems(token, target.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
+		}
+		return []deployGroup{{
+			Target:   target,
+			Rows:     deploy.Compare(all, deployed, deployItemScope),
+			Deployed: deployed,
+		}}, nil
+	}
+
+	groups := make([]deployGroup, 0, len(mappings))
+	for _, m := range mappings {
+		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
+		if err != nil {
+			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
+		}
+		items := deploy.ItemsInFolder(all, m.Folder)
+		deployed, err := client.ListItems(token, target.ID)
+		if err != nil {
+			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
+		}
+		groups = append(groups, deployGroup{
+			Folder:   m.Folder,
+			Target:   target,
+			Rows:     deploy.Compare(items, deployed, deployItemScope),
+			Deployed: deployed,
+		})
+	}
+	return groups, nil
+}
+
+// runDeploy prints the grouped compare, stops if dryRun, otherwise lets the
+// user cherry-pick across groups, confirms, and executes each group against its
+// own workspace. Returns the aggregated per-item results.
 func runDeploy(
 	client deploy.FabricClient,
-	token string,
-	target fabric.Workspace,
-	env string,
-	local []deploy.LocalItem,
+	token, env string,
+	groups []deployGroup,
 	params deploy.Parameters,
-	selectRows func([]deploy.CompareRow) ([]deploy.CompareRow, error),
+	dryRun bool,
+	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, error),
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
-	deployed, err := client.ListItems(token, target.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list target items: %w", err)
+	printGroupedCompare(groups)
+	if dryRun {
+		return nil, nil
 	}
-	rows := deploy.Compare(local, deployed, deployItemScope)
 
-	chosen, err := selectRows(rows)
+	selected, err := selectItems(groups)
 	if err != nil {
 		return nil, err
 	}
-	var selected []deploy.LocalItem
-	orphansSkipped := 0
-	for _, r := range chosen {
-		if r.Class == deploy.ClassOrphan {
-			// Phase 1 shows orphans for visibility but cannot delete them.
-			orphansSkipped++
-			continue
-		}
-		selected = append(selected, r.Local)
+	total := 0
+	for _, items := range selected {
+		total += len(items)
 	}
-	if orphansSkipped > 0 {
-		fmt.Printf("Note: %d orphaned item(s) skipped — deleting orphans isn't supported yet.\n", orphansSkipped)
-	}
-	if len(selected) == 0 {
+	if total == 0 {
 		fmt.Println("Nothing selected to deploy.")
 		return nil, nil
 	}
 
-	ok, err := confirm(fmt.Sprintf("Deploy %d item(s) to %s?", len(selected), target.DisplayName))
+	wsCount := 0
+	for _, items := range selected {
+		if len(items) > 0 {
+			wsCount++
+		}
+	}
+	ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s)?", total, wsCount))
 	if err != nil {
 		return nil, err
 	}
@@ -157,37 +219,117 @@ func runDeploy(
 		return nil, nil
 	}
 
-	plan := deploy.BuildPlan(selected, deployed)
-	sp := ui.NewSpinner("Publishing...")
-	sp.Start()
-	results, err := deploy.Execute(client, token, target, env, plan, params)
-	sp.Stop()
-	return results, err
+	var allResults []deploy.Result
+	for i, g := range groups {
+		items := selected[i]
+		if len(items) == 0 {
+			continue
+		}
+		plan := deploy.BuildPlan(items, g.Deployed)
+		sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
+		sp.Start()
+		results, execErr := deploy.Execute(client, token, g.Target, env, plan, params)
+		sp.Stop()
+		allResults = append(allResults, results...)
+		if execErr != nil {
+			return allResults, execErr
+		}
+	}
+	return allResults, nil
 }
 
-// pickDeployRows shows the compare result as a checkbox list, pre-checking
-// New and Exists rows (orphans are shown but unchecked). Returns chosen rows.
-func pickDeployRows(rows []deploy.CompareRow) ([]deploy.CompareRow, error) {
-	labels := make([]string, len(rows))
-	initial := make([]string, 0, len(rows))
-	byLabel := make(map[string]deploy.CompareRow, len(rows))
-	for i, r := range rows {
-		label := fmt.Sprintf("%-7s %-14s %s", r.Class, r.ItemType(), r.Name())
-		labels[i] = label
-		byLabel[label] = r
-		if r.Class != deploy.ClassOrphan {
+// pickEnvironment shows the customer's environment aliases as a numbered menu.
+func pickEnvironment(customer config.Customer) (string, error) {
+	options := make([]ui.MenuOption, len(customer.Environments))
+	for i, e := range customer.Environments {
+		label := e.Alias
+		if len(e.Deployments) > 0 {
+			label = fmt.Sprintf("%s (%d mapping%s)", e.Alias, len(e.Deployments), pluralS(len(e.Deployments)))
+		}
+		options[i] = ui.MenuOption{Label: label, Value: e.Alias}
+	}
+	return ui.NumberMenu("Select environment to deploy to", options)
+}
+
+// pickDeployMode asks whether to compare-only (dry run) or compare-and-deploy.
+func pickDeployMode() (bool, error) {
+	choice, err := ui.NumberMenu("What would you like to do?", []ui.MenuOption{
+		{Label: "Compare only (dry run)", Value: "dry"},
+		{Label: "Compare and deploy", Value: "deploy"},
+	})
+	if err != nil {
+		return false, err
+	}
+	return choice == "dry", nil
+}
+
+// resolveWorkspaceByName finds a workspace by display name among those the user
+// can see, with an actionable error if it's missing.
+func resolveWorkspaceByName(workspaces []fabric.Workspace, name string) (fabric.Workspace, error) {
+	for _, w := range workspaces {
+		if w.DisplayName == name {
+			return w, nil
+		}
+	}
+	return fabric.Workspace{}, fmt.Errorf("workspace %q not found (check spelling and your access)", name)
+}
+
+// pickGroupedRows shows all groups' New/Exists rows as one checkbox list, each
+// label prefixed with its target workspace. Returns the chosen LocalItems keyed
+// by group index. Orphans are shown in the printed compare but excluded here —
+// Phase 1 cannot deploy or delete them.
+func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, error) {
+	type entry struct {
+		gi   int
+		item deploy.LocalItem
+	}
+	var labels []string
+	var initial []string
+	byLabel := map[string]entry{}
+	for gi, g := range groups {
+		for _, r := range g.Rows {
+			if r.Class == deploy.ClassOrphan {
+				continue
+			}
+			label := fmt.Sprintf("%-22s %-7s %-14s %s", g.Target.DisplayName, r.Class, r.ItemType(), r.Name())
+			labels = append(labels, label)
+			byLabel[label] = entry{gi, r.Local}
 			initial = append(initial, label)
 		}
+	}
+	if len(labels) == 0 {
+		return map[int][]deploy.LocalItem{}, nil
 	}
 	chosen, err := ui.MultiSelect("Select items to deploy", labels, initial)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]deploy.CompareRow, 0, len(chosen))
+	out := map[int][]deploy.LocalItem{}
 	for _, l := range chosen {
-		out = append(out, byLabel[l])
+		e := byLabel[l]
+		out[e.gi] = append(out[e.gi], e.item)
 	}
 	return out, nil
+}
+
+// printGroupedCompare renders the compare result grouped by target workspace.
+func printGroupedCompare(groups []deployGroup) {
+	fmt.Println()
+	for _, g := range groups {
+		header := g.Target.DisplayName
+		if g.Folder != "" {
+			header = g.Folder + "/ → " + g.Target.DisplayName
+		}
+		fmt.Println(infoStyle.Render(header))
+		if len(g.Rows) == 0 {
+			fmt.Println("  (no items)")
+			continue
+		}
+		for _, r := range g.Rows {
+			fmt.Printf("  %-7s %-14s %s\n", r.Class, r.ItemType(), r.Name())
+		}
+	}
+	fmt.Println()
 }
 
 // promptEnvKey asks for the parameter.yml environment key (e.g. TEST, PROD).
