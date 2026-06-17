@@ -375,3 +375,52 @@ func TestLoadMigratesSingleWorkspaceShape(t *testing.T) {
 		t.Errorf("environments = %#v, want %#v", cfg.Customers["Acme"].Environments, want)
 	}
 }
+
+func TestReferenceOverridesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:        []Environment{{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}}},
+			BaselineEnvironment: "DEV",
+			ReferenceOverrides: []ReferenceOverride{
+				{SourceGUID: "09bc360d-1111-2222-3333-444455556666", ItemType: "Lakehouse", ItemName: "LH_Silver", Note: "cross-workspace"},
+			},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := out.Customers["acme"]
+	if c.BaselineEnvironment != "DEV" {
+		t.Errorf("BaselineEnvironment = %q, want DEV", c.BaselineEnvironment)
+	}
+	if len(c.ReferenceOverrides) != 1 || c.ReferenceOverrides[0].ItemName != "LH_Silver" {
+		t.Fatalf("ReferenceOverrides = %#v", c.ReferenceOverrides)
+	}
+	if c.ReferenceOverrides[0].SourceGUID != "09bc360d-1111-2222-3333-444455556666" {
+		t.Errorf("SourceGUID = %q", c.ReferenceOverrides[0].SourceGUID)
+	}
+}
+
+func TestReferenceOverridesAbsentLegacyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := out.Customers["acme"]
+	if c.BaselineEnvironment != "" {
+		t.Errorf("expected empty BaselineEnvironment, got %q", c.BaselineEnvironment)
+	}
+	if len(c.ReferenceOverrides) != 0 {
+		t.Errorf("expected no overrides, got %#v", c.ReferenceOverrides)
+	}
+}

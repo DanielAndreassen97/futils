@@ -21,6 +21,17 @@ type DeployMapping struct {
 	Workspace string `json:"workspace"`
 }
 
+// ReferenceOverride maps a baseline-environment GUID baked in git to a target
+// item resolved by name. Unlike parameter.yml's per-env blocks it is
+// env-agnostic: the same entry resolves correctly for TEST and PROD because
+// ItemName is looked up in whichever target env the deploy targets.
+type ReferenceOverride struct {
+	SourceGUID string `json:"source_guid"`
+	ItemType   string `json:"item_type"`
+	ItemName   string `json:"item_name"`
+	Note       string `json:"note,omitempty"`
+}
+
 // Environment pairs a user-chosen alias (menu label) with one or more
 // Fabric workspaces it resolves to. Multiple workspaces per alias is the
 // common case for real Fabric deployments — e.g. a "DEV" environment
@@ -37,9 +48,11 @@ type Environment struct {
 // A customer with zero Environments is valid — they just can't run
 // notebooks until they add at least one via `futils edit`.
 type Customer struct {
-	Environments []Environment      `json:"environments"`
-	Favorites    []NotebookFavorite `json:"favorites,omitempty"`
-	RepoPath     string             `json:"repo_path,omitempty"`
+	Environments        []Environment       `json:"environments"`
+	Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
+	RepoPath            string              `json:"repo_path,omitempty"`
+	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
+	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -112,16 +125,20 @@ func (c Customer) FavoriteNames() []string {
 // the current shape and legacy fields disappear.
 func (c *Customer) UnmarshalJSON(data []byte) error {
 	aux := struct {
-		WorkspacePattern string             `json:"workspace_pattern"`
-		Environments     []json.RawMessage  `json:"environments"`
-		Favorites        []NotebookFavorite `json:"favorites,omitempty"`
-		RepoPath         string             `json:"repo_path,omitempty"`
+		WorkspacePattern    string              `json:"workspace_pattern"`
+		Environments        []json.RawMessage   `json:"environments"`
+		Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
+		RepoPath            string              `json:"repo_path,omitempty"`
+		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
+		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	c.Favorites = aux.Favorites
 	c.RepoPath = aux.RepoPath
+	c.BaselineEnvironment = aux.BaselineEnvironment
+	c.ReferenceOverrides = aux.ReferenceOverrides
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
