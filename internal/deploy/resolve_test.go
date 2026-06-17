@@ -93,3 +93,11 @@ func TestResolvePassThrough(t *testing.T) {
 		t.Fatalf("got %q err %v", got, err)
 	}
 }
+
+func TestResolveCrossWorkspaceItemId(t *testing.T) {
+	r := newResolverFixture()
+	got, err := r.Resolve("$workspace.DP - TEST - Data.$items.Lakehouse.LH_Silver.$id")
+	if err != nil || got != "lh-2" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+}

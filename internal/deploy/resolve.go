@@ -36,20 +36,31 @@ func (r *Resolver) Resolve(value string) (string, error) {
 	switch {
 	case value == "$workspace.$id":
 		return r.target.ID, nil
+	case strings.HasPrefix(value, "$workspace.") && strings.Contains(value, ".$items."):
+		// $workspace.<name>.$items.<Type>.<Name>.<attr>
+		rest := strings.TrimPrefix(value, "$workspace.")
+		i := strings.Index(rest, ".$items.")
+		wsName := rest[:i]
+		itemExpr := rest[i+1:] // "$items.<Type>.<Name>.<attr>"
+		wsID, err := r.workspaceID(wsName)
+		if err != nil {
+			return "", err
+		}
+		return r.resolveItemIn(wsID, itemExpr)
 	case strings.HasPrefix(value, "$workspace.") && strings.HasSuffix(value, ".$id"):
 		name := strings.TrimSuffix(strings.TrimPrefix(value, "$workspace."), ".$id")
 		return r.workspaceID(name)
 	case strings.HasPrefix(value, "$items."):
-		return r.resolveItem(value)
+		return r.resolveItemIn(r.target.ID, value)
 	default:
-		return "", fmt.Errorf("unsupported dynamic variable %q (Phase 1 supports $workspace/$items)", value)
+		return "", fmt.Errorf("unsupported dynamic variable %q (supports $workspace/$items)", value)
 	}
 }
 
-// resolveItem handles "$items.<Type>.<Name>.<attr>" where attr is one of
-// $id, $sqlendpoint, $sqlendpointid. Name may contain dots, so we split on the
-// known trailing attribute, not greedily.
-func (r *Resolver) resolveItem(value string) (string, error) {
+// resolveItemIn handles "$items.<Type>.<Name>.<attr>" against a specific
+// workspace. attr is $id, $sqlendpoint, or $sqlendpointid. Name may contain
+// dots, so the known trailing attribute is stripped before splitting the type.
+func (r *Resolver) resolveItemIn(wsID, value string) (string, error) {
 	body := strings.TrimPrefix(value, "$items.")
 	var attr string
 	for _, a := range []string{".$sqlendpointid", ".$sqlendpoint", ".$id"} {
@@ -62,14 +73,13 @@ func (r *Resolver) resolveItem(value string) (string, error) {
 	if attr == "" {
 		return "", fmt.Errorf("dynamic variable %q has no recognised attribute", value)
 	}
-	// body is now "<Type>.<Name>"; Type has no dots, Name may.
 	dot := strings.Index(body, ".")
 	if dot < 0 {
 		return "", fmt.Errorf("dynamic variable %q missing item name", value)
 	}
 	itemType, itemName := body[:dot], body[dot+1:]
 
-	item, err := r.findItem(r.target.ID, itemType, itemName)
+	item, err := r.findItem(wsID, itemType, itemName)
 	if err != nil {
 		return "", err
 	}
@@ -77,7 +87,7 @@ func (r *Resolver) resolveItem(value string) (string, error) {
 	case "id":
 		return item.ID, nil
 	case "sqlendpoint", "sqlendpointid":
-		host, id, err := r.client.GetLakehouseSqlEndpoint(r.token, r.target.ID, item.ID)
+		host, id, err := r.client.GetLakehouseSqlEndpoint(r.token, wsID, item.ID)
 		if err != nil {
 			return "", fmt.Errorf("sql endpoint for %s: %w", itemName, err)
 		}
