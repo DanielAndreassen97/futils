@@ -303,6 +303,51 @@ func TestCustomerWithoutRepoPathLoads(t *testing.T) {
 	}
 }
 
+func TestDeploymentsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {Environments: []Environment{{
+			Alias:      "DEV",
+			Workspaces: []string{"DP - DEV - Config", "DP - DEV - SemMod"},
+			Deployments: []DeployMapping{
+				{Folder: "Backend", Workspace: "DP - DEV - Config"},
+				{Folder: "Frontend", Workspace: "DP - DEV - SemMod"},
+			},
+		}}},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	maps, ok := out.Customers["acme"].DeployMappings("DEV")
+	if !ok || len(maps) != 2 {
+		t.Fatalf("DeployMappings = %v ok=%v", maps, ok)
+	}
+	if maps[0].Folder != "Backend" || maps[0].Workspace != "DP - DEV - Config" {
+		t.Errorf("maps[0] = %+v", maps[0])
+	}
+}
+
+func TestDeploymentsAbsentLegacyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	maps, ok := out.Customers["acme"].DeployMappings("DEV")
+	if !ok || len(maps) != 0 {
+		t.Errorf("expected env found with no deployments, got %v ok=%v", maps, ok)
+	}
+}
+
 func TestLoadMigratesSingleWorkspaceShape(t *testing.T) {
 	legacy := `{
 		"customers": {

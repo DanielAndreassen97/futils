@@ -13,6 +13,14 @@ import (
 	"strings"
 )
 
+// DeployMapping ties a repo subfolder to the workspace its items deploy to,
+// for one environment. Used only by the deploy flow; absent for customers
+// that don't deploy. The folder is repo-relative (e.g. "Backend").
+type DeployMapping struct {
+	Folder    string `json:"folder"`
+	Workspace string `json:"workspace"`
+}
+
 // Environment pairs a user-chosen alias (menu label) with one or more
 // Fabric workspaces it resolves to. Multiple workspaces per alias is the
 // common case for real Fabric deployments — e.g. a "DEV" environment
@@ -20,8 +28,9 @@ import (
 // workspace (semantic models). Run / Refresh aggregate items across
 // every workspace under the chosen alias.
 type Environment struct {
-	Alias      string   `json:"alias"`
-	Workspaces []string `json:"workspaces"`
+	Alias       string          `json:"alias"`
+	Workspaces  []string        `json:"workspaces"`
+	Deployments []DeployMapping `json:"deployments,omitempty"`
 }
 
 // Customer groups one tenant's environments and notebook favourites.
@@ -50,6 +59,18 @@ func (c Customer) Workspaces(alias string) ([]string, bool) {
 	for _, e := range c.Environments {
 		if e.Alias == alias {
 			return e.Workspaces, true
+		}
+	}
+	return nil, false
+}
+
+// DeployMappings returns the folder→workspace mappings for an alias, plus a
+// bool indicating whether the alias was found. An env with no mappings returns
+// (nil, true).
+func (c Customer) DeployMappings(alias string) ([]DeployMapping, bool) {
+	for _, e := range c.Environments {
+		if e.Alias == alias {
+			return e.Deployments, true
 		}
 	}
 	return nil, false
@@ -128,14 +149,15 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	// Decode both fields; whichever is populated wins.
 	for _, raw := range aux.Environments {
 		var entry struct {
-			Alias         string   `json:"alias"`
-			WorkspaceName string   `json:"workspace_name"`
-			Workspaces    []string `json:"workspaces"`
+			Alias         string          `json:"alias"`
+			WorkspaceName string          `json:"workspace_name"`
+			Workspaces    []string        `json:"workspaces"`
+			Deployments   []DeployMapping `json:"deployments"`
 		}
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return fmt.Errorf("environments entry: %w", err)
 		}
-		env := Environment{Alias: entry.Alias, Workspaces: entry.Workspaces}
+		env := Environment{Alias: entry.Alias, Workspaces: entry.Workspaces, Deployments: entry.Deployments}
 		if len(env.Workspaces) == 0 && entry.WorkspaceName != "" {
 			env.Workspaces = []string{entry.WorkspaceName}
 		}
