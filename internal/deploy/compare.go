@@ -5,9 +5,11 @@ import "github.com/DanielAndreassen97/futils/internal/fabric"
 type Class int
 
 const (
-	ClassNew    Class = iota // local item not present in target
-	ClassExists              // local item present in target (will update)
-	ClassOrphan              // target item with no local counterpart
+	ClassNew       Class = iota // local item not present in target
+	ClassExists                 // local item present in target (pre-content-diff / unverified)
+	ClassOrphan                 // target item with no local counterpart
+	ClassChanged                // exists in target and content differs
+	ClassUnchanged              // exists in target and content matches
 )
 
 func (c Class) String() string {
@@ -18,6 +20,10 @@ func (c Class) String() string {
 		return "Exists"
 	case ClassOrphan:
 		return "Orphan"
+	case ClassChanged:
+		return "Changed"
+	case ClassUnchanged:
+		return "Unchanged"
 	}
 	return "?"
 }

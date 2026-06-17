@@ -84,16 +84,15 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 // buildDefinition applies logicalId + parameter substitution to each text part
 // and base64-encodes them into a fabric.Definition.
 func buildDefinition(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver) (*fabric.Definition, error) {
+	parts, err := SubstituteParts(item, env, params, idMap, resolver)
+	if err != nil {
+		return nil, err
+	}
 	def := &fabric.Definition{}
-	for _, part := range item.Parts {
-		content := ReplaceLogicalIds(part.Content, idMap)
-		substituted, err := params.ApplyFindReplace(env, item, part.Path, content, resolver.Resolve)
-		if err != nil {
-			return nil, fmt.Errorf("part %s: %w", part.Path, err)
-		}
+	for _, part := range item.Parts { // preserve discovery order
 		def.Parts = append(def.Parts, fabric.DefinitionPart{
 			Path:        part.Path,
-			Payload:     base64.StdEncoding.EncodeToString(substituted),
+			Payload:     base64.StdEncoding.EncodeToString(parts[part.Path]),
 			PayloadType: "InlineBase64",
 		})
 	}
