@@ -16,10 +16,12 @@ const (
 	editActionAddEnv     = "__add_env"
 	editActionEditEnv    = "__edit_env:"
 	editActionBack       = "__back"
-	envActionAddWS       = "__add_ws"
-	envActionRemoveWS    = "__remove_ws"
-	envActionRenameAlias = "__rename_alias"
-	envActionDeleteEnv   = "__delete_env"
+	envActionAddWS        = "__add_ws"
+	envActionRemoveWS     = "__remove_ws"
+	envActionRenameAlias  = "__rename_alias"
+	envActionDeleteEnv    = "__delete_env"
+	envActionAddDeploy    = "__add_deploy"
+	envActionRemoveDeploy = "__remove_deploy"
 )
 
 // Edit is the top-level customer editing flow. Drills down into a
@@ -146,6 +148,12 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				fmt.Printf("  • %s\n", ws)
 			}
 		}
+		if len(env.Deployments) > 0 {
+			fmt.Println("  Deployments:")
+			for _, d := range env.Deployments {
+				fmt.Printf("    %s/ → %s\n", d.Folder, d.Workspace)
+			}
+		}
 		fmt.Println()
 
 		options := []ui.MenuOption{
@@ -153,6 +161,8 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 			{Label: "Remove workspace", Value: envActionRemoveWS},
 			{Label: "Rename alias", Value: envActionRenameAlias},
 			{Label: "Delete this environment", Value: envActionDeleteEnv},
+			{Label: "Add deployment mapping", Value: envActionAddDeploy},
+			{Label: "Remove deployment mapping", Value: envActionRemoveDeploy},
 			{Label: "Back", Value: editActionBack},
 		}
 		action, err := ui.NumberMenu("Action", options)
@@ -176,6 +186,10 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 			if err == nil {
 				alias = newAlias
 			}
+		case envActionAddDeploy:
+			err = addDeploymentMapping(configPath, customerName, alias, customer)
+		case envActionRemoveDeploy:
+			err = removeDeploymentMapping(configPath, customerName, alias, customer)
 		case envActionDeleteEnv:
 			ok, derr := ui.Confirm(fmt.Sprintf("Delete env %q and all its workspaces?", alias))
 			if derr != nil {
@@ -429,5 +443,82 @@ func validateNewAlias(alias string, existing []config.Environment) error {
 			return fmt.Errorf("alias %q already exists", alias)
 		}
 	}
+	return nil
+}
+
+// addDeploymentMapping prompts for a repo subfolder and the workspace its items
+// should deploy to (chosen from the env's configured workspaces), then appends
+// a DeployMapping to the environment.
+func addDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
+	idx := findEnvIndex(customer, alias)
+	if idx < 0 {
+		return fmt.Errorf("env %q not found", alias)
+	}
+	env := customer.Environments[idx]
+	if len(env.Workspaces) == 0 {
+		fmt.Println("Add at least one workspace to this environment before mapping a folder to it.")
+		return nil
+	}
+
+	var folder string
+	if err := runFormStep(huh.NewInput().Title("Repo subfolder (e.g. Backend)").Value(&folder)); err != nil {
+		return err
+	}
+	folder = strings.Trim(strings.TrimSpace(folder), "/")
+	if folder == "" {
+		return fmt.Errorf("folder required")
+	}
+
+	wsOptions := make([]ui.MenuOption, len(env.Workspaces))
+	for i, ws := range env.Workspaces {
+		wsOptions[i] = ui.MenuOption{Label: ws, Value: ws}
+	}
+	workspace, err := ui.NumberMenu("Deploy this folder to which workspace?", wsOptions)
+	if err != nil {
+		return err
+	}
+
+	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments,
+		config.DeployMapping{Folder: folder, Workspace: workspace})
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+	return nil
+}
+
+// removeDeploymentMapping lets the user drop a folder→workspace mapping from an
+// environment.
+func removeDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
+	idx := findEnvIndex(customer, alias)
+	if idx < 0 {
+		return fmt.Errorf("env %q not found", alias)
+	}
+	env := customer.Environments[idx]
+	if len(env.Deployments) == 0 {
+		fmt.Println("No deployment mappings to remove.")
+		return nil
+	}
+
+	options := make([]ui.MenuOption, len(env.Deployments))
+	for i, d := range env.Deployments {
+		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s/ → %s", d.Folder, d.Workspace), Value: fmt.Sprintf("%d", i)}
+	}
+	chosen, err := ui.NumberMenu("Select mapping to remove", options)
+	if err != nil {
+		return err
+	}
+
+	var keep []config.DeployMapping
+	for i, d := range env.Deployments {
+		if fmt.Sprintf("%d", i) != chosen {
+			keep = append(keep, d)
+		}
+	}
+	customer.Environments[idx].Deployments = keep
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	fmt.Printf("Removed mapping from env %q\n", alias)
 	return nil
 }
