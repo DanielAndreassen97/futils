@@ -3,7 +3,25 @@ package cmd
 import (
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
+	"github.com/DanielAndreassen97/futils/internal/ui"
 )
+
+// refActionOptions builds the action menu for one unresolved reference, ordered
+// by its Reason: when the item is likely just in an unregistered workspace
+// (not-in-target / ambiguous), lead with "register"; for name-unknown lead with
+// "override" since we have no name to search by. All actions remain available.
+func refActionOptions(ref deploy.UnresolvedRef) []ui.MenuOption {
+	register := ui.MenuOption{Label: "Register the workspace it lives in (resolve by name)", Value: "register"}
+	override := ui.MenuOption{Label: "Map it to a specific item (pick workspace → item)", Value: "override"}
+	ignore := ui.MenuOption{Label: "Ignore (leave as-is, don't ask again)", Value: "ignore"}
+	skip := ui.MenuOption{Label: "Skip for now", Value: "skip"}
+	switch ref.Reason {
+	case deploy.ReasonNotInTarget, deploy.ReasonAmbiguous:
+		return []ui.MenuOption{register, override, ignore, skip}
+	default: // ReasonNameUnknown or unset
+		return []ui.MenuOption{override, register, ignore, skip}
+	}
+}
 
 // RefAction is one user choice for resolving an unresolved reference.
 type RefAction struct {

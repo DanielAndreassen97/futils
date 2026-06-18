@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -167,6 +169,20 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	printDeployResults(results)
 	if err != nil {
 		return err
+	}
+	if dryRun {
+		var unresolved []deploy.UnresolvedRef
+		for _, g := range groups {
+			unresolved = append(unresolved, g.Unresolved...)
+		}
+		if len(unresolved) > 0 {
+			ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved)))
+			if cerr == nil && ok {
+				if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved); merr != nil {
+					fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -610,6 +626,127 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 		return nil, fmt.Errorf("invalid selection %q", choice)
 	}
 	return []config.DeployMapping{mappings[idx]}, nil
+}
+
+// mapUnresolvedInteractive walks the user through each unresolved reference,
+// offering register / override / ignore / skip, and persists the chosen
+// mutations. Returns after saving; the user re-runs the deploy to apply.
+func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef) error {
+	changed := false
+	for _, ref := range refs {
+		short := ref.GUID
+		if len(short) > 8 {
+			short = short[:8] + "…"
+		}
+		fmt.Printf("\n%s in %s — looks like a %s (%s)\n", short, ref.ItemName, ref.ItemType, ref.Location)
+		choice, err := ui.NumberMenu("How do you want to resolve it?", refActionOptions(ref))
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				break
+			}
+			return err
+		}
+		var action RefAction
+		switch choice {
+		case "skip":
+			continue
+		case "ignore":
+			action = RefAction{Kind: "ignore"}
+		case "register":
+			ws, env, perr := pickWorkspaceAndEnv(client, token, customer)
+			if perr != nil {
+				if errors.Is(perr, ui.ErrGoBack) {
+					continue
+				}
+				return perr
+			}
+			action = RefAction{Kind: "register", EnvAlias: env, Workspace: ws}
+		case "override":
+			itemType, itemName, perr := pickTargetItem(client, token, customer, ref.ItemType)
+			if perr != nil {
+				if errors.Is(perr, ui.ErrGoBack) {
+					continue
+				}
+				return perr
+			}
+			action = RefAction{Kind: "override", ItemType: itemType, ItemName: itemName}
+		}
+		customer = applyRefAction(customer, ref, action)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save reference mappings: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved. Re-run the deploy to apply the new mappings."))
+	return nil
+}
+
+// pickWorkspaceAndEnv lets the user pick any visible workspace and which env to
+// register it on, for the "register reference workspace" action.
+func pickWorkspaceAndEnv(client APIClient, token string, customer config.Customer) (workspace, envAlias string, err error) {
+	workspaces, err := client.ListWorkspaces(token)
+	if err != nil {
+		return "", "", fmt.Errorf("list workspaces: %w", err)
+	}
+	wsOpts := make([]ui.FilterOption, 0, len(workspaces))
+	for _, w := range workspaces {
+		wsOpts = append(wsOpts, ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName})
+	}
+	workspace, err = ui.FilterMenu("Which workspace does it live in?", wsOpts, ui.DefaultFilterRowRenderer)
+	if err != nil {
+		return "", "", err
+	}
+	envOpts := make([]ui.MenuOption, len(customer.Environments))
+	for i, e := range customer.Environments {
+		envOpts[i] = ui.MenuOption{Label: e.Alias, Value: e.Alias}
+	}
+	envAlias, err = ui.NumberMenu("Register it on which environment?", envOpts)
+	if err != nil {
+		return "", "", err
+	}
+	return workspace, envAlias, nil
+}
+
+// pickTargetItem lets the user pick a target workspace then an item of the
+// given type in it, for the "override" action. Returns (itemType, itemName).
+func pickTargetItem(client APIClient, token string, customer config.Customer, itemType string) (string, string, error) {
+	workspaces, err := client.ListWorkspaces(token)
+	if err != nil {
+		return "", "", fmt.Errorf("list workspaces: %w", err)
+	}
+	wsOpts := make([]ui.FilterOption, 0, len(workspaces))
+	wsByName := map[string]fabric.Workspace{}
+	for _, w := range workspaces {
+		wsOpts = append(wsOpts, ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName})
+		wsByName[w.DisplayName] = w
+	}
+	wsName, err := ui.FilterMenu("Pick the target workspace", wsOpts, ui.DefaultFilterRowRenderer)
+	if err != nil {
+		return "", "", err
+	}
+	items, err := client.ListItems(token, wsByName[wsName].ID)
+	if err != nil {
+		return "", "", fmt.Errorf("list items: %w", err)
+	}
+	itemOpts := make([]ui.FilterOption, 0, len(items))
+	for _, it := range items {
+		if itemType == "" || it.Type == itemType {
+			itemOpts = append(itemOpts, ui.FilterOption{Label: fmt.Sprintf("%s (%s)", it.DisplayName, it.Type), Value: it.DisplayName + "\x00" + it.Type})
+		}
+	}
+	if len(itemOpts) == 0 {
+		fmt.Println("No items of that type in the chosen workspace.")
+		return "", "", ui.ErrGoBack
+	}
+	chosen, err := ui.FilterMenu("Pick the item to map to", itemOpts, ui.DefaultFilterRowRenderer)
+	if err != nil {
+		return "", "", err
+	}
+	parts := strings.SplitN(chosen, "\x00", 2)
+	return parts[1], parts[0], nil // itemType, itemName
 }
 
 func printDeployResults(results []deploy.Result) {

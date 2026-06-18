@@ -5,6 +5,7 @@ import (
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
+	"github.com/DanielAndreassen97/futils/internal/ui"
 )
 
 func TestApplyRefActionOverride(t *testing.T) {
@@ -60,6 +61,30 @@ func TestApplyRefActionRegister(t *testing.T) {
 	if len(out.Environments[0].Workspaces) != 2 {
 		t.Errorf("register not idempotent: %#v", out.Environments[0].Workspaces)
 	}
+}
+
+func TestRefActionOptionsByReason(t *testing.T) {
+	// name-unknown: no "register" suggestion first (we don't know the name to
+	// search by) — override/ignore/skip only, and "register" still available.
+	nameUnknown := refActionOptions(deploy.UnresolvedRef{GUID: "g", Reason: deploy.ReasonNameUnknown})
+	if !containsValue(nameUnknown, "override") || !containsValue(nameUnknown, "ignore") || !containsValue(nameUnknown, "skip") {
+		t.Fatalf("name-unknown options missing core actions: %#v", nameUnknown)
+	}
+	// not-in-target: "register" should be offered (the item likely lives in an
+	// unregistered workspace) and listed first.
+	notInTarget := refActionOptions(deploy.UnresolvedRef{GUID: "g", Reason: deploy.ReasonNotInTarget})
+	if notInTarget[0].Value != "register" {
+		t.Errorf("not-in-target should lead with register, got %#v", notInTarget)
+	}
+}
+
+func containsValue(opts []ui.MenuOption, v string) bool {
+	for _, o := range opts {
+		if o.Value == v {
+			return true
+		}
+	}
+	return false
 }
 
 func TestApplyRefActionSkipNoChange(t *testing.T) {
