@@ -115,7 +115,7 @@ func TestRebindSQLSourceUnresolved(t *testing.T) {
 	}
 }
 
-func TestRebindSemanticModelBothVariants(t *testing.T) {
+func TestRebindSemanticModelSQLVariant(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	// SQL variant only (this fixture has no data workspace for OneLake).
 	in := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id"))
