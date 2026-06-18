@@ -69,7 +69,7 @@ func TestRebindDefaultLakehouseByName(t *testing.T) {
 	if !strings.Contains(s, "test-config-lh") {
 		t.Errorf("default_lakehouse not rebound to target GUID:\n%s", s)
 	}
-	if !strings.Contains(s, "test-config") || strings.Contains(s, devConfigWS) {
+	if !strings.Contains(s, "\"test-config\"") || strings.Contains(s, devConfigWS) {
 		t.Errorf("default_lakehouse_workspace_id not rebound to target workspace:\n%s", s)
 	}
 	if strings.Contains(s, devConfigLH) {
@@ -108,8 +108,8 @@ func TestRebindUnresolvedKnownLakehouse(t *testing.T) {
 }
 
 func TestRebindOverrideTakesPrecedence(t *testing.T) {
-	// Override maps the unknown baseline GUID directly to LH_Gold by name; add
-	// LH_Gold to the target so the override resolves.
+	// Override maps the unknown baseline GUID directly to LH_Silver by name; add
+	// LH_Silver to the target so the override resolves.
 	overrides := map[string]Override{
 		"99999999-9999-9999-9999-999999999999": {ItemType: "Lakehouse", ItemName: "LH_Silver"},
 	}
@@ -122,6 +122,28 @@ func TestRebindOverrideTakesPrecedence(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "test-silver-lh") || strings.Contains(string(out), unknown) {
 		t.Errorf("override not applied:\n%s", string(out))
+	}
+}
+
+func TestRebindOverrideOnDefaultLakehouse(t *testing.T) {
+	// Override the DEV default-lakehouse GUID directly to a different target
+	// lakehouse by name — proves the override beats the stored
+	// default_lakehouse_name zero-config path.
+	overrides := map[string]Override{
+		devConfigLH: {ItemType: "Lakehouse", ItemName: "LH_Silver"},
+	}
+	rb := newRebindFixture(t, overrides)
+	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
+	out, unresolved := rb.RebindNotebookLakehouses(in)
+	if len(unresolved) != 0 {
+		t.Fatalf("expected no unresolved, got %#v", unresolved)
+	}
+	s := string(out)
+	if !strings.Contains(s, "test-silver-lh") {
+		t.Errorf("override on default_lakehouse not applied (expected test-silver-lh):\n%s", s)
+	}
+	if strings.Contains(s, devConfigLH) {
+		t.Errorf("baseline default_lakehouse GUID still present:\n%s", s)
 	}
 }
 
