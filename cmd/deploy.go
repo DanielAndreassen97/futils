@@ -34,6 +34,7 @@ type deployGroup struct {
 	Deployed   []fabric.Item
 	Params     deploy.Parameters
 	Unresolved []deploy.UnresolvedRef
+	Changes    []deploy.RebindChange
 }
 
 // Deploy is the top-level entry point for the `deploy` subcommand.
@@ -209,7 +210,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			Deployed: deployed,
 			Params:   params,
 		}
-		g.Unresolved = diffExistingRows(client, token, target, env, params, rows, rb)
+		g.Unresolved, g.Changes = diffExistingRows(client, token, target, env, params, rows, rb)
 		groups = append(groups, g)
 	}
 	return groups, nil
@@ -220,7 +221,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) []deploy.UnresolvedRef {
+func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
@@ -228,7 +229,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 	}
 	if len(existsIdx) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
@@ -266,6 +267,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 	var unverified int
 	var firstErr error
 	var unresolved []deploy.UnresolvedRef
+	var changes []deploy.RebindChange
 	for j, idx := range existsIdx {
 		if results[j].err != nil {
 			unverified++
@@ -276,6 +278,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 		localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
 		unresolved = append(unresolved, outcome.Unresolved...)
+		changes = append(changes, outcome.Changes...)
 		if perr != nil {
 			unverified++
 			if firstErr == nil {
@@ -294,7 +297,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			"%d of %d item(s) in %s couldn't be content-compared (shown as Exists). First reason: %v",
 			unverified, len(existsIdx), target.DisplayName, firstErr)))
 	}
-	return unresolved
+	return unresolved, changes
 }
 
 // setupDeployMappings asks the user which workspace each repo folder deploys to,
@@ -341,6 +344,7 @@ func runDeploy(
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
 	printGroupedCompare(groups)
+	printRebindSummary(groups)
 	printUnresolved(groups)
 	if dryRun {
 		return nil, nil
@@ -511,6 +515,34 @@ func printGroupedCompare(groups []deployGroup) {
 			line := fmt.Sprintf("  %-9s %-14s %s", r.Class, r.ItemType(), r.Name())
 			fmt.Println(classStyle(r.Class).Render(line))
 		}
+	}
+	fmt.Println()
+}
+
+// printRebindSummary lists every reference rewrite the rebinder will apply,
+// deduplicated by (Kind, Old, New) across the whole run — one line per unique
+// change, not per item. Silent when nothing changes.
+func printRebindSummary(groups []deployGroup) {
+	type key struct{ kind, old, new string }
+	seen := map[key]bool{}
+	var ordered []deploy.RebindChange
+	for _, g := range groups {
+		for _, c := range g.Changes {
+			k := key{c.Kind, c.Old, c.New}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			ordered = append(ordered, c)
+		}
+	}
+	if len(ordered) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
+	for _, c := range ordered {
+		fmt.Printf("  %-12s %s → %s\n", c.Kind, c.Old, c.New)
 	}
 	fmt.Println()
 }

@@ -182,3 +182,32 @@ func TestPrintUnresolvedSilentWhenNone(t *testing.T) {
 		t.Errorf("expected no output when nothing unresolved, got:\n%s", out)
 	}
 }
+
+func TestPrintRebindSummaryDedupesByValue(t *testing.T) {
+	groups := []deployGroup{
+		{Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Old: "dev-lh", New: "test-lh"},
+			{Kind: "Workspace", Old: "dev-ws", New: "test-ws"},
+		}},
+		{Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Old: "dev-lh", New: "test-lh"}, // duplicate across groups
+		}},
+	}
+	out := captureStdout(t, func() { printRebindSummary(groups) })
+	if strings.Count(out, "dev-lh") != 1 {
+		t.Errorf("expected the duplicate Lakehouse change to appear once, got:\n%s", out)
+	}
+	if !strings.Contains(out, "test-ws") || !strings.Contains(out, "Workspace") {
+		t.Errorf("workspace change missing:\n%s", out)
+	}
+	if !strings.Contains(out, "→") && !strings.Contains(out, "changes to") {
+		t.Errorf("expected a change arrow/text:\n%s", out)
+	}
+}
+
+func TestPrintRebindSummarySilentWhenNoChanges(t *testing.T) {
+	out := captureStdout(t, func() { printRebindSummary([]deployGroup{{}}) })
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected no output when nothing changed, got:\n%s", out)
+	}
+}
