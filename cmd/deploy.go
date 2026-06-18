@@ -116,6 +116,14 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
 
+	rebinder, err := buildRebinder(client, token, customer, alias, workspaces)
+	if err != nil {
+		return fmt.Errorf("set up reference rebinding: %w", err)
+	}
+	if rebinder == nil {
+		fmt.Println(infoStyle.Render("Auto-rebind disabled (no baseline environment set). Set one via Edit customer to translate references by name."))
+	}
+
 	mappings, _ := customer.DeployMappings(alias)
 	if len(mappings) == 0 {
 		mappings, err = setupDeployMappings(all, workspaces)
@@ -141,7 +149,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	env := alias
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, src)
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, src, rebinder)
 	if err != nil {
 		return err
 	}
@@ -151,7 +159,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
-	results, err := runDeploy(client, token, env, groups, dryRun, pickGroupedRows, ui.Confirm)
+	results, err := runDeploy(client, token, env, groups, dryRun, rebinder, pickGroupedRows, ui.Confirm)
 	printDeployResults(results)
 	if err != nil {
 		return err
@@ -166,7 +174,7 @@ const diffConcurrency = 4
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, src *deploy.Source) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, src *deploy.Source, rb *deploy.Rebinder) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -193,7 +201,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
 		}
 		rows := deploy.Compare(items, deployed, deployItemScope)
-		diffExistingRows(client, token, target, env, params, rows)
+		diffExistingRows(client, token, target, env, params, rows, rb)
 		groups = append(groups, deployGroup{
 			Folder:   m.Folder,
 			Target:   target,
@@ -210,7 +218,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow) {
+func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
@@ -263,7 +271,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			}
 			continue
 		}
-		localParts, _, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, nil)
+		localParts, _, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
 		if perr != nil {
 			unverified++
 			if firstErr == nil {
@@ -323,6 +331,7 @@ func runDeploy(
 	token, env string,
 	groups []deployGroup,
 	dryRun bool,
+	rb *deploy.Rebinder,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, error),
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
@@ -368,7 +377,7 @@ func runDeploy(
 		plan := deploy.BuildPlan(items, g.Deployed)
 		sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
 		sp.Start()
-		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, nil)
+		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb)
 		sp.Stop()
 		allResults = append(allResults, results...)
 		if execErr != nil {
