@@ -69,3 +69,15 @@ func TestBuildRebinderUnknownBaselineEnvErrors(t *testing.T) {
 		t.Error("expected error when BaselineEnvironment names no known environment")
 	}
 }
+
+func TestBuildRebinderUnknownTargetEnvErrors(t *testing.T) {
+	customer := config.Customer{
+		BaselineEnvironment: "DEV",
+		Environments: []config.Environment{
+			{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}},
+		},
+	}
+	if _, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "GHOST", nil); err == nil {
+		t.Error("expected error when target alias names no known environment")
+	}
+}
