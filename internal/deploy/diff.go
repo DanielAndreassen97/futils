@@ -5,25 +5,38 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
-// SubstituteParts applies logicalId + parameter.yml substitution to each of an
-// item's parts, returning path → substituted raw bytes (not base64). Shared by
-// the publish path (which base64-encodes the result) and the content-diff.
-func SubstituteParts(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver) (map[string][]byte, error) {
+// SubstituteParts applies logicalId + parameter.yml substitution, then (when rb
+// is non-nil) auto-rebind of notebook lakehouse references, to each of an item's
+// parts. Returns path -> substituted raw bytes (not base64), plus any
+// references the rebinder could not resolve (tagged with the item name). Shared
+// by the publish path (which base64-encodes the result) and the content-diff.
+// A nil rb skips rebinding entirely.
+func SubstituteParts(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver, rb *Rebinder) (map[string][]byte, []UnresolvedRef, error) {
 	out := make(map[string][]byte, len(item.Parts))
+	var unresolved []UnresolvedRef
 	for _, part := range item.Parts {
 		content := ReplaceLogicalIds(part.Content, idMap)
 		substituted, err := params.ApplyFindReplace(env, item, part.Path, content, resolver.Resolve)
 		if err != nil {
-			return nil, fmt.Errorf("part %s: %w", part.Path, err)
+			return nil, nil, fmt.Errorf("part %s: %w", part.Path, err)
+		}
+		if rb != nil && strings.HasPrefix(path.Base(part.Path), "notebook-content.") {
+			rebound, un := rb.RebindNotebookLakehouses(substituted)
+			substituted = rebound
+			for i := range un {
+				un[i].ItemName = item.DisplayName
+			}
+			unresolved = append(unresolved, un...)
 		}
 		out[part.Path] = substituted
 	}
-	return out, nil
+	return out, unresolved, nil
 }
 
 // normalizePart canonicalizes a part's bytes so cosmetic differences Fabric

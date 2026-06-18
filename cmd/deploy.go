@@ -263,7 +263,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			}
 			continue
 		}
-		localParts, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver)
+		localParts, _, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, nil)
 		if perr != nil {
 			unverified++
 			if firstErr == nil {
@@ -368,7 +368,7 @@ func runDeploy(
 		plan := deploy.BuildPlan(items, g.Deployed)
 		sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
 		sp.Start()
-		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params)
+		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, nil)
 		sp.Stop()
 		allResults = append(allResults, results...)
 		if execErr != nil {

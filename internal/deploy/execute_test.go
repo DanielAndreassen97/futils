@@ -68,7 +68,7 @@ func TestExecuteAppliesParametersAndEncodes(t *testing.T) {
 		},
 	}}
 
-	res, err := Execute(rf, "tok", target, "TEST", plan, params)
+	res, err := Execute(rf, "tok", target, "TEST", plan, params, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{})
+	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: []byte(pbir)}}}
 
 	plan := BuildPlan([]LocalItem{report, model}, nil) // ordered: model then report
-	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{})
+	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

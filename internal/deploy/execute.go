@@ -28,7 +28,7 @@ type Result struct {
 //
 // A per-item error is captured in its Result (the run continues); Execute only
 // returns a top-level error for a setup failure that aborts everything.
-func Execute(client FabricClient, token string, target fabric.Workspace, env string, plan []PlannedItem, params Parameters) ([]Result, error) {
+func Execute(client FabricClient, token string, target fabric.Workspace, env string, plan []PlannedItem, params Parameters, rb *Rebinder) ([]Result, error) {
 	resolver := NewResolver(client, token, target)
 	idMap := map[string]string{}         // logicalId -> deployed GUID
 	modelIDByName := map[string]string{} // SemanticModel displayName -> deployed GUID
@@ -37,7 +37,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 	for _, p := range plan {
 		res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
 
-		def, err := buildDefinition(p.Item, env, params, idMap, resolver)
+		def, err := buildDefinition(p.Item, env, params, idMap, resolver, rb)
 		if err != nil {
 			res.Err = err
 			results = append(results, res)
@@ -81,10 +81,12 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 	return results, nil
 }
 
-// buildDefinition applies logicalId + parameter substitution to each text part
-// and base64-encodes them into a fabric.Definition.
-func buildDefinition(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver) (*fabric.Definition, error) {
-	parts, err := SubstituteParts(item, env, params, idMap, resolver)
+// buildDefinition applies logicalId + parameter + rebind substitution to each
+// text part and base64-encodes them into a fabric.Definition. Unresolved
+// references are intentionally discarded here — the dry-run surfaces them; the
+// publish path leaves any unresolved (cosmetic) GUID as-is.
+func buildDefinition(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, error) {
+	parts, _, err := SubstituteParts(item, env, params, idMap, resolver, rb)
 	if err != nil {
 		return nil, err
 	}
