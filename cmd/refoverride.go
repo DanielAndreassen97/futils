@@ -36,17 +36,22 @@ func applyRefAction(c config.Customer, ref deploy.UnresolvedRef, a RefAction) co
 			c.IgnoredReferences = append(c.IgnoredReferences, ref.GUID)
 		}
 	case "register":
-		for i := range c.Environments {
-			if c.Environments[i].Alias != a.EnvAlias {
+		next := make([]config.Environment, len(c.Environments))
+		copy(next, c.Environments)
+		for i := range next {
+			if next[i].Alias != a.EnvAlias {
 				continue
 			}
-			for _, w := range c.Environments[i].Workspaces {
+			for _, w := range next[i].Workspaces {
 				if w == a.Workspace {
+					c.Environments = next
 					return c // already registered
 				}
 			}
-			c.Environments[i].Workspaces = append(c.Environments[i].Workspaces, a.Workspace)
+			ws := append([]string{}, next[i].Workspaces...) // fresh Workspaces copy — no aliasing
+			next[i].Workspaces = append(ws, a.Workspace)
 		}
+		c.Environments = next
 	}
 	return c
 }

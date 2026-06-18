@@ -69,3 +69,13 @@ func TestApplyRefActionSkipNoChange(t *testing.T) {
 		t.Error("skip should mutate nothing")
 	}
 }
+
+func TestApplyRefActionRegisterDoesNotMutateInput(t *testing.T) {
+	ws := make([]string, 1, 4) // spare capacity → append would mutate in place if aliased
+	ws[0] = "DP - TEST - Config"
+	c := config.Customer{Environments: []config.Environment{{Alias: "TEST", Workspaces: ws}}}
+	_ = applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: "register", EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	if len(c.Environments[0].Workspaces) != 1 || c.Environments[0].Workspaces[0] != "DP - TEST - Config" {
+		t.Errorf("applyRefAction register mutated the caller's customer: %#v", c.Environments[0].Workspaces)
+	}
+}
