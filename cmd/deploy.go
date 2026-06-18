@@ -156,6 +156,8 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
+	filterIgnoredUnresolved(groups, customer)
+
 	dryRun, err := pickDeployMode()
 	if err != nil {
 		return err
@@ -214,6 +216,20 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 		groups = append(groups, g)
 	}
 	return groups, nil
+}
+
+// filterIgnoredUnresolved drops any unresolved reference the customer marked
+// ignore, so it isn't re-surfaced on every deploy. Mutates groups in place.
+func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
+	for gi := range groups {
+		kept := groups[gi].Unresolved[:0]
+		for _, u := range groups[gi].Unresolved {
+			if !customer.IsIgnored(u.GUID) {
+				kept = append(kept, u)
+			}
+		}
+		groups[gi].Unresolved = kept
+	}
 }
 
 // diffExistingRows fetches the deployed definition of every ClassExists row

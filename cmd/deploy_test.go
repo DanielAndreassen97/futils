@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -209,5 +210,19 @@ func TestPrintRebindSummarySilentWhenNoChanges(t *testing.T) {
 	out := captureStdout(t, func() { printRebindSummary([]deployGroup{{}}) })
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("expected no output when nothing changed, got:\n%s", out)
+	}
+}
+
+func TestFilterIgnoredUnresolvedDropsIgnored(t *testing.T) {
+	groups := []deployGroup{{
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "keep-1", ItemType: "Lakehouse"},
+			{GUID: "drop-1", ItemType: "Lakehouse"},
+		},
+	}}
+	customer := config.Customer{IgnoredReferences: []string{"drop-1"}}
+	filterIgnoredUnresolved(groups, customer)
+	if len(groups[0].Unresolved) != 1 || groups[0].Unresolved[0].GUID != "keep-1" {
+		t.Fatalf("after filter = %#v", groups[0].Unresolved)
 	}
 }
