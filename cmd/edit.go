@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	editActionAddEnv     = "__add_env"
-	editActionEditEnv    = "__edit_env:"
-	editActionBack       = "__back"
-	envActionAddWS        = "__add_ws"
+	editActionAddEnv        = "__add_env"
+	editActionEditEnv       = "__edit_env:"
+	editActionBack          = "__back"
+	editActionRefOverrides  = "__ref_overrides"
+	envActionAddWS          = "__add_ws"
 	envActionRemoveWS     = "__remove_ws"
 	envActionRenameAlias  = "__rename_alias"
 	envActionDeleteEnv    = "__delete_env"
@@ -90,6 +91,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 				}
 				return err
 			}
+		case action == editActionRefOverrides:
+			if err := manageReferenceOverrides(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -116,6 +121,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
+		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -485,6 +491,86 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 	}
 	fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
 	return nil
+}
+
+// removeOverride returns a copy of c with the ReferenceOverride for sourceGUID removed.
+func removeOverride(c config.Customer, sourceGUID string) config.Customer {
+	next := c.ReferenceOverrides[:0]
+	for _, o := range c.ReferenceOverrides {
+		if o.SourceGUID != sourceGUID {
+			next = append(next, o)
+		}
+	}
+	c.ReferenceOverrides = next
+	return c
+}
+
+// removeIgnored returns a copy of c with the given guid removed from IgnoredReferences.
+func removeIgnored(c config.Customer, guid string) config.Customer {
+	next := c.IgnoredReferences[:0]
+	for _, g := range c.IgnoredReferences {
+		if g != guid {
+			next = append(next, g)
+		}
+	}
+	c.IgnoredReferences = next
+	return c
+}
+
+// manageReferenceOverrides lists the customer's saved reference overrides and
+// ignored references and lets the user remove them. Adding overrides happens
+// inline during a dry-run (where futils knows the baseline GUIDs); this section
+// is for review and cleanup.
+func manageReferenceOverrides(configPath, customerName string) error {
+	for {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		customer, ok := cfg.Customers[customerName]
+		if !ok {
+			return fmt.Errorf("customer %q disappeared from config", customerName)
+		}
+		fmt.Printf("\nReference overrides for %s\n", customerName)
+		if len(customer.ReferenceOverrides) == 0 && len(customer.IgnoredReferences) == 0 {
+			fmt.Println("  (none — add them inline after a dry-run)")
+		}
+		var options []ui.MenuOption
+		for _, o := range customer.ReferenceOverrides {
+			short := o.SourceGUID
+			if len(short) > 8 {
+				short = short[:8] + "…"
+			}
+			label := fmt.Sprintf("Remove override: %s → %s %q", short, o.ItemType, o.ItemName)
+			options = append(options, ui.MenuOption{Label: label, Value: "ovr:" + o.SourceGUID})
+		}
+		for _, g := range customer.IgnoredReferences {
+			short := g
+			if len(short) > 8 {
+				short = short[:8] + "…"
+			}
+			options = append(options, ui.MenuOption{Label: "Un-ignore: " + short, Value: "ign:" + g})
+		}
+		options = append(options, ui.MenuOption{Label: "Back", Value: editActionBack})
+		choice, err := ui.NumberMenu("Action", options)
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				return nil
+			}
+			return err
+		}
+		switch {
+		case choice == editActionBack:
+			return nil
+		case strings.HasPrefix(choice, "ovr:"):
+			customer = removeOverride(customer, strings.TrimPrefix(choice, "ovr:"))
+		case strings.HasPrefix(choice, "ign:"):
+			customer = removeIgnored(customer, strings.TrimPrefix(choice, "ign:"))
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+	}
 }
 
 // removeDeploymentMapping lets the user drop a folder→workspace mapping from an

@@ -6,6 +6,24 @@ import (
 	"github.com/DanielAndreassen97/futils/internal/config"
 )
 
+func TestRemoveOverride(t *testing.T) {
+	c := config.Customer{ReferenceOverrides: []config.ReferenceOverride{
+		{SourceGUID: "a"}, {SourceGUID: "b"},
+	}}
+	out := removeOverride(c, "a")
+	if len(out.ReferenceOverrides) != 1 || out.ReferenceOverrides[0].SourceGUID != "b" {
+		t.Fatalf("removeOverride = %#v", out.ReferenceOverrides)
+	}
+}
+
+func TestRemoveIgnored(t *testing.T) {
+	c := config.Customer{IgnoredReferences: []string{"a", "b"}}
+	out := removeIgnored(c, "b")
+	if len(out.IgnoredReferences) != 1 || out.IgnoredReferences[0] != "a" {
+		t.Fatalf("removeIgnored = %#v", out.IgnoredReferences)
+	}
+}
+
 func TestValidateNewAlias(t *testing.T) {
 	existing := []config.Environment{
 		{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}},
