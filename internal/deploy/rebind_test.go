@@ -64,7 +64,7 @@ func newRebindFixture(t *testing.T, overrides map[string]Override) *Rebinder {
 func TestRebindDefaultLakehouseByName(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
-	out, unresolved := rb.RebindNotebookLakehouses(in)
+	out, outcome := rb.RebindNotebookLakehouses(in)
 	s := string(out)
 	if !strings.Contains(s, "test-config-lh") {
 		t.Errorf("default_lakehouse not rebound to target GUID:\n%s", s)
@@ -75,8 +75,8 @@ func TestRebindDefaultLakehouseByName(t *testing.T) {
 	if strings.Contains(s, devConfigLH) {
 		t.Errorf("baseline default_lakehouse GUID still present:\n%s", s)
 	}
-	if len(unresolved) != 0 {
-		t.Errorf("expected no unresolved refs, got %#v", unresolved)
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("expected no unresolved refs, got %#v", outcome.Unresolved)
 	}
 }
 
@@ -98,12 +98,12 @@ func TestRebindUnresolvedKnownLakehouse(t *testing.T) {
 	// A known lakehouse GUID that exists in NEITHER env -> unresolved, untouched.
 	unknown := "99999999-9999-9999-9999-999999999999"
 	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", unknown)
-	out, unresolved := rb.RebindNotebookLakehouses(in)
+	out, outcome := rb.RebindNotebookLakehouses(in)
 	if !strings.Contains(string(out), unknown) {
 		t.Error("unresolved GUID should be left unchanged in content")
 	}
-	if len(unresolved) != 1 || unresolved[0].GUID != unknown || unresolved[0].Location != "known_lakehouses" {
-		t.Fatalf("unresolved = %#v", unresolved)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].GUID != unknown || outcome.Unresolved[0].Location != "known_lakehouses" {
+		t.Fatalf("unresolved = %#v", outcome.Unresolved)
 	}
 }
 
@@ -116,9 +116,9 @@ func TestRebindOverrideTakesPrecedence(t *testing.T) {
 	rb := newRebindFixture(t, overrides)
 	unknown := "99999999-9999-9999-9999-999999999999"
 	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", unknown)
-	out, unresolved := rb.RebindNotebookLakehouses(in)
-	if len(unresolved) != 0 {
-		t.Fatalf("override should resolve the GUID, got unresolved %#v", unresolved)
+	out, outcome := rb.RebindNotebookLakehouses(in)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("override should resolve the GUID, got unresolved %#v", outcome.Unresolved)
 	}
 	if !strings.Contains(string(out), "test-silver-lh") || strings.Contains(string(out), unknown) {
 		t.Errorf("override not applied:\n%s", string(out))
@@ -134,9 +134,9 @@ func TestRebindOverrideOnDefaultLakehouse(t *testing.T) {
 	}
 	rb := newRebindFixture(t, overrides)
 	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
-	out, unresolved := rb.RebindNotebookLakehouses(in)
-	if len(unresolved) != 0 {
-		t.Fatalf("expected no unresolved, got %#v", unresolved)
+	out, outcome := rb.RebindNotebookLakehouses(in)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("expected no unresolved, got %#v", outcome.Unresolved)
 	}
 	s := string(out)
 	if !strings.Contains(s, "test-silver-lh") {
@@ -150,8 +150,39 @@ func TestRebindOverrideOnDefaultLakehouse(t *testing.T) {
 func TestRebindNonNotebookUnchanged(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	plain := []byte("table Foo\ncolumn Bar\n")
-	out, unresolved := rb.RebindNotebookLakehouses(plain)
-	if string(out) != string(plain) || len(unresolved) != 0 {
+	out, outcome := rb.RebindNotebookLakehouses(plain)
+	if string(out) != string(plain) || len(outcome.Unresolved) != 0 {
 		t.Errorf("non-notebook content should pass through unchanged")
+	}
+}
+
+func TestRebindNotebookReportsChanges(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
+	_, outcome := rb.RebindNotebookLakehouses(in)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
+	}
+	// Expect three changes: default lakehouse (Lakehouse), its workspace (Workspace),
+	// and the known lakehouse (Lakehouse). Deduped by Old.
+	kinds := map[string]int{}
+	for _, c := range outcome.Changes {
+		kinds[c.Kind]++
+		if c.Old == "" || c.New == "" || c.Old == c.New {
+			t.Errorf("bad change %#v", c)
+		}
+	}
+	if kinds["Lakehouse"] != 2 || kinds["Workspace"] != 1 {
+		t.Fatalf("change kinds = %#v (want Lakehouse:2 Workspace:1)", kinds)
+	}
+	// The default-lakehouse change must map the DEV GUID to the TEST GUID.
+	var found bool
+	for _, c := range outcome.Changes {
+		if c.Old == devConfigLH && c.New == "test-config-lh" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("missing default_lakehouse change %s→test-config-lh in %#v", devConfigLH, outcome.Changes)
 	}
 }

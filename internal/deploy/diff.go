@@ -27,12 +27,12 @@ func SubstituteParts(item LocalItem, env string, params Parameters, idMap map[st
 			return nil, nil, fmt.Errorf("part %s: %w", part.Path, err)
 		}
 		if rb != nil && strings.HasPrefix(path.Base(part.Path), "notebook-content.") {
-			rebound, un := rb.RebindNotebookLakehouses(substituted)
+			rebound, outcome := rb.RebindNotebookLakehouses(substituted)
 			substituted = rebound
-			for i := range un {
-				un[i].ItemName = item.DisplayName
+			for i := range outcome.Unresolved {
+				outcome.Unresolved[i].ItemName = item.DisplayName
 			}
-			unresolved = append(unresolved, un...)
+			unresolved = append(unresolved, outcome.Unresolved...)
 		}
 		out[part.Path] = substituted
 	}

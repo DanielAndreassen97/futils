@@ -24,6 +24,22 @@ type UnresolvedRef struct {
 	ItemName string
 }
 
+// RebindChange records one applied baseline→target rewrite, for the deploy
+// summary. Kind is "Lakehouse", "Workspace", or "SQL endpoint".
+type RebindChange struct {
+	Kind string
+	Old  string
+	New  string
+}
+
+// RebindOutcome bundles what a rebind pass produced: the applied changes (for
+// the summary, deduped by Old within a pass) and the references it could not
+// resolve (surfaced to the user).
+type RebindOutcome struct {
+	Changes    []RebindChange
+	Unresolved []UnresolvedRef
+}
+
 // Rebinder translates baseline-environment GUIDs to a target env by item name.
 type Rebinder struct {
 	baseline  *NameIndex
@@ -68,20 +84,25 @@ func (rb *Rebinder) resolveGUID(guid string) (IndexedItem, bool) {
 // RebindNotebookLakehouses rewrites the lakehouse dependency GUIDs in a Fabric
 // notebook part from baseline to target, by name. It only touches GUIDs found
 // in the dependencies.lakehouse metadata block (never arbitrary UUIDs in code),
-// then string-replaces those exact GUIDs throughout the content (GUIDs are
-// globally unique, so this affects only the metadata occurrences). GUIDs it
-// cannot resolve are returned as UnresolvedRef and left unchanged. Content with
-// no lakehouse block is returned unchanged.
-func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, []UnresolvedRef) {
+// records each applied rewrite as a RebindChange, and string-replaces those
+// exact GUIDs throughout the content. GUIDs it cannot resolve become
+// UnresolvedRef and are left unchanged. Content with no lakehouse block is
+// returned unchanged with an empty outcome.
+func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutcome) {
 	lh, ok := parseNotebookLakehouse(content)
 	if !ok {
-		return content, nil
+		return content, RebindOutcome{}
 	}
-	replacements := map[string]string{} // baseline GUID -> target GUID
-	var unresolved []UnresolvedRef
+	var out RebindOutcome
+	seen := map[string]bool{}
+	add := func(kind, oldG, newG string) {
+		if oldG == "" || oldG == newG || seen[oldG] {
+			return
+		}
+		seen[oldG] = true
+		out.Changes = append(out.Changes, RebindChange{Kind: kind, Old: oldG, New: newG})
+	}
 
-	// default_lakehouse: prefer the stored name (zero-config, no baseline needed);
-	// fall back to the override/baseline GUID path when the name is absent.
 	if lh.DefaultLakehouse != "" {
 		var it IndexedItem
 		var resolved bool
@@ -91,35 +112,28 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, []Unresolv
 			it, resolved = rb.resolveGUID(lh.DefaultLakehouse)
 		}
 		if resolved {
-			replacements[lh.DefaultLakehouse] = it.GUID
+			add("Lakehouse", lh.DefaultLakehouse, it.GUID)
 			if lh.DefaultLakehouseWorkspaceID != "" && it.WorkspaceID != "" {
-				replacements[lh.DefaultLakehouseWorkspaceID] = it.WorkspaceID
+				add("Workspace", lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			unresolved = append(unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse"})
 		}
 	}
-
-	// known_lakehouses: cosmetic; resolve by override, else baseline->target name.
 	for _, k := range lh.KnownLakehouses {
-		if k.ID == "" {
-			continue
-		}
-		if _, done := replacements[k.ID]; done {
+		if k.ID == "" || seen[k.ID] {
 			continue
 		}
 		if it, ok := rb.resolveGUID(k.ID); ok {
-			replacements[k.ID] = it.GUID
+			add("Lakehouse", k.ID, it.GUID)
 		} else {
-			unresolved = append(unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses"})
 		}
 	}
 
-	out := string(content)
-	for oldG, newG := range replacements {
-		if oldG != newG {
-			out = strings.ReplaceAll(out, oldG, newG)
-		}
+	s := string(content)
+	for _, c := range out.Changes {
+		s = strings.ReplaceAll(s, c.Old, c.New)
 	}
-	return []byte(out), unresolved
+	return []byte(s), out
 }
