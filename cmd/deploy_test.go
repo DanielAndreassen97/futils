@@ -1,11 +1,30 @@
 package cmd
 
 import (
+	"bytes"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	return buf.String()
+}
 
 // deployFakeAPI implements deploy.FabricClient for runDeploy tests.
 type deployFakeAPI struct {
@@ -137,5 +156,29 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 	}
 	if fake.createdWS["NB_A"] != "ws-config" || fake.createdWS["R_A"] != "ws-semmod" {
 		t.Errorf("wrong target workspaces: %v", fake.createdWS)
+	}
+}
+
+func TestPrintUnresolvedListsRefs(t *testing.T) {
+	groups := []deployGroup{{
+		Folder: "Backend",
+		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "09bc360d-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
+		},
+	}}
+	out := captureStdout(t, func() { printUnresolved(groups) })
+	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, "09bc360d") {
+		t.Errorf("unresolved output missing context:\n%s", out)
+	}
+	if !strings.Contains(out, "Lakehouse") {
+		t.Errorf("unresolved output missing type guess:\n%s", out)
+	}
+}
+
+func TestPrintUnresolvedSilentWhenNone(t *testing.T) {
+	out := captureStdout(t, func() { printUnresolved([]deployGroup{{Folder: "Backend"}}) })
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("expected no output when nothing unresolved, got:\n%s", out)
 	}
 }

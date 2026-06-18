@@ -28,11 +28,12 @@ var comparableTypes = map[string]bool{"Notebook": true, "DataPipeline": true}
 // discovered under that folder, the target workspace, the compare rows, and the
 // deployed item list (needed by BuildPlan).
 type deployGroup struct {
-	Folder   string
-	Target   fabric.Workspace
-	Rows     []deploy.CompareRow
-	Deployed []fabric.Item
-	Params   deploy.Parameters
+	Folder     string
+	Target     fabric.Workspace
+	Rows       []deploy.CompareRow
+	Deployed   []fabric.Item
+	Params     deploy.Parameters
+	Unresolved []deploy.UnresolvedRef
 }
 
 // Deploy is the top-level entry point for the `deploy` subcommand.
@@ -201,14 +202,15 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
 		}
 		rows := deploy.Compare(items, deployed, deployItemScope)
-		diffExistingRows(client, token, target, env, params, rows, rb)
-		groups = append(groups, deployGroup{
+		g := deployGroup{
 			Folder:   m.Folder,
 			Target:   target,
 			Rows:     rows,
 			Deployed: deployed,
 			Params:   params,
-		})
+		}
+		g.Unresolved = diffExistingRows(client, token, target, env, params, rows, rb)
+		groups = append(groups, g)
 	}
 	return groups, nil
 }
@@ -218,7 +220,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) {
+func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) []deploy.UnresolvedRef {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
@@ -226,7 +228,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 	}
 	if len(existsIdx) == 0 {
-		return
+		return nil
 	}
 
 	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
@@ -263,6 +265,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 
 	var unverified int
 	var firstErr error
+	var unresolved []deploy.UnresolvedRef
 	for j, idx := range existsIdx {
 		if results[j].err != nil {
 			unverified++
@@ -271,7 +274,8 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			}
 			continue
 		}
-		localParts, _, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
+		localParts, un, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
+		unresolved = append(unresolved, un...)
 		if perr != nil {
 			unverified++
 			if firstErr == nil {
@@ -290,6 +294,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			"%d of %d item(s) in %s couldn't be content-compared (shown as Exists). First reason: %v",
 			unverified, len(existsIdx), target.DisplayName, firstErr)))
 	}
+	return unresolved
 }
 
 // setupDeployMappings asks the user which workspace each repo folder deploys to,
@@ -336,6 +341,7 @@ func runDeploy(
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
 	printGroupedCompare(groups)
+	printUnresolved(groups)
 	if dryRun {
 		return nil, nil
 	}
@@ -504,6 +510,31 @@ func printGroupedCompare(groups []deployGroup) {
 		for _, r := range g.Rows {
 			line := fmt.Sprintf("  %-9s %-14s %s", r.Class, r.ItemType(), r.Name())
 			fmt.Println(classStyle(r.Class).Render(line))
+		}
+	}
+	fmt.Println()
+}
+
+// printUnresolved lists reference GUIDs the rebinder could not translate, with
+// enough context for the user to register an override (or ignore/strip them).
+// Silent when everything resolved.
+func printUnresolved(groups []deployGroup) {
+	var total int
+	for _, g := range groups {
+		total += len(g.Unresolved)
+	}
+	if total == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
+	for _, g := range groups {
+		for _, u := range g.Unresolved {
+			short := u.GUID
+			if len(short) > 8 {
+				short = short[:8] + "…"
+			}
+			fmt.Printf("  %s in %s — looks like a %s (%s)\n", short, u.ItemName, u.ItemType, u.Location)
 		}
 	}
 	fmt.Println()
