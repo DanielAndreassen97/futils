@@ -48,6 +48,11 @@ func BuildNameIndex(client FabricClient, token string, workspaces []fabric.Works
 			ent := IndexedItem{Name: it.DisplayName, Type: it.Type, GUID: it.ID, WorkspaceID: ws.ID}
 			idx.byGUID[it.ID] = ent
 			k := nameKey{it.DisplayName, it.Type}
+			// Callers pass a de-duplicated workspace set (e.g. via
+			// config.Environment.AllWorkspaces), so a key seen twice with the
+			// SAME GUID is just the same item re-listed and is harmless to
+			// overwrite; only a DIFFERENT GUID under the same name+type is a
+			// genuine ambiguity worth blocking forward resolution.
 			if prev, ok := idx.byName[k]; ok && prev.GUID != it.ID {
 				idx.ambiguous[k] = true
 				continue

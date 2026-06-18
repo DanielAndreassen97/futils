@@ -59,12 +59,18 @@ func TestNameIndexAmbiguousNameDoesNotResolveForward(t *testing.T) {
 			"ws-2": {{ID: "g2", DisplayName: "LH_Dup", Type: "Lakehouse"}},
 		},
 	}
-	idx, _ := BuildNameIndex(f, "tok", f.workspaces)
+	idx, err := BuildNameIndex(f, "tok", f.workspaces)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
 	if _, ok := idx.ItemByName("LH_Dup", "Lakehouse"); ok {
 		t.Error("expected duplicate name across workspaces to be ambiguous (forward miss)")
 	}
 	// Reverse still works for each distinct GUID.
 	if _, ok := idx.ItemByGUID("g1"); !ok {
 		t.Error("reverse lookup should still resolve g1")
+	}
+	if _, ok := idx.ItemByGUID("g2"); !ok {
+		t.Error("reverse lookup should still resolve g2")
 	}
 }
