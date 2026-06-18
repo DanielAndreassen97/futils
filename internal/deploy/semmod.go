@@ -73,17 +73,17 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		host, id := m[1], m[2]
 		lake, ok := rb.baseEndpoints[id]
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNameUnknown})
 			continue
 		}
-		tgt, ok := rb.target.ItemByName(lake.Name, "Lakehouse")
-		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database"})
+		tgt, st := rb.target.LookupName(lake.Name, "Lakehouse")
+		if st != LookupFound {
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reasonForStatus(st)})
 			continue
 		}
 		newHost, newID, ok := rb.targetEndpointFor(tgt)
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNotInTarget})
 			continue
 		}
 		add(host, newHost)
@@ -125,13 +125,13 @@ func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 	}
 	for _, m := range onelakeRe.FindAllStringSubmatch(s, -1) {
 		wsGUID, lhGUID := m[1], m[2]
-		if it, ok := rb.resolveGUID(lhGUID); ok {
+		if it, ok, reason := rb.resolveGUIDReason(lhGUID); ok {
 			add("Lakehouse", lhGUID, it.GUID)
 			if it.WorkspaceID != "" {
 				add("Workspace", wsGUID, it.WorkspaceID)
 			}
 		} else {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
 		}
 	}
 	for _, c := range out.Changes {

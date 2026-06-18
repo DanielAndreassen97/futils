@@ -51,6 +51,26 @@ func TestNameIndexMissesReturnFalse(t *testing.T) {
 	}
 }
 
+func TestLookupNameStatus(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "w1", DisplayName: "W1"}, {ID: "w2", DisplayName: "W2"}},
+		itemsByWS: map[string][]fabric.Item{
+			"w1": {{ID: "g1", DisplayName: "LH_A", Type: "Lakehouse"}, {ID: "dup", DisplayName: "LH_Dup", Type: "Lakehouse"}},
+			"w2": {{ID: "dup2", DisplayName: "LH_Dup", Type: "Lakehouse"}},
+		},
+	}
+	idx, _ := BuildNameIndex(f, "tok", f.workspaces)
+	if _, st := idx.LookupName("LH_A", "Lakehouse"); st != LookupFound {
+		t.Errorf("LH_A status = %v, want LookupFound", st)
+	}
+	if _, st := idx.LookupName("LH_Missing", "Lakehouse"); st != LookupAbsent {
+		t.Errorf("missing status = %v, want LookupAbsent", st)
+	}
+	if _, st := idx.LookupName("LH_Dup", "Lakehouse"); st != LookupAmbiguous {
+		t.Errorf("dup status = %v, want LookupAmbiguous", st)
+	}
+}
+
 func TestNameIndexAmbiguousNameDoesNotResolveForward(t *testing.T) {
 	f := &fakeFabric{
 		workspaces: []fabric.Workspace{{ID: "ws-1", DisplayName: "W1"}, {ID: "ws-2", DisplayName: "W2"}},

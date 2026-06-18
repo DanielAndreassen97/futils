@@ -23,6 +23,21 @@ type UnresolvedRef struct {
 	ItemType string
 	Location string // "default_lakehouse" | "known_lakehouses"
 	ItemName string
+	Reason   string // ReasonNameUnknown | ReasonNotInTarget | ReasonAmbiguous
+}
+
+const (
+	ReasonNameUnknown = "name-unknown"  // baseline GUID not in baseline index — no name to match by
+	ReasonNotInTarget = "not-in-target" // name known but absent from every registered target workspace
+	ReasonAmbiguous   = "ambiguous"     // name appears in 2+ target workspaces
+)
+
+// reasonForStatus maps a target LookupStatus to the UnresolvedRef Reason.
+func reasonForStatus(st LookupStatus) string {
+	if st == LookupAmbiguous {
+		return ReasonAmbiguous
+	}
+	return ReasonNotInTarget
 }
 
 // RebindChange records one applied baseline→target rewrite, for the deploy
@@ -72,19 +87,30 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides}, nil
 }
 
+// resolveGUIDReason translates one baseline GUID to its target item, returning a
+// Reason when it can't. Override (highest precedence) resolves its name in the
+// target; otherwise the baseline index supplies the name and the target index
+// supplies the GUID.
+func (rb *Rebinder) resolveGUIDReason(guid string) (IndexedItem, bool, string) {
+	if ov, ok := rb.overrides[guid]; ok {
+		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
+		return it, st == LookupFound, reasonForStatus(st)
+	}
+	base, ok := rb.baseline.ItemByGUID(guid)
+	if !ok {
+		return IndexedItem{}, false, ReasonNameUnknown
+	}
+	it, st := rb.target.LookupName(base.Name, base.Type)
+	return it, st == LookupFound, reasonForStatus(st)
+}
+
 // resolveGUID translates one baseline GUID to its target item. An override
 // (highest precedence) resolves its ItemName/ItemType directly in the target;
 // otherwise the baseline index supplies the name and the target index supplies
 // the new GUID. Returns false when it cannot be resolved.
 func (rb *Rebinder) resolveGUID(guid string) (IndexedItem, bool) {
-	if ov, ok := rb.overrides[guid]; ok {
-		return rb.target.ItemByName(ov.ItemName, ov.ItemType)
-	}
-	base, ok := rb.baseline.ItemByGUID(guid)
-	if !ok {
-		return IndexedItem{}, false
-	}
-	return rb.target.ItemByName(base.Name, base.Type)
+	it, ok, _ := rb.resolveGUIDReason(guid)
+	return it, ok
 }
 
 // RebindPart dispatches a single item part to the right rebind pass by item
@@ -136,17 +162,18 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 				add("Workspace", lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse"})
+			_, st := rb.target.LookupName(lh.DefaultLakehouseName, "Lakehouse")
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reasonForStatus(st)})
 		}
 	}
 	for _, k := range lh.KnownLakehouses {
 		if k.ID == "" || seen[k.ID] {
 			continue
 		}
-		if it, ok := rb.resolveGUID(k.ID); ok {
+		if it, ok, reason := rb.resolveGUIDReason(k.ID); ok {
 			add("Lakehouse", k.ID, it.GUID)
 		} else {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses"})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses", Reason: reason})
 		}
 	}
 

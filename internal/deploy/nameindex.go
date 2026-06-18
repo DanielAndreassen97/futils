@@ -82,13 +82,33 @@ func (i *NameIndex) ItemsOfType(typ string) []IndexedItem {
 	return out
 }
 
+// LookupStatus distinguishes the three forward-lookup outcomes so callers can
+// explain WHY a name didn't resolve.
+type LookupStatus int
+
+const (
+	LookupFound LookupStatus = iota
+	LookupAbsent
+	LookupAmbiguous
+)
+
+// LookupName resolves a name+type forward, reporting whether it was found,
+// absent, or ambiguous across the env's workspaces.
+func (i *NameIndex) LookupName(name, typ string) (IndexedItem, LookupStatus) {
+	k := nameKey{name, typ}
+	if i.ambiguous[k] {
+		return IndexedItem{}, LookupAmbiguous
+	}
+	it, ok := i.byName[k]
+	if !ok {
+		return IndexedItem{}, LookupAbsent
+	}
+	return it, LookupFound
+}
+
 // ItemByName returns the indexed item for a name+type (forward lookup). Returns
 // false when the name is absent, or ambiguous across the env's workspaces.
 func (i *NameIndex) ItemByName(name, typ string) (IndexedItem, bool) {
-	k := nameKey{name, typ}
-	if i.ambiguous[k] {
-		return IndexedItem{}, false
-	}
-	it, ok := i.byName[k]
-	return it, ok
+	it, st := i.LookupName(name, typ)
+	return it, st == LookupFound
 }

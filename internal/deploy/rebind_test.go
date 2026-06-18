@@ -147,6 +147,29 @@ func TestRebindOverrideOnDefaultLakehouse(t *testing.T) {
 	}
 }
 
+func TestUnresolvedCarriesReason(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	// A known lakehouse GUID that exists in NEITHER env → name-unknown.
+	unknown := "99999999-9999-9999-9999-999999999999"
+	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", unknown)
+	_, outcome := rb.RebindNotebookLakehouses(in)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Reason != ReasonNameUnknown {
+		t.Fatalf("unresolved = %#v (want one with ReasonNameUnknown)", outcome.Unresolved)
+	}
+}
+
+func TestUnresolvedReasonNotInTarget(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	// default_lakehouse_name that the baseline has but the target lacks: use a
+	// name absent from the target env. Build a notebook whose default name is
+	// "LH_Ghost" (not in target) — name path → not-in-target.
+	in := rebindNotebook(devConfigLH, devConfigWS, "LH_Ghost", "")
+	_, outcome := rb.RebindNotebookLakehouses(in)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Reason != ReasonNotInTarget {
+		t.Fatalf("unresolved = %#v (want one with ReasonNotInTarget)", outcome.Unresolved)
+	}
+}
+
 func TestRebindNonNotebookUnchanged(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	plain := []byte("table Foo\ncolumn Bar\n")
