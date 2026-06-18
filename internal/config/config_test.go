@@ -467,3 +467,33 @@ func TestEnvironmentByAlias(t *testing.T) {
 		t.Error("expected unknown alias to return ok=false")
 	}
 }
+
+func TestIgnoredReferencesRoundTripAndLookup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"A"}}},
+			IgnoredReferences: []string{"guid-x", "guid-y"},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Load(path)
+	c := out.Customers["acme"]
+	if len(c.IgnoredReferences) != 2 {
+		t.Fatalf("IgnoredReferences = %#v", c.IgnoredReferences)
+	}
+	if !c.IsIgnored("guid-x") || c.IsIgnored("guid-z") {
+		t.Errorf("IsIgnored wrong: x=%v z=%v", c.IsIgnored("guid-x"), c.IsIgnored("guid-z"))
+	}
+}
+
+func TestIgnoredReferencesAbsentLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600)
+	out, _ := Load(path)
+	if len(out.Customers["acme"].IgnoredReferences) != 0 {
+		t.Error("expected no ignored references on legacy config")
+	}
+}

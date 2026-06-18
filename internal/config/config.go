@@ -53,6 +53,7 @@ type Customer struct {
 	RepoPath            string              `json:"repo_path,omitempty"`
 	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
+	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -124,6 +125,17 @@ func (c Customer) OverrideForGUID(guid string) (ReferenceOverride, bool) {
 	return ReferenceOverride{}, false
 }
 
+// IsIgnored reports whether a baseline reference GUID was marked ignore (left
+// as-is, suppressed from unresolved surfacing).
+func (c Customer) IsIgnored(guid string) bool {
+	for _, g := range c.IgnoredReferences {
+		if g == guid {
+			return true
+		}
+	}
+	return false
+}
+
 // EnvironmentByAlias returns the environment with the given alias, and whether
 // it was found. Used to resolve the baseline environment's full workspace set.
 func (c Customer) EnvironmentByAlias(alias string) (Environment, bool) {
@@ -177,6 +189,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		RepoPath            string              `json:"repo_path,omitempty"`
 		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
+		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -185,6 +198,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.RepoPath = aux.RepoPath
 	c.BaselineEnvironment = aux.BaselineEnvironment
 	c.ReferenceOverrides = aux.ReferenceOverrides
+	c.IgnoredReferences = aux.IgnoredReferences
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
