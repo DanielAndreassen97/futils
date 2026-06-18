@@ -209,3 +209,23 @@ func TestRebindNotebookReportsChanges(t *testing.T) {
 		t.Errorf("missing default_lakehouse change %s→test-config-lh in %#v", devConfigLH, outcome.Changes)
 	}
 }
+
+func TestDefaultLakehouseNoNameUnknownGUIDReason(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	unknown := "88888888-8888-8888-8888-888888888888"
+	// No default_lakehouse_name, GUID not in baseline → name-unknown, not not-in-target.
+	in := rebindNotebook(unknown, devConfigWS, "", devSilverLH)
+	_, outcome := rb.RebindNotebookLakehouses(in)
+	var dl *UnresolvedRef
+	for i := range outcome.Unresolved {
+		if outcome.Unresolved[i].Location == "default_lakehouse" {
+			dl = &outcome.Unresolved[i]
+		}
+	}
+	if dl == nil {
+		t.Fatalf("expected a default_lakehouse unresolved, got %#v", outcome.Unresolved)
+	}
+	if dl.Reason != ReasonNameUnknown {
+		t.Errorf("default_lakehouse Reason = %q, want %q", dl.Reason, ReasonNameUnknown)
+	}
+}

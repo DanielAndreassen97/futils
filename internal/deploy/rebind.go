@@ -151,10 +151,14 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 	if lh.DefaultLakehouse != "" {
 		var it IndexedItem
 		var resolved bool
+		var reason string
 		if _, hasOverride := rb.overrides[lh.DefaultLakehouse]; !hasOverride && lh.DefaultLakehouseName != "" {
-			it, resolved = rb.target.ItemByName(lh.DefaultLakehouseName, "Lakehouse")
+			var st LookupStatus
+			it, st = rb.target.LookupName(lh.DefaultLakehouseName, "Lakehouse")
+			resolved = st == LookupFound
+			reason = reasonForStatus(st)
 		} else {
-			it, resolved = rb.resolveGUID(lh.DefaultLakehouse)
+			it, resolved, reason = rb.resolveGUIDReason(lh.DefaultLakehouse)
 		}
 		if resolved {
 			add("Lakehouse", lh.DefaultLakehouse, it.GUID)
@@ -162,8 +166,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 				add("Workspace", lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			_, st := rb.target.LookupName(lh.DefaultLakehouseName, "Lakehouse")
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reasonForStatus(st)})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason})
 		}
 	}
 	for _, k := range lh.KnownLakehouses {
