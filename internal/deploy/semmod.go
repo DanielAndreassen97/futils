@@ -97,6 +97,19 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 	return s
 }
 
+// RebindSemanticModel rewrites a Direct Lake semantic model part's data-source
+// connection from baseline to target. It handles both on-disk shapes: Direct
+// Lake on OneLake (workspace+lakehouse GUID URL) and Direct Lake on SQL
+// (Sql.Database host+endpoint-id). Only the values inside a matched connection
+// expression are rewritten. Content with neither shape is returned unchanged.
+func (rb *Rebinder) RebindSemanticModel(content []byte) ([]byte, RebindOutcome) {
+	var out RebindOutcome
+	s := string(content)
+	s = rb.rebindOneLakeSources(s, &out)
+	s = rb.rebindSQLSources(s, &out)
+	return []byte(s), out
+}
+
 // rebindOneLakeSources rewrites every Direct Lake on OneLake source URL in s by
 // resolving its lakehouse GUID baseline→target (by name, overrides honored) and
 // its workspace GUID to the resolved lakehouse's target workspace. Applied

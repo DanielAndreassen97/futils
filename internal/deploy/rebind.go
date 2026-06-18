@@ -94,6 +94,9 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 	if strings.HasPrefix(path.Base(partPath), "notebook-content.") {
 		return rb.RebindNotebookLakehouses(content)
 	}
+	if item.Type == "SemanticModel" {
+		return rb.RebindSemanticModel(content)
+	}
 	return content, RebindOutcome{}
 }
 
