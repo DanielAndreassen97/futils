@@ -21,10 +21,11 @@ type Result struct {
 
 // Execute publishes a plan against the target workspace. For each item, in
 // order, it applies logicalId substitution and parameter.yml find_replace to
-// every part, encodes parts to base64, and creates or updates the item. It
-// records each item's deployed GUID (keyed by logicalId and by type+name) so
-// later items in the run can reference them; reports are rebound to any
-// semantic model published earlier in the same run.
+// every part; when rb is non-nil, it also auto-rebinds notebook lakehouse
+// references by name. It then encodes parts to base64 and creates or updates
+// the item. It records each item's deployed GUID (keyed by logicalId and by
+// type+name) so later items in the run can reference them; reports are rebound
+// to any semantic model published earlier in the same run.
 //
 // A per-item error is captured in its Result (the run continues); Execute only
 // returns a top-level error for a setup failure that aborts everything.

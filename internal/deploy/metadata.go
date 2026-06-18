@@ -13,6 +13,7 @@ type lakehouseBlock struct {
 	KnownLakehouses             []knownLakehouse `json:"known_lakehouses"`
 }
 
+// knownLakehouse holds only the lakehouse id; workspace is resolved server-side.
 type knownLakehouse struct {
 	ID string `json:"id"`
 }
