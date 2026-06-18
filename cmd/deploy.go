@@ -274,8 +274,8 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			}
 			continue
 		}
-		localParts, un, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
-		unresolved = append(unresolved, un...)
+		localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
+		unresolved = append(unresolved, outcome.Unresolved...)
 		if perr != nil {
 			unverified++
 			if firstErr == nil {

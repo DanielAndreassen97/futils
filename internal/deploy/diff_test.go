@@ -67,12 +67,12 @@ func TestSubstitutePartsNilRebinderIsNoOp(t *testing.T) {
 		Parts: []Part{{Path: "notebook-content.py", Content: []byte("print(1)\n")}},
 	}
 	resolver := newResolverFixture()
-	parts, unresolved, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, nil)
+	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(unresolved) != 0 {
-		t.Errorf("nil rebinder should yield no unresolved, got %#v", unresolved)
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("nil rebinder should yield no unresolved, got %#v", outcome.Unresolved)
 	}
 	if string(parts["notebook-content.py"]) != "print(1)\n" {
 		t.Errorf("content changed under nil rebinder: %q", parts["notebook-content.py"])
@@ -88,16 +88,19 @@ func TestSubstitutePartsAppliesRebindToNotebookPart(t *testing.T) {
 		Parts: []Part{{Path: "notebook-content.py", Content: nb}},
 	}
 	resolver := newResolverFixture()
-	parts, unresolved, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
+	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(unresolved) != 0 {
-		t.Fatalf("unexpected unresolved: %#v", unresolved)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
 	}
 	got := string(parts["notebook-content.py"])
 	if !strings.Contains(got, "test-config-lh") || strings.Contains(got, devConfigLH) {
 		t.Errorf("rebind not applied to notebook part:\n%s", got)
+	}
+	if len(outcome.Changes) == 0 {
+		t.Errorf("expected rebind changes to be reported, got none")
 	}
 }
 
@@ -108,11 +111,11 @@ func TestSubstitutePartsTagsUnresolvedWithItemName(t *testing.T) {
 	item := LocalItem{Type: "Notebook", DisplayName: "NB_Config",
 		Parts: []Part{{Path: "notebook-content.py", Content: nb}}}
 	resolver := newResolverFixture()
-	_, unresolved, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
+	_, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if len(unresolved) != 1 || unresolved[0].ItemName != "NB_Config" {
-		t.Fatalf("unresolved = %#v (want one tagged with NB_Config)", unresolved)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].ItemName != "NB_Config" {
+		t.Fatalf("unresolved = %#v (want one tagged with NB_Config)", outcome.Unresolved)
 	}
 }

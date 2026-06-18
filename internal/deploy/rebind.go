@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"path"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -79,6 +80,16 @@ func (rb *Rebinder) resolveGUID(guid string) (IndexedItem, bool) {
 		return IndexedItem{}, false
 	}
 	return rb.target.ItemByName(base.Name, base.Type)
+}
+
+// RebindPart dispatches a single item part to the right rebind pass by item
+// type and part name, returning the rewritten bytes and the outcome. Parts with
+// no recognized reference location are returned unchanged.
+func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) ([]byte, RebindOutcome) {
+	if strings.HasPrefix(path.Base(partPath), "notebook-content.") {
+		return rb.RebindNotebookLakehouses(content)
+	}
+	return content, RebindOutcome{}
 }
 
 // RebindNotebookLakehouses rewrites the lakehouse dependency GUIDs in a Fabric
