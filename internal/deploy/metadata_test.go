@@ -55,6 +55,12 @@ func TestParseNotebookLakehouseIpynb(t *testing.T) {
 	if lh.DefaultLakehouseName != "LH_Gold" {
 		t.Errorf("DefaultLakehouseName = %q", lh.DefaultLakehouseName)
 	}
+	if lh.DefaultLakehouse != "aaaa1111-1111-1111-1111-111111111111" {
+		t.Errorf("DefaultLakehouse = %q", lh.DefaultLakehouse)
+	}
+	if lh.DefaultLakehouseWorkspaceID != "bbbb2222-2222-2222-2222-222222222222" {
+		t.Errorf("DefaultLakehouseWorkspaceID = %q", lh.DefaultLakehouseWorkspaceID)
+	}
 }
 
 func TestParseNotebookLakehouseAbsent(t *testing.T) {
@@ -64,5 +70,19 @@ func TestParseNotebookLakehouseAbsent(t *testing.T) {
 	}
 	if _, ok := parseNotebookLakehouse([]byte("not a notebook at all")); ok {
 		t.Error("expected no lakehouse block for arbitrary content")
+	}
+}
+
+func TestParseNotebookLakehousePyMetadataNoLakehouse(t *testing.T) {
+	nb := `# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "kernel_info": { "name": "synapse_pyspark" }
+# META }
+`
+	if _, ok := parseNotebookLakehouse([]byte(nb)); ok {
+		t.Error("expected no lakehouse block when the metadata section has no lakehouse dependency")
 	}
 }

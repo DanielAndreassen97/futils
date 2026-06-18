@@ -31,7 +31,7 @@ func extractMetadataJSON(content []byte) (string, bool) {
 	inMeta := false
 	for _, ln := range strings.Split(string(content), "\n") {
 		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "# METADATA") {
+		if strings.HasPrefix(t, "# METADATA *") {
 			inMeta = true
 			continue
 		}
