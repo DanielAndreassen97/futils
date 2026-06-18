@@ -43,9 +43,14 @@ type RebindOutcome struct {
 
 // Rebinder translates baseline-environment GUIDs to a target env by item name.
 type Rebinder struct {
+	client    FabricClient
+	token     string
 	baseline  *NameIndex
 	target    *NameIndex
 	overrides map[string]Override // baseline GUID -> override
+
+	baseEndpoints  map[string]IndexedItem // baseline SQL-endpoint id -> lakehouse (lazy)
+	targetEndpoint map[string][2]string   // target lakehouse GUID -> {host, id} (cache)
 }
 
 // NewRebinder builds the baseline and target name indices and returns a
@@ -64,7 +69,7 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	if overrides == nil {
 		overrides = map[string]Override{}
 	}
-	return &Rebinder{baseline: b, target: t, overrides: overrides}, nil
+	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides}, nil
 }
 
 // resolveGUID translates one baseline GUID to its target item. An override
