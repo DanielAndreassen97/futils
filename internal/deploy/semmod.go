@@ -47,7 +47,7 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 		return v[0], v[1], true
 	}
 	host, id, err := rb.client.GetLakehouseSqlEndpoint(rb.token, lake.WorkspaceID, lake.GUID)
-	if err != nil || host == "" {
+	if err != nil || host == "" || id == "" {
 		return "", "", false
 	}
 	rb.targetEndpoint[lake.GUID] = [2]string{host, id}
@@ -68,9 +68,9 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		seen[oldV] = true
 		out.Changes = append(out.Changes, RebindChange{Kind: "SQL endpoint", Old: oldV, New: newV})
 	}
+	rb.ensureBaseEndpoints()
 	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
 		host, id := m[1], m[2]
-		rb.ensureBaseEndpoints()
 		lake, ok := rb.baseEndpoints[id]
 		if !ok {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database"})
@@ -89,6 +89,8 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		add(host, newHost)
 		add(id, newID)
 	}
+	// out.Changes may include entries appended by a prior pass (OneLake);
+	// ReplaceAll on an old value no longer present is a harmless no-op.
 	for _, c := range out.Changes {
 		s = strings.ReplaceAll(s, c.Old, c.New)
 	}
