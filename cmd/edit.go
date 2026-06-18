@@ -17,6 +17,7 @@ const (
 	editActionEditEnv       = "__edit_env:"
 	editActionBack          = "__back"
 	editActionRefOverrides  = "__ref_overrides"
+	editActionSetBaseline   = "__set_baseline"
 	envActionAddWS          = "__add_ws"
 	envActionRemoveWS     = "__remove_ws"
 	envActionRenameAlias  = "__rename_alias"
@@ -95,6 +96,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := manageReferenceOverrides(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionSetBaseline:
+			if err := setBaselineEnvironment(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -112,6 +117,11 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			fmt.Printf("  %-12s → %d workspace%s\n", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
 		}
 	}
+	if customer.BaselineEnvironment != "" {
+		fmt.Printf("  baseline environment: %s\n", customer.BaselineEnvironment)
+	} else {
+		fmt.Println("  baseline environment: (unset — auto-rebind disabled)")
+	}
 	fmt.Println()
 
 	options := make([]ui.MenuOption, 0, len(customer.Environments)+2)
@@ -121,6 +131,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
+		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
 		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
@@ -490,6 +501,55 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 		return fmt.Errorf("save customer: %w", err)
 	}
 	fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+	return nil
+}
+
+// setBaseline sets (or, with an empty alias, clears) the customer's baseline
+// environment. Pure — the caller persists the result.
+func setBaseline(c config.Customer, alias string) config.Customer {
+	c.BaselineEnvironment = alias
+	return c
+}
+
+// setBaselineEnvironment lets the user choose which of the customer's
+// environments is the baseline (the env the git GUIDs belong to — the source
+// for GUID→name resolution during auto-rebind), or clear it. The picker offers
+// only the customer's own aliases, so the saved value is always a real env.
+func setBaselineEnvironment(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if len(customer.Environments) == 0 {
+		fmt.Println("Add an environment first, then set which one is the baseline.")
+		return nil
+	}
+	options := make([]ui.MenuOption, 0, len(customer.Environments)+1)
+	for _, e := range customer.Environments {
+		label := e.Alias
+		if e.Alias == customer.BaselineEnvironment {
+			label += " (current)"
+		}
+		options = append(options, ui.MenuOption{Label: label, Value: e.Alias})
+	}
+	options = append(options, ui.MenuOption{Label: "Clear (disable auto-rebind)", Value: ""})
+	chosen, err := ui.NumberMenu("Which environment do the git GUIDs belong to?", options)
+	if err != nil {
+		return err
+	}
+	customer = setBaseline(customer, chosen)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	if chosen == "" {
+		fmt.Println("Baseline environment cleared (auto-rebind disabled).")
+	} else {
+		fmt.Printf("Baseline environment set to %q.\n", chosen)
+	}
 	return nil
 }
 

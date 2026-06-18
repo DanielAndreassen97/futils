@@ -24,6 +24,19 @@ func TestRemoveIgnored(t *testing.T) {
 	}
 }
 
+func TestSetBaseline(t *testing.T) {
+	c := config.Customer{Environments: []config.Environment{{Alias: "DEV"}, {Alias: "TEST"}}}
+	c = setBaseline(c, "DEV")
+	if c.BaselineEnvironment != "DEV" {
+		t.Fatalf("BaselineEnvironment = %q, want DEV", c.BaselineEnvironment)
+	}
+	// Clearing: empty alias resets it.
+	c = setBaseline(c, "")
+	if c.BaselineEnvironment != "" {
+		t.Errorf("expected cleared baseline, got %q", c.BaselineEnvironment)
+	}
+}
+
 func TestValidateNewAlias(t *testing.T) {
 	existing := []config.Environment{
 		{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}},
