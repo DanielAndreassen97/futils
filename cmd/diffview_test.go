@@ -1,6 +1,11 @@
 package cmd
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/DanielAndreassen97/futils/internal/deploy"
+	"github.com/DanielAndreassen97/futils/internal/fabric"
+)
 
 func TestUnifiedLineDiffChangedLine(t *testing.T) {
 	old := "a\nGUID-DEV\nc"
@@ -47,6 +52,37 @@ func TestUnifiedLineDiffAddedAndRemoved(t *testing.T) {
 	// "keep" is common; "old" removed; "new" and "extra" added (order: removals before additions at a divergence is acceptable).
 	if !contains(got, " keep\n") || !contains(got, "-old\n") || !contains(got, "+new\n") || !contains(got, "+extra\n") {
 		t.Fatalf("diff missing expected lines:\n%s", got)
+	}
+}
+
+func TestRenderDeployDiffHTMLEscapesAndIncludesItems(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Diffs: []ItemDiff{{
+			Name: "NB_Config", Type: "Notebook",
+			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "lh = \"DEV\"\n<script>", New: "lh = \"TEST\"\n<script>"}},
+		}},
+	}}
+	html := renderDeployDiffHTML(groups)
+	if !contains(html, "NB_Config") || !contains(html, "notebook-content.py") {
+		t.Errorf("HTML missing item/part name")
+	}
+	if !contains(html, "DEV") || !contains(html, "TEST") {
+		t.Errorf("HTML missing diff content")
+	}
+	// Raw content must be HTML-escaped (no live <script>).
+	if contains(html, "<script>") {
+		t.Errorf("content not HTML-escaped — raw <script> present")
+	}
+	if !contains(html, "&lt;script&gt;") {
+		t.Errorf("expected escaped <script>")
+	}
+}
+
+func TestRenderDeployDiffHTMLEmpty(t *testing.T) {
+	html := renderDeployDiffHTML([]deployGroup{{}})
+	if !contains(html, "<html") {
+		t.Errorf("expected a valid HTML doc even with no diffs")
 	}
 }
 

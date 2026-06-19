@@ -180,6 +180,21 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 	if dryRun {
+		hasDiffs := false
+		for _, g := range groups {
+			if len(g.Diffs) > 0 {
+				hasDiffs = true
+				break
+			}
+		}
+		if hasDiffs {
+			ok, cerr := ui.Confirm("Open content diffs in browser?")
+			if cerr == nil && ok {
+				if derr := showDiffsInBrowser(groups); derr != nil {
+					fmt.Println(warningStyle.Render("Couldn't open diffs: " + derr.Error()))
+				}
+			}
+		}
 		var unresolved []deploy.UnresolvedRef
 		for _, g := range groups {
 			unresolved = append(unresolved, g.Unresolved...)
