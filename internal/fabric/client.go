@@ -8,10 +8,12 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -42,6 +44,86 @@ const (
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// httpDebug logs every HTTP call (method, status, duration, path) so you can see
+// exactly what API work futils does during a run. Enable via FUTILS_DEBUG:
+//
+//	FUTILS_DEBUG=1                     → log to stderr (interleaves with the TUI)
+//	FUTILS_DEBUG=/tmp/futils-http.log  → log to that file (clean TUI, full log)
+var (
+	httpDebug bool
+	debugW    io.Writer = os.Stderr
+)
+
+func init() {
+	v := strings.TrimSpace(os.Getenv("FUTILS_DEBUG"))
+	if v == "" {
+		return
+	}
+	httpDebug = true
+	switch v {
+	case "1", "true", "yes", "stderr":
+		// debugW stays os.Stderr
+	default:
+		if f, err := os.Create(v); err == nil {
+			debugW = f
+		}
+	}
+}
+
+var httpCallCount int64
+
+// HTTPCallCount returns the number of HTTP requests issued this process.
+func HTTPCallCount() int64 { return atomic.LoadInt64(&httpCallCount) }
+
+func logHTTP(method string, status int, dur time.Duration, rawURL string) {
+	atomic.AddInt64(&httpCallCount, 1)
+	if !httpDebug {
+		return
+	}
+	path := strings.TrimPrefix(strings.TrimPrefix(rawURL, baseURL), powerBIBaseURL)
+	fmt.Fprintf(debugW, "[http] %-6s %3d %5dms  %s\n", method, status, dur.Milliseconds(), path)
+}
+
+// throttleHits is the cumulative count of 429 backoffs since process start;
+// throttleActive is a gauge of requests currently sleeping on a 429. Together
+// they let a UI say "we're being rate-limited right now" (active) and "this run
+// hit limits N times" (cumulative) instead of showing a frozen spinner.
+var (
+	throttleHits   int64
+	throttleActive int64
+)
+
+// ThrottleHits returns the running total of 429 backoffs. Callers typically
+// snapshot it before a batch and report the delta.
+func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
+
+// ActiveThrottles returns how many requests are currently waiting out a 429
+// backoff — non-zero means "actively rate-limited this moment", and it falls
+// back to zero once the throttling clears, so a UI signal won't get stuck on.
+func ActiveThrottles() int64 { return atomic.LoadInt64(&throttleActive) }
+
+// firstThrottle captures the details of the first 429 seen this process so a UI
+// can show WHY Fabric throttled — its own error body names the limit that was
+// hit, which beats guessing.
+var (
+	firstThrottleOnce sync.Once
+	firstThrottle     string
+)
+
+// FirstThrottle returns the first 429's "METHOD url — Retry-After=… — <body>",
+// or "" if none seen.
+func FirstThrottle() string { return firstThrottle }
+
+func recordThrottle(method, rawURL, retryAfter string, body []byte) {
+	firstThrottleOnce.Do(func() {
+		b := strings.TrimSpace(string(body))
+		if len(b) > 240 {
+			b = b[:240] + "…"
+		}
+		firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
+	})
+}
 
 // throttleDelay computes how long to wait before retrying a 429. It honors the
 // Retry-After header (delta-seconds form) when present and positive, capped at
@@ -331,18 +413,48 @@ func ParseNotebookParameters(token, workspaceID, itemID string) ([]Parameter, er
 	return ParseParameters(ipynb)
 }
 
+const (
+	// minPollInterval matches the reference dry-run's steady 1s poll. Polling
+	// faster (we tried 250ms) front-loads operation-status requests and spikes
+	// the request rate past Fabric's limit, triggering 429s the 1s cadence avoids.
+	minPollInterval = 1 * time.Second
+	maxPollInterval = 2 * time.Second
+)
+
+// nextPollInterval grows the inter-poll delay from minPollInterval toward
+// maxPollInterval, so polling starts gentle (matching a known-safe cadence) and
+// a slow operation settles to the 2s cap — preserving the ~maxAttempts×2s budget.
+func nextPollInterval(prev time.Duration) time.Duration {
+	if prev <= 0 {
+		return minPollInterval
+	}
+	next := prev * 2
+	if next > maxPollInterval {
+		return maxPollInterval
+	}
+	return next
+}
+
 // pollOperation follows a Fabric long-running operation to
 // completion and returns the result body. maxAttempts caps the
-// number of poll cycles (each 2 seconds apart). Pass 0 to use the
-// default of 60 (≈2 minutes) — enough for getDefinition; CreateItem
-// uses a longer cap for large report definitions.
+// number of poll cycles. Pass 0 to use the default of 60 — enough for
+// getDefinition; CreateItem uses a longer cap for large report definitions.
+//
+// It sleeps BEFORE the first poll (never polls at t=0): a freshly-created
+// operation isn't ready yet, and polling it immediately — across many
+// concurrent workers — makes the upstream service reject the premature polls
+// with "RequestBlocked". Waiting one interval first (matching the reference
+// dry-run's `sleep(1); poll`) gives the operation time to be ready.
 func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 60
 	}
-	const pollInterval = 2 * time.Second
+	var interval time.Duration
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		interval = nextPollInterval(interval)
+		time.Sleep(interval)
+
 		data, err := doGet(token, operationURL)
 		if err != nil {
 			return nil, fmt.Errorf("poll: %w", err)
@@ -359,7 +471,6 @@ func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) 
 		case "Failed":
 			return nil, fmt.Errorf("operation failed: %s", string(data))
 		}
-		time.Sleep(pollInterval)
 	}
 	return nil, fmt.Errorf("operation did not complete within %d attempts", maxAttempts)
 }
@@ -454,7 +565,11 @@ func doGet(token, rawURL string) ([]byte, error) {
 			}
 		}
 		if status == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			recordThrottle("GET", rawURL, retryAfter, body)
+			atomic.AddInt64(&throttleHits, 1)
+			atomic.AddInt64(&throttleActive, 1)
 			time.Sleep(throttleDelay(retryAfter, attempt))
+			atomic.AddInt64(&throttleActive, -1)
 			continue
 		}
 		if status >= 400 {
@@ -470,11 +585,13 @@ func doGetOnce(token, rawURL string) ([]byte, int, string, error) {
 		return nil, 0, "", fmt.Errorf("invalid URL: %w", err)
 	}
 	req.Header = authHeader(token)
+	start := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
+	logHTTP("GET", resp.StatusCode, time.Since(start), rawURL)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, resp.StatusCode, "", fmt.Errorf("read body: %w", err)
@@ -508,6 +625,16 @@ func doLRO(token, rawURL string, reqBody io.Reader, maxAttempts int) ([]byte, er
 }
 
 func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
+	return doWrite("POST", token, rawURL, reqBody)
+}
+
+func doPatch(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
+	return doWrite("PATCH", token, rawURL, reqBody)
+}
+
+// doWrite issues a body-bearing request (POST/PATCH) with the shared 401-refresh
+// and 429-throttle retry handling.
+func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
 	// Drain the body up front so the 401/429-retry path can replay it.
 	// All current callers pass either nil or a bytes.NewReader, so this
 	// is at worst a no-op copy.
@@ -520,32 +647,36 @@ func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, er
 		}
 	}
 	for attempt := 0; ; attempt++ {
-		resp, body, err := doPostOnce(token, rawURL, bodyBytes)
+		resp, body, err := doWriteOnce(method, token, rawURL, bodyBytes)
 		if err != nil {
 			return resp, body, err
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
 			if fresh, ok := retryWithFreshToken(); ok {
-				resp, body, err = doPostOnce(fresh, rawURL, bodyBytes)
+				resp, body, err = doWriteOnce(method, fresh, rawURL, bodyBytes)
 				if err != nil {
 					return resp, body, err
 				}
 			}
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			recordThrottle(method, rawURL, resp.Header.Get("Retry-After"), body)
+			atomic.AddInt64(&throttleHits, 1)
+			atomic.AddInt64(&throttleActive, 1)
 			time.Sleep(throttleDelay(resp.Header.Get("Retry-After"), attempt))
+			atomic.AddInt64(&throttleActive, -1)
 			continue
 		}
 		return resp, body, nil
 	}
 }
 
-func doPostOnce(token, rawURL string, bodyBytes []byte) (*http.Response, []byte, error) {
+func doWriteOnce(method, token, rawURL string, bodyBytes []byte) (*http.Response, []byte, error) {
 	var reader io.Reader
 	if bodyBytes != nil {
 		reader = bytes.NewReader(bodyBytes)
 	}
-	req, err := http.NewRequest("POST", rawURL, reader)
+	req, err := http.NewRequest(method, rawURL, reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid URL: %w", err)
 	}
@@ -553,11 +684,13 @@ func doPostOnce(token, rawURL string, bodyBytes []byte) (*http.Response, []byte,
 	if bodyBytes != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	start := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
+	logHTTP(method, resp.StatusCode, time.Since(start), rawURL)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read body: %w", err)

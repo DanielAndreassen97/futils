@@ -17,6 +17,7 @@ var frames = []string{"▱▱▱", "▰▱▱", "▰▰▱", "▰▰▰", "▰�
 // Spinner shows a non-blocking animated spinner on stdout. Suitable for
 // wrapping long API calls so the terminal doesn't look frozen.
 type Spinner struct {
+	mu       sync.Mutex
 	message  string
 	stop     chan struct{}
 	done     sync.WaitGroup
@@ -28,6 +29,23 @@ func NewSpinner(message string) *Spinner {
 		message: message,
 		stop:    make(chan struct{}),
 	}
+}
+
+// SetMessage updates the text shown next to the spinner. Safe to call from
+// other goroutines while the spinner runs — used to show live progress
+// (e.g. "5/41") as concurrent work completes.
+func (s *Spinner) SetMessage(message string) {
+	s.mu.Lock()
+	s.message = message
+	s.mu.Unlock()
+}
+
+// getMessage reads the current message under the lock so the animation
+// goroutine never races a concurrent SetMessage.
+func (s *Spinner) getMessage() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.message
 }
 
 // Start begins the animation in a goroutine. Call Stop to end it.
@@ -43,7 +61,7 @@ func (s *Spinner) Start() {
 				return
 			default:
 				frame := spinnerStyle.Render(frames[i%len(frames)])
-				fmt.Printf("\r%s %s", frame, s.message)
+				fmt.Printf("\r\033[K%s %s", frame, s.getMessage())
 				i++
 				time.Sleep(150 * time.Millisecond)
 			}

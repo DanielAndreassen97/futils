@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -210,7 +212,13 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
-const diffConcurrency = 4
+// diffConcurrency bounds how many deployed item definitions are fetched in
+// parallel during the compare. The reference dry-run runs 20 wide with a 1s
+// poll and never throttles, which showed concurrency was never the limiter —
+// the request *rate* (poll cadence) was. With the 1s poll floor in place, 16 is
+// safe and well above the slow 4; Fabric 429s (if any) still self-limit via the
+// client's Retry-After backoff and are surfaced in the spinner.
+const diffConcurrency = 16
 
 // buildDeployGroups turns each folder→workspace mapping into a compare group:
 // items under that folder vs the mapped workspace's deployed items. For items
@@ -276,8 +284,33 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		return nil, nil, nil
 	}
 
-	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
+	total := len(existsIdx)
+	var done int64
+	baseThrottle := fabric.ThrottleHits()
+	render := func() string {
+		msg := fmt.Sprintf("Comparing %d/%d item(s) in %s", atomic.LoadInt64(&done), total, target.DisplayName)
+		if active := fabric.ActiveThrottles(); active > 0 {
+			msg += fmt.Sprintf(" — rate-limited, %d waiting", active)
+		}
+		return msg + "..."
+	}
+	sp := ui.NewSpinner(render())
 	sp.Start()
+	// Refresh the message on a timer so a throttle stall stays visible: the
+	// counter freezes while every worker sleeps on a 429, and without this the
+	// spinner would give no hint that we're being rate-limited rather than hung.
+	ticker := time.NewTicker(500 * time.Millisecond)
+	stopTicker := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopTicker:
+				return
+			case <-ticker.C:
+				sp.SetMessage(render())
+			}
+		}
+	}()
 	type fetched struct {
 		def *fabric.Definition
 		err error
@@ -293,10 +326,23 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			defer func() { <-sem }()
 			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "")
 			results[j] = fetched{def: def, err: err}
+			atomic.AddInt64(&done, 1)
 		}(j, idx)
 	}
 	wg.Wait()
+	ticker.Stop()
+	close(stopTicker)
 	sp.Stop()
+
+	// One-line, after-the-fact note when Fabric rate-limited us during the
+	// compare — explains why it was slow without spamming a line per 429.
+	if throttled := fabric.ThrottleHits() - baseThrottle; throttled > 0 {
+		msg := fmt.Sprintf("Fabric rate-limited the compare %d time(s) — that's the slowness, not a hang.", throttled)
+		if info := fabric.FirstThrottle(); info != "" {
+			msg += "\n  first 429: " + info
+		}
+		fmt.Println(warningStyle.Render(msg))
+	}
 
 	// Map each source logicalId to its deployed GUID so cross-item references in
 	// the local definition match what's live in the workspace.

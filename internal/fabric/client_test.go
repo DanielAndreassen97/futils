@@ -11,6 +11,22 @@ func TestThrottleDelayHonorsRetryAfter(t *testing.T) {
 	}
 }
 
+func TestNextPollIntervalBacksOff(t *testing.T) {
+	// Floor matches the reference dry-run's steady 1s poll so we don't spike the
+	// request rate past Fabric's limit; it then backs off to the 2s cap.
+	cases := []struct{ prev, want time.Duration }{
+		{0, 1 * time.Second},               // first wait after an immediate poll miss
+		{1 * time.Second, 2 * time.Second}, // back off toward the cap
+		{2 * time.Second, 2 * time.Second}, // capped
+		{5 * time.Second, 2 * time.Second}, // never exceeds the cap
+	}
+	for _, c := range cases {
+		if got := nextPollInterval(c.prev); got != c.want {
+			t.Errorf("nextPollInterval(%v) = %v, want %v", c.prev, got, c.want)
+		}
+	}
+}
+
 func TestThrottleDelayCapsRetryAfter(t *testing.T) {
 	if got := throttleDelay("9999", 0); got != maxThrottleWait {
 		t.Errorf("got %v, want %v", got, maxThrottleWait)
