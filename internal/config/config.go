@@ -32,6 +32,23 @@ type ReferenceOverride struct {
 	Note       string `json:"note,omitempty"`
 }
 
+// Substitution is a futils-native find→replace rule — the config-managed
+// equivalent of a parameter.yml find_replace. The replacement is either a
+// literal (Literal) or the resolved attribute of a target item looked up BY
+// NAME in the target env (TargetType+TargetName+Attr), making it env-agnostic.
+// ItemType/ItemName/FilePath are optional filters (empty = apply everywhere).
+type Substitution struct {
+	FindValue  string `json:"find_value"`
+	IsRegex    bool   `json:"is_regex,omitempty"`
+	ItemType   string `json:"item_type,omitempty"`
+	ItemName   string `json:"item_name,omitempty"`
+	FilePath   string `json:"file_path,omitempty"`
+	TargetType string `json:"target_type,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
+	Attr       string `json:"attr,omitempty"`
+	Literal    string `json:"literal,omitempty"`
+}
+
 // Environment pairs a user-chosen alias (menu label) with one or more
 // Fabric workspaces it resolves to. Multiple workspaces per alias is the
 // common case for real Fabric deployments — e.g. a "DEV" environment
@@ -54,6 +71,7 @@ type Customer struct {
 	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
+	Substitutions       []Substitution      `json:"substitutions,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -190,6 +208,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
+		Substitutions       []Substitution      `json:"substitutions,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -199,6 +218,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.BaselineEnvironment = aux.BaselineEnvironment
 	c.ReferenceOverrides = aux.ReferenceOverrides
 	c.IgnoredReferences = aux.IgnoredReferences
+	c.Substitutions = aux.Substitutions
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil

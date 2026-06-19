@@ -497,3 +497,39 @@ func TestIgnoredReferencesAbsentLegacy(t *testing.T) {
 		t.Error("expected no ignored references on legacy config")
 	}
 }
+
+func TestSubstitutionsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments: []Environment{{Alias: "DEV", Workspaces: []string{"A"}}},
+			Substitutions: []Substitution{
+				{FindValue: "dev-host.datawarehouse.fabric.microsoft.com", TargetType: "Lakehouse", TargetName: "LH_Config", Attr: "sqlendpoint"},
+				{FindValue: "literal-find", Literal: "literal-replace"},
+			},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Load(path)
+	subs := out.Customers["acme"].Substitutions
+	if len(subs) != 2 {
+		t.Fatalf("Substitutions = %#v", subs)
+	}
+	if subs[0].TargetName != "LH_Config" || subs[0].Attr != "sqlendpoint" {
+		t.Errorf("subs[0] = %#v", subs[0])
+	}
+	if subs[1].Literal != "literal-replace" {
+		t.Errorf("subs[1] = %#v", subs[1])
+	}
+}
+
+func TestSubstitutionsAbsentLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600)
+	out, _ := Load(path)
+	if len(out.Customers["acme"].Substitutions) != 0 {
+		t.Error("expected no substitutions on legacy config")
+	}
+}
