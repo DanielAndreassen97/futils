@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -83,6 +84,9 @@ type PartDiff struct {
 func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []PartDiff {
 	deployedNorm := make(map[string]string, len(deployed.Parts))
 	for _, p := range deployed.Parts {
+		if path.Base(p.Path) == ".platform" {
+			continue // local parts exclude .platform; its description is diffed as a field
+		}
 		raw, err := base64.StdEncoding.DecodeString(p.Payload)
 		if err != nil {
 			raw = []byte(p.Payload)
@@ -107,12 +111,37 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 	return diffs
 }
 
+// DeployedDescription returns the item description stored in the deployed
+// definition's .platform part (empty if there is none or it can't be parsed).
+// futils excludes .platform from the part-by-part diff, so description drift is
+// surfaced separately as a field-level change.
+func DeployedDescription(deployed *fabric.Definition) string {
+	for _, p := range deployed.Parts {
+		if path.Base(p.Path) != ".platform" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(p.Payload)
+		if err != nil {
+			raw = []byte(p.Payload)
+		}
+		meta, err := parsePlatform(raw)
+		if err != nil {
+			return ""
+		}
+		return meta.Description
+	}
+	return ""
+}
+
 // PartsChanged reports whether the local substituted parts differ from the
 // deployed definition, after per-part normalization. A differing set of part
 // paths (one added or removed) counts as changed.
 func PartsChanged(localParts map[string][]byte, deployed *fabric.Definition) bool {
 	deployedNorm := make(map[string][]byte, len(deployed.Parts))
 	for _, p := range deployed.Parts {
+		if path.Base(p.Path) == ".platform" {
+			continue // local parts exclude .platform; its description is diffed as a field
+		}
 		raw, err := base64.StdEncoding.DecodeString(p.Payload)
 		if err != nil {
 			raw = []byte(p.Payload) // non-base64 payloads compared as-is

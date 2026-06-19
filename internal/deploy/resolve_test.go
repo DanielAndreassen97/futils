@@ -13,8 +13,10 @@ type fakeFabric struct {
 	sqlByLH    map[string][2]string     // lakehouseID -> {host, id}
 }
 
-func (f *fakeFabric) ListWorkspaces(token string) ([]fabric.Workspace, error) { return f.workspaces, nil }
-func (f *fakeFabric) ListItems(token, ws string) ([]fabric.Item, error)       { return f.itemsByWS[ws], nil }
+func (f *fakeFabric) ListWorkspaces(token string) ([]fabric.Workspace, error) {
+	return f.workspaces, nil
+}
+func (f *fakeFabric) ListItems(token, ws string) ([]fabric.Item, error) { return f.itemsByWS[ws], nil }
 func (f *fakeFabric) ListItemsByType(token, ws, typ string) ([]fabric.Item, error) {
 	var out []fabric.Item
 	for _, it := range f.itemsByWS[ws] {
@@ -30,8 +32,11 @@ func (f *fakeFabric) GetItemDefinition(token, ws, id, format string) (*fabric.De
 func (f *fakeFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
 	return fabric.Item{ID: "new-" + name, DisplayName: name, Type: typ, WorkspaceID: ws}, nil
 }
-func (f *fakeFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error { return nil }
-func (f *fakeFabric) RebindReport(token, ws, reportID, datasetID string) error                { return nil }
+func (f *fakeFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
+	return nil
+}
+func (f *fakeFabric) UpdateItem(token, ws, id, displayName, description string) error { return nil }
+func (f *fakeFabric) RebindReport(token, ws, reportID, datasetID string) error        { return nil }
 func (f *fakeFabric) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	v := f.sqlByLH[lhID]
 	return v[0], v[1], nil

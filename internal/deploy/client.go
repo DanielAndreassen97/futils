@@ -12,6 +12,7 @@ type FabricClient interface {
 	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
 	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error)
 	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
+	UpdateItem(token, workspaceID, itemID, displayName, description string) error
 	RebindReport(token, workspaceID, reportID, datasetID string) error
 	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
 }

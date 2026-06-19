@@ -61,6 +61,7 @@ type APIClient interface {
 	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
 	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error)
 	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
+	UpdateItem(token, workspaceID, itemID, displayName, description string) error
 	RebindReport(token, workspaceID, reportID, datasetID string) error
 
 	// Refresh flow.
@@ -111,6 +112,9 @@ func (RealAPIClient) CreateItem(token, workspaceID, displayName, itemType string
 }
 func (RealAPIClient) UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error {
 	return fabric.UpdateItemDefinition(token, workspaceID, itemID, def)
+}
+func (RealAPIClient) UpdateItem(token, workspaceID, itemID, displayName, description string) error {
+	return fabric.UpdateItem(token, workspaceID, itemID, displayName, description)
 }
 func (RealAPIClient) RebindReport(token, workspaceID, reportID, datasetID string) error {
 	return fabric.RebindReport(token, workspaceID, reportID, datasetID)

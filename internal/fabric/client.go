@@ -300,6 +300,38 @@ func UpdateItemDefinition(token, workspaceID, itemID string, def *Definition) er
 	return err
 }
 
+// UpdateItem updates an item's metadata — displayName and description — via the
+// Core Items PATCH endpoint. The .platform metadata (which holds the description)
+// is never part of the published definition, so this is how a git description
+// reaches the workspace; mirrors fabric-cicd's separate metadata update. Unlike
+// the definition endpoints this is synchronous (200 OK), not an LRO.
+func UpdateItem(token, workspaceID, itemID, displayName, description string) error {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return err
+	}
+	body := struct {
+		DisplayName string `json:"displayName"`
+		Description string `json:"description"`
+	}{DisplayName: displayName, Description: description}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal update-item body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, itemID)
+	resp, respBody, err := doPatch(token, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("update item %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // ListNotebooks returns all notebook items in a workspace.
 // Thin wrapper over ListItemsByType for backward compatibility.
 func ListNotebooks(token, workspaceID string) ([]Item, error) {

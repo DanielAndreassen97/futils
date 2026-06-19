@@ -16,6 +16,14 @@ type recordingFabric struct {
 	createdNames []string
 	updates      map[string]fabric.Definition // existingID -> def
 	rebinds      [][2]string                  // {reportID, datasetID}
+	metaUpdates  []metaUpdate                 // UpdateItem (PATCH) calls
+}
+
+type metaUpdate struct{ id, displayName, description string }
+
+func (r *recordingFabric) UpdateItem(token, ws, id, displayName, description string) error {
+	r.metaUpdates = append(r.metaUpdates, metaUpdate{id, displayName, description})
+	return nil
 }
 
 func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
@@ -107,6 +115,50 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 	}
 	if _, ok := rf.updates["existing-id"]; !ok {
 		t.Errorf("definition was not pushed to existing-id; updates=%v", rf.updates)
+	}
+}
+
+func TestExecuteSetsDescriptionOnCreate(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{{
+		Action: ActionCreate,
+		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
+			Description: "My desc",
+			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
+	}}
+	if _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(rf.metaUpdates) != 1 {
+		t.Fatalf("want 1 metadata update, got %d: %+v", len(rf.metaUpdates), rf.metaUpdates)
+	}
+	got := rf.metaUpdates[0]
+	if got.id != "NB_A-newid" || got.displayName != "NB_A" || got.description != "My desc" {
+		t.Errorf("metadata update = %+v, want {NB_A-newid NB_A My desc}", got)
+	}
+}
+
+func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{{
+		Action: ActionUpdate, ExistingID: "existing-id",
+		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
+			Description: "Updated desc",
+			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
+	}}
+	if _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
+		t.Errorf("want metadata update of existing-id with 'Updated desc', got %+v", rf.metaUpdates)
 	}
 }
 

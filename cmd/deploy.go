@@ -273,7 +273,7 @@ func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
+func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
@@ -377,12 +377,24 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			}
 			continue
 		}
-		if deploy.PartsChanged(localParts, results[j].def) {
+		// Description lives in .platform (excluded from the part diff) and is
+		// deployed separately via UpdateItem, so drift in it is a real change.
+		// DiffParts is the single source of the content verdict (non-empty ==
+		// changed), avoiding a redundant PartsChanged normalization pass.
+		deployedDesc := deploy.DeployedDescription(results[j].def)
+		descChanged := deployedDesc != rows[idx].Local.Description
+		parts := deploy.DiffParts(localParts, results[j].def)
+		if len(parts) > 0 || descChanged {
 			rows[idx].Class = deploy.ClassChanged
+			if descChanged {
+				parts = append(parts, deploy.PartDiff{
+					Path: "(item description)", Old: deployedDesc, New: rows[idx].Local.Description,
+				})
+			}
 			itemDiffs = append(itemDiffs, ItemDiff{
 				Name:  rows[idx].Name(),
 				Type:  rows[idx].ItemType(),
-				Parts: deploy.DiffParts(localParts, results[j].def),
+				Parts: parts,
 			})
 		} else {
 			rows[idx].Class = deploy.ClassUnchanged

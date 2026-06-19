@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -30,9 +31,10 @@ func captureStdout(t *testing.T, fn func()) string {
 // deployFakeAPI implements deploy.FabricClient for runDeploy tests.
 type deployFakeAPI struct {
 	workspaces []fabric.Workspace
-	items      map[string][]fabric.Item // workspaceID -> items
-	created    []string                 // displayNames created
-	createdWS  map[string]string        // displayName -> workspaceID
+	items      map[string][]fabric.Item      // workspaceID -> items
+	created    []string                      // displayNames created
+	createdWS  map[string]string             // displayName -> workspaceID
+	defByID    map[string]*fabric.Definition // itemID -> deployed definition (compare tests)
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -51,6 +53,9 @@ func (f *deployFakeAPI) ListItemsByType(token, ws, typ string) ([]fabric.Item, e
 	return out, nil
 }
 func (f *deployFakeAPI) GetItemDefinition(token, ws, id, format string) (*fabric.Definition, error) {
+	if d, ok := f.defByID[id]; ok {
+		return d, nil
+	}
 	return &fabric.Definition{}, nil
 }
 func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
@@ -64,9 +69,75 @@ func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Defi
 func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
 	return nil
 }
-func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error { return nil }
+func (f *deployFakeAPI) UpdateItem(token, ws, id, displayName, description string) error { return nil }
+func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error        { return nil }
 func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	return "", "", nil
+}
+
+// platformDef builds a deployed definition for a notebook: a matching content
+// part plus a .platform part carrying the given description — mirroring what
+// Fabric's getDefinition returns.
+func platformDef(content, description string) *fabric.Definition {
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	platform := `{"metadata":{"type":"Notebook","displayName":"NB_A","description":"` + description + `"}}`
+	return &fabric.Definition{Parts: []fabric.DefinitionPart{
+		{Path: "notebook-content.py", Payload: enc(content), PayloadType: "InlineBase64"},
+		{Path: ".platform", Payload: enc(platform), PayloadType: "InlineBase64"},
+	}}
+}
+
+func TestDiffExistingRows_DescriptionDriftIsChanged(t *testing.T) {
+	local := []deploy.LocalItem{{
+		Type: "Notebook", DisplayName: "NB_A", Description: "Real desc",
+		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
+	}}
+	deployed := []fabric.Item{{ID: "nb-a-id", DisplayName: "NB_A", Type: "Notebook", WorkspaceID: "ws-1"}}
+	rows := deploy.Compare(local, deployed, deployItemScope)
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		"nb-a-id": platformDef("x=1", "Old desc"), // content matches, description differs
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+
+	if rows[0].Class != deploy.ClassChanged {
+		t.Fatalf("description drift must make the row Changed, got %v", rows[0].Class)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("want 1 item diff, got %d", len(diffs))
+	}
+	var foundDesc bool
+	for _, p := range diffs[0].Parts {
+		if p.Old == "Old desc" && p.New == "Real desc" {
+			foundDesc = true
+		}
+	}
+	if !foundDesc {
+		t.Errorf("description change not surfaced as a part diff: %+v", diffs[0].Parts)
+	}
+}
+
+func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
+	local := []deploy.LocalItem{{
+		Type: "Notebook", DisplayName: "NB_A", Description: "Same",
+		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
+	}}
+	deployed := []fabric.Item{{ID: "nb-a-id", DisplayName: "NB_A", Type: "Notebook", WorkspaceID: "ws-1"}}
+	rows := deploy.Compare(local, deployed, deployItemScope)
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		"nb-a-id": platformDef("x=1", "Same"), // content + description both match
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+
+	if rows[0].Class != deploy.ClassUnchanged {
+		t.Fatalf("matching content + description must be Unchanged (no phantom .platform diff), got %v", rows[0].Class)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("want no diffs, got %+v", diffs)
+	}
 }
 
 func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed []fabric.Item) deployGroup {

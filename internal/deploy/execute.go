@@ -62,6 +62,14 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 		}
 		res.ID = deployedID
 
+		// Item metadata (description) lives in .platform, which is never part of
+		// the published definition — set it explicitly so git stays the source of
+		// truth for descriptions, mirroring fabric-cicd. A failure here is
+		// non-fatal: the definition is already published.
+		if err := client.UpdateItem(token, target.ID, deployedID, p.Item.DisplayName, p.Item.Description); err != nil {
+			res.Err = fmt.Errorf("definition published but description update failed: %w", err)
+		}
+
 		if p.Item.LogicalID != "" {
 			idMap[p.Item.LogicalID] = deployedID
 		}

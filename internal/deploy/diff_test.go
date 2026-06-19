@@ -60,11 +60,53 @@ func TestPartsChangedDifferentPartSet(t *testing.T) {
 	}
 }
 
+// Fabric's getDefinition returns a .platform part, but DiscoverItems excludes
+// .platform from local parts — so a deployed-only .platform must NOT be read as
+// a content change, or every existing item is falsely flagged Changed.
+func TestPartsChangedIgnoresDeployedPlatform(t *testing.T) {
+	local := map[string][]byte{"notebook-content.py": []byte("x=1")}
+	deployed := deployedDef(map[string]string{
+		"notebook-content.py": "x=1",
+		".platform":           `{"metadata":{"type":"Notebook","displayName":"NB","description":"d"}}`,
+	})
+	if PartsChanged(local, deployed) {
+		t.Error("deployed-only .platform must not count as a content change")
+	}
+}
+
+func TestDiffPartsIgnoresDeployedPlatform(t *testing.T) {
+	local := map[string][]byte{"notebook-content.py": []byte("x=1")}
+	deployed := deployedDef(map[string]string{
+		"notebook-content.py": "x=1",
+		".platform":           `{"metadata":{"type":"Notebook","displayName":"NB"}}`,
+	})
+	if diffs := DiffParts(local, deployed); len(diffs) != 0 {
+		t.Errorf("expected no diffs (only deployed-only .platform), got %+v", diffs)
+	}
+}
+
+func TestDeployedDescription(t *testing.T) {
+	deployed := deployedDef(map[string]string{
+		"notebook-content.py": "x=1",
+		".platform":           `{"metadata":{"type":"Notebook","displayName":"NB","description":"Hello"}}`,
+	})
+	if got := DeployedDescription(deployed); got != "Hello" {
+		t.Errorf("got %q, want %q", got, "Hello")
+	}
+}
+
+func TestDeployedDescriptionNoPlatform(t *testing.T) {
+	deployed := deployedDef(map[string]string{"notebook-content.py": "x=1"})
+	if got := DeployedDescription(deployed); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
 func TestSubstitutePartsNilRebinderIsNoOp(t *testing.T) {
 	item := LocalItem{
 		Type:        "Notebook",
 		DisplayName: "NB_Config",
-		Parts: []Part{{Path: "notebook-content.py", Content: []byte("print(1)\n")}},
+		Parts:       []Part{{Path: "notebook-content.py", Content: []byte("print(1)\n")}},
 	}
 	resolver := newResolverFixture()
 	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, nil)
@@ -85,7 +127,7 @@ func TestSubstitutePartsAppliesRebindToNotebookPart(t *testing.T) {
 	item := LocalItem{
 		Type:        "Notebook",
 		DisplayName: "NB_Config",
-		Parts: []Part{{Path: "notebook-content.py", Content: nb}},
+		Parts:       []Part{{Path: "notebook-content.py", Content: nb}},
 	}
 	resolver := newResolverFixture()
 	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
