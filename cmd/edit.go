@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -18,12 +19,13 @@ const (
 	editActionBack          = "__back"
 	editActionRefOverrides  = "__ref_overrides"
 	editActionSetBaseline   = "__set_baseline"
+	editActionSubstitutions = "__substitutions"
 	envActionAddWS          = "__add_ws"
-	envActionRemoveWS     = "__remove_ws"
-	envActionRenameAlias  = "__rename_alias"
-	envActionDeleteEnv    = "__delete_env"
-	envActionAddDeploy    = "__add_deploy"
-	envActionRemoveDeploy = "__remove_deploy"
+	envActionRemoveWS       = "__remove_ws"
+	envActionRenameAlias    = "__rename_alias"
+	envActionDeleteEnv      = "__delete_env"
+	envActionAddDeploy      = "__add_deploy"
+	envActionRemoveDeploy   = "__remove_deploy"
 )
 
 // Edit is the top-level customer editing flow. Drills down into a
@@ -96,6 +98,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := manageReferenceOverrides(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionSubstitutions:
+			if err := manageSubstitutions(configPath, client, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionSetBaseline:
 			if err := setBaselineEnvironment(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
@@ -133,6 +139,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
 		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
 		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
+		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -631,6 +638,139 @@ func manageReferenceOverrides(configPath, customerName string) error {
 			return fmt.Errorf("save customer: %w", err)
 		}
 	}
+}
+
+// addSubstitution returns a copy of c with s appended to Substitutions.
+// Copy-on-write: never mutates the caller's backing array.
+func addSubstitution(c config.Customer, s config.Substitution) config.Customer {
+	c.Substitutions = append(append([]config.Substitution{}, c.Substitutions...), s)
+	return c
+}
+
+// removeSubstitution returns a copy of c with the substitution at index i removed.
+// An out-of-range index is a no-op. Copy-on-write.
+func removeSubstitution(c config.Customer, i int) config.Customer {
+	if i < 0 || i >= len(c.Substitutions) {
+		return c
+	}
+	next := append([]config.Substitution{}, c.Substitutions[:i]...)
+	next = append(next, c.Substitutions[i+1:]...)
+	c.Substitutions = next
+	return c
+}
+
+// manageSubstitutions lists the customer's custom find→replace rules and lets
+// the user add or remove them. Adding: type the find string, then choose a
+// literal replacement or a target item resolved by name (pick workspace → item
+// → attribute). Follows the same loop conventions as manageReferenceOverrides.
+func manageSubstitutions(configPath string, client APIClient, customerName string) error {
+	for {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		customer, ok := cfg.Customers[customerName]
+		if !ok {
+			return fmt.Errorf("customer %q disappeared from config", customerName)
+		}
+		fmt.Printf("\nCustom substitutions for %s\n", customerName)
+		if len(customer.Substitutions) == 0 {
+			fmt.Println("  (none)")
+		}
+		var options []ui.MenuOption
+		for i, s := range customer.Substitutions {
+			repl := s.Literal
+			if s.TargetType != "" {
+				repl = fmt.Sprintf("%s %q.%s", s.TargetType, s.TargetName, attrOrID(s.Attr))
+			}
+			options = append(options, ui.MenuOption{
+				Label: fmt.Sprintf("Remove: %q → %s", s.FindValue, repl),
+				Value: fmt.Sprintf("rm:%d", i),
+			})
+		}
+		options = append(options,
+			ui.MenuOption{Label: "Add substitution", Value: "add"},
+			ui.MenuOption{Label: "Back", Value: editActionBack},
+		)
+		choice, err := ui.NumberMenu("Action", options)
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				return nil
+			}
+			return err
+		}
+		switch {
+		case choice == editActionBack:
+			return nil
+		case choice == "add":
+			sub, aerr := promptSubstitution(client, customerName)
+			if aerr != nil {
+				if errors.Is(aerr, ui.ErrGoBack) {
+					continue
+				}
+				return aerr
+			}
+			customer = addSubstitution(customer, sub)
+		case strings.HasPrefix(choice, "rm:"):
+			idx, _ := strconv.Atoi(strings.TrimPrefix(choice, "rm:"))
+			customer = removeSubstitution(customer, idx)
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+	}
+}
+
+// attrOrID returns the attr label, defaulting to "id".
+func attrOrID(attr string) string {
+	if attr == "" {
+		return "id"
+	}
+	return attr
+}
+
+// promptSubstitution gathers one substitution: a find string, then either a
+// literal replacement or a target item (pick workspace → item) + attribute.
+func promptSubstitution(client APIClient, customerName string) (config.Substitution, error) {
+	var find string
+	if err := runFormStep(huh.NewInput().Title("Find value (the string to replace)").Value(&find)); err != nil {
+		return config.Substitution{}, err
+	}
+	find = strings.TrimSpace(find)
+	if find == "" {
+		return config.Substitution{}, fmt.Errorf("find value required")
+	}
+	kind, err := ui.NumberMenu("Replace with", []ui.MenuOption{
+		{Label: "A target item resolved by name (id / sql endpoint)", Value: "target"},
+		{Label: "A literal value", Value: "literal"},
+	})
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	if kind == "literal" {
+		var lit string
+		if err := runFormStep(huh.NewInput().Title("Literal replacement value").Value(&lit)); err != nil {
+			return config.Substitution{}, err
+		}
+		return config.Substitution{FindValue: find, Literal: lit}, nil
+	}
+	token, err := client.GetAccessToken(customerName)
+	if err != nil {
+		return config.Substitution{}, fmt.Errorf("authentication failed: %w", err)
+	}
+	itemType, itemName, err := pickTargetItem(client, token, config.Customer{}, "")
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	attr, err := ui.NumberMenu("Which attribute of the target item?", []ui.MenuOption{
+		{Label: "Item GUID (id)", Value: "id"},
+		{Label: "SQL endpoint host", Value: "sqlendpoint"},
+		{Label: "SQL endpoint database id", Value: "sqlendpointid"},
+	})
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	return config.Substitution{FindValue: find, TargetType: itemType, TargetName: itemName, Attr: attr}, nil
 }
 
 // removeDeploymentMapping lets the user drop a folder→workspace mapping from an

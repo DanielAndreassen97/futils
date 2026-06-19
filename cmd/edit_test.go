@@ -37,6 +37,27 @@ func TestSetBaseline(t *testing.T) {
 	}
 }
 
+func TestAddSubstitution(t *testing.T) {
+	c := config.Customer{}
+	c = addSubstitution(c, config.Substitution{FindValue: "a", Literal: "b"})
+	if len(c.Substitutions) != 1 || c.Substitutions[0].FindValue != "a" {
+		t.Fatalf("addSubstitution = %#v", c.Substitutions)
+	}
+}
+
+func TestRemoveSubstitution(t *testing.T) {
+	c := config.Customer{Substitutions: []config.Substitution{{FindValue: "a"}, {FindValue: "b"}}}
+	c = removeSubstitution(c, 0)
+	if len(c.Substitutions) != 1 || c.Substitutions[0].FindValue != "b" {
+		t.Fatalf("removeSubstitution = %#v", c.Substitutions)
+	}
+	// out-of-range index is a no-op (defensive)
+	c = removeSubstitution(c, 5)
+	if len(c.Substitutions) != 1 {
+		t.Errorf("out-of-range remove mutated: %#v", c.Substitutions)
+	}
+}
+
 func TestValidateNewAlias(t *testing.T) {
 	existing := []config.Environment{
 		{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}},
