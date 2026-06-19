@@ -67,6 +67,46 @@ func normalizePart(content []byte) []byte {
 	return []byte(strings.TrimSpace(strings.Join(lines, "\n")))
 }
 
+// PartDiff is the normalized old (deployed) vs new (substituted-local) text of
+// one item part that differs. Old is empty when the part is new locally; New is
+// empty when the part exists only in the deployed definition.
+type PartDiff struct {
+	Path string
+	Old  string
+	New  string
+}
+
+// DiffParts returns, for each part whose normalized content differs between the
+// substituted local parts and the deployed definition, the normalized old
+// (deployed) and new (local) text. Uses the same normalization as PartsChanged,
+// so the diffs it reports correspond exactly to the Changed verdict.
+func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []PartDiff {
+	deployedNorm := make(map[string]string, len(deployed.Parts))
+	for _, p := range deployed.Parts {
+		raw, err := base64.StdEncoding.DecodeString(p.Payload)
+		if err != nil {
+			raw = []byte(p.Payload)
+		}
+		deployedNorm[p.Path] = string(normalizePart(raw))
+	}
+	var diffs []PartDiff
+	seen := make(map[string]bool, len(localParts))
+	for path, lb := range localParts {
+		seen[path] = true
+		newN := string(normalizePart(lb))
+		oldN := deployedNorm[path]
+		if newN != oldN {
+			diffs = append(diffs, PartDiff{Path: path, Old: oldN, New: newN})
+		}
+	}
+	for path, oldN := range deployedNorm {
+		if !seen[path] {
+			diffs = append(diffs, PartDiff{Path: path, Old: oldN, New: ""})
+		}
+	}
+	return diffs
+}
+
 // PartsChanged reports whether the local substituted parts differ from the
 // deployed definition, after per-part normalization. A differing set of part
 // paths (one added or removed) counts as changed.

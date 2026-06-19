@@ -37,6 +37,15 @@ type deployGroup struct {
 	Params     deploy.Parameters
 	Unresolved []deploy.UnresolvedRef
 	Changes    []deploy.RebindChange
+	Diffs      []ItemDiff
+}
+
+// ItemDiff holds the per-part content diffs for one Changed item, for the HTML
+// diff viewer.
+type ItemDiff struct {
+	Name  string
+	Type  string
+	Parts []deploy.PartDiff
 }
 
 // Deploy is the top-level entry point for the `deploy` subcommand.
@@ -228,7 +237,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			Deployed: deployed,
 			Params:   params,
 		}
-		g.Unresolved, g.Changes = diffExistingRows(client, token, target, env, params, rows, rb)
+		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, env, params, rows, rb)
 		groups = append(groups, g)
 	}
 	return groups, nil
@@ -253,7 +262,7 @@ func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange) {
+func diffExistingRows(client APIClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
@@ -261,7 +270,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 	}
 	if len(existsIdx) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	sp := ui.NewSpinner(fmt.Sprintf("Comparing %d item(s) in %s...", len(existsIdx), target.DisplayName))
@@ -300,6 +309,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 	var firstErr error
 	var unresolved []deploy.UnresolvedRef
 	var changes []deploy.RebindChange
+	var itemDiffs []ItemDiff
 	for j, idx := range existsIdx {
 		if results[j].err != nil {
 			unverified++
@@ -320,6 +330,11 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 		}
 		if deploy.PartsChanged(localParts, results[j].def) {
 			rows[idx].Class = deploy.ClassChanged
+			itemDiffs = append(itemDiffs, ItemDiff{
+				Name:  rows[idx].Name(),
+				Type:  rows[idx].ItemType(),
+				Parts: deploy.DiffParts(localParts, results[j].def),
+			})
 		} else {
 			rows[idx].Class = deploy.ClassUnchanged
 		}
@@ -329,7 +344,7 @@ func diffExistingRows(client APIClient, token string, target fabric.Workspace, e
 			"%d of %d item(s) in %s couldn't be content-compared (shown as Exists). First reason: %v",
 			unverified, len(existsIdx), target.DisplayName, firstErr)))
 	}
-	return unresolved, changes
+	return unresolved, changes, itemDiffs
 }
 
 // setupDeployMappings asks the user which workspace each repo folder deploys to,
