@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -162,7 +161,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	env := alias
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, src, rebinder)
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, rebinder)
 	if err != nil {
 		return err
 	}
@@ -218,7 +217,7 @@ const diffConcurrency = 4
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, src *deploy.Source, rb *deploy.Rebinder) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, rb *deploy.Rebinder) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -226,18 +225,7 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
 
-		// parameter.yml lives at the deployment-folder root (fabric-cicd's
-		// repository_directory), e.g. FabricBackEnd/parameter.yml — NOT the git root.
 		var params deploy.Parameters
-		paramPath := path.Join(m.Folder, "parameter.yml")
-		if raw, perr := src.ReadFile(paramPath); perr == nil {
-			params, err = deploy.ParseParameters(raw)
-			if err != nil {
-				return nil, fmt.Errorf("parse %s: %w", paramPath, err)
-			}
-		} else {
-			fmt.Println(warningStyle.Render(fmt.Sprintf("No %s found — comparing %s/ without substitution (GUIDs may differ across environments).", paramPath, m.Folder)))
-		}
 
 		items := deploy.ItemsInFolder(all, m.Folder)
 		deployed, err := client.ListItems(token, target.ID)
