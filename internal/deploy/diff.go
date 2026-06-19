@@ -26,6 +26,14 @@ func SubstituteParts(item LocalItem, env string, params Parameters, idMap map[st
 			return nil, RebindOutcome{}, fmt.Errorf("part %s: %w", part.Path, err)
 		}
 		if rb != nil {
+			subbed, subOutcome := rb.ApplyCustomSubstitutions(item, part.Path, substituted)
+			substituted = subbed
+			for i := range subOutcome.Unresolved {
+				subOutcome.Unresolved[i].ItemName = item.DisplayName
+			}
+			outcome.Changes = append(outcome.Changes, subOutcome.Changes...)
+			outcome.Unresolved = append(outcome.Unresolved, subOutcome.Unresolved...)
+
 			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted)
 			substituted = rebound
 			for i := range partOutcome.Unresolved {

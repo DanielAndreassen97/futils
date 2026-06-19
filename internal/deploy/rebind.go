@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -207,6 +208,61 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 // SetSubstitutions installs the customer's custom find→replace rules. Called by
 // the cmd layer after NewRebinder (config→engine conversion lives there).
 func (rb *Rebinder) SetSubstitutions(subs []Substitution) { rb.substitutions = subs }
+
+// ApplyCustomSubstitutions runs the customer's find→replace rules over one part.
+// Each rule whose optional item/file filters match is applied: the replacement
+// is a literal (Literal) or the resolved target attribute (by name in the
+// target env). Applied rewrites are recorded as RebindChange{Kind:"Substitution"};
+// rules whose target can't be resolved are left unapplied and surfaced as
+// UnresolvedRef. Runs in the explicit tier (before auto-rebind).
+func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, content []byte) ([]byte, RebindOutcome) {
+	var out RebindOutcome
+	s := string(content)
+	for _, sub := range rb.substitutions {
+		if sub.FindValue == "" {
+			continue
+		}
+		if sub.ItemType != "" && sub.ItemType != item.Type {
+			continue
+		}
+		if sub.ItemName != "" && sub.ItemName != item.DisplayName {
+			continue
+		}
+		if sub.FilePath != "" {
+			if ok, _ := path.Match(sub.FilePath, partPath); !ok {
+				continue
+			}
+		}
+		var repl string
+		if sub.TargetType != "" {
+			r, ok := rb.ResolveTargetAttr(sub.TargetType, sub.TargetName, sub.Attr)
+			if !ok {
+				out.Unresolved = append(out.Unresolved, UnresolvedRef{
+					GUID: sub.FindValue, ItemType: sub.TargetType, Location: "custom substitution", Reason: ReasonNotInTarget,
+				})
+				continue
+			}
+			repl = r
+		} else {
+			repl = sub.Literal
+		}
+		var next string
+		if sub.IsRegex {
+			re, err := regexp.Compile(sub.FindValue)
+			if err != nil {
+				continue // skip an invalid regex rather than abort the deploy
+			}
+			next = re.ReplaceAllString(s, repl)
+		} else {
+			next = strings.ReplaceAll(s, sub.FindValue, repl)
+		}
+		if next != s {
+			out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl})
+			s = next
+		}
+	}
+	return []byte(s), out
+}
 
 // ResolveTargetAttr resolves a target item by name in the target env and returns
 // the requested attribute: "id"/"" → the item GUID; "sqlendpoint"/"sqlendpointid"
