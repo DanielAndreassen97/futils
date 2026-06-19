@@ -56,6 +56,21 @@ type RebindOutcome struct {
 	Unresolved []UnresolvedRef
 }
 
+// Substitution is a futils-native find→replace rule, the engine-side mirror of
+// config.Substitution (kept config-free). Replacement is a literal (Literal) or
+// the resolved attribute of a target item looked up by name in the target env.
+type Substitution struct {
+	FindValue  string
+	IsRegex    bool
+	ItemType   string
+	ItemName   string
+	FilePath   string
+	TargetType string
+	TargetName string
+	Attr       string
+	Literal    string
+}
+
 // Rebinder translates baseline-environment GUIDs to a target env by item name.
 type Rebinder struct {
 	client    FabricClient
@@ -66,6 +81,8 @@ type Rebinder struct {
 
 	baseEndpoints  map[string]IndexedItem // baseline SQL-endpoint id -> lakehouse (lazy)
 	targetEndpoint map[string][2]string   // target lakehouse GUID -> {host, id} (cache)
+
+	substitutions []Substitution
 }
 
 // NewRebinder builds the baseline and target name indices and returns a
@@ -185,4 +202,29 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		s = strings.ReplaceAll(s, c.Old, c.New)
 	}
 	return []byte(s), out
+}
+
+// SetSubstitutions installs the customer's custom find→replace rules. Called by
+// the cmd layer after NewRebinder (config→engine conversion lives there).
+func (rb *Rebinder) SetSubstitutions(subs []Substitution) { rb.substitutions = subs }
+
+// ResolveTargetAttr resolves a target item by name in the target env and returns
+// the requested attribute: "id"/"" → the item GUID; "sqlendpoint"/"sqlendpointid"
+// → the lakehouse's SQL endpoint host/id (via the cached endpoint lookup).
+func (rb *Rebinder) ResolveTargetAttr(itemType, itemName, attr string) (string, bool) {
+	it, ok := rb.target.ItemByName(itemName, itemType)
+	if !ok {
+		return "", false
+	}
+	switch attr {
+	case "", "id":
+		return it.GUID, true
+	case "sqlendpoint":
+		host, _, ok := rb.targetEndpointFor(it)
+		return host, ok
+	case "sqlendpointid":
+		_, id, ok := rb.targetEndpointFor(it)
+		return id, ok
+	}
+	return "", false
 }
