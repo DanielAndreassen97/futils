@@ -9,6 +9,10 @@ package deploy
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
 )
 
 type Part struct {
@@ -63,4 +67,44 @@ func parsePlatform(raw []byte) (platformMeta, error) {
 		Description: p.Metadata.Description,
 		LogicalID:   p.Config.LogicalID,
 	}, nil
+}
+
+// RepoItemTypes scans a repo directory for Fabric item folders (those containing
+// a .platform file) and returns the distinct item types found, sorted. Used by
+// the edit-customer "exclude item types" picker — a cheap local scan, no API.
+// A missing or empty repoPath yields an empty slice, not an error.
+func RepoItemTypes(repoPath string) ([]string, error) {
+	if repoPath == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	err := filepath.WalkDir(repoPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || d.Name() != ".platform" {
+			return nil
+		}
+		raw, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		meta, perr := parsePlatform(raw)
+		if perr == nil && meta.Type != "" {
+			seen[meta.Type] = true
+		}
+		return nil // skip unparseable .platform, don't fail the whole scan
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan repo item types: %w", err)
+	}
+	types := make([]string, 0, len(seen))
+	for t := range seen {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+	return types, nil
 }
