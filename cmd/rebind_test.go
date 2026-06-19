@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
+	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
@@ -79,5 +80,35 @@ func TestBuildRebinderUnknownTargetEnvErrors(t *testing.T) {
 	}
 	if _, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "GHOST", nil); err == nil {
 		t.Error("expected error when target alias names no known environment")
+	}
+}
+
+func TestBuildRebinderWithSubstitutionsNoBaseline(t *testing.T) {
+	customer := config.Customer{
+		// No BaselineEnvironment, but a substitution is defined.
+		Environments:  []config.Environment{{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}}},
+		Substitutions: []config.Substitution{{FindValue: "x", Literal: "y"}},
+	}
+	workspaces := []fabric.Workspace{{ID: "test-config", DisplayName: "DP - TEST - Config"}}
+	api := &deployFakeAPI{items: map[string][]fabric.Item{"test-config": {}}}
+	rb, err := buildRebinder(api, "tok", customer, "TEST", workspaces)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if rb == nil {
+		t.Fatal("expected a rebinder when substitutions are present even without a baseline")
+	}
+	// The substitution applies (literal) with no baseline.
+	out, _ := rb.ApplyCustomSubstitutions(deploy.LocalItem{Type: "Notebook", DisplayName: "NB"}, "notebook-content.py", []byte("x"))
+	if string(out) != "y" {
+		t.Errorf("substitution not active: %q", out)
+	}
+}
+
+func TestBuildRebinderNilWhenNothingToDo(t *testing.T) {
+	customer := config.Customer{Environments: []config.Environment{{Alias: "TEST", Workspaces: []string{"W"}}}}
+	rb, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "TEST", nil)
+	if err != nil || rb != nil {
+		t.Errorf("expected (nil,nil) when no baseline and no substitutions; got rb=%v err=%v", rb, err)
 	}
 }

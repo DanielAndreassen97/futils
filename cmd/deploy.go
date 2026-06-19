@@ -124,7 +124,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return fmt.Errorf("set up reference rebinding: %w", err)
 	}
-	if rebinder == nil {
+	if customer.BaselineEnvironment == "" {
 		fmt.Println(infoStyle.Render("Auto-rebind disabled (no baseline environment set). Set one via Edit customer to translate references by name."))
 	}
 
