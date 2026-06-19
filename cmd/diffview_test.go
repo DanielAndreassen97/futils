@@ -86,6 +86,28 @@ func TestRenderDeployDiffHTMLEmpty(t *testing.T) {
 	}
 }
 
+func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "W"},
+		Diffs: []ItemDiff{
+			{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "p", Old: "a", New: "b"}}},
+			{Name: "NB_B", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "p", Old: "c", New: "d"}}},
+		},
+	}}
+	out := renderDeployDiffHTML(groups)
+	// Items must NOT be open by default.
+	if contains(out, "<details class=\"item\" open>") {
+		t.Errorf("items should be collapsed by default (no open attribute)")
+	}
+	if !contains(out, "<details") {
+		t.Errorf("expected <details> sections")
+	}
+	// A count header summarizing the number of changed items.
+	if !contains(out, "2") {
+		t.Errorf("expected a count of changed items in the header")
+	}
+}
+
 func contains(s, sub string) bool { return len(s) >= len(sub) && (stringIndex(s, sub) >= 0) }
 func stringIndex(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {

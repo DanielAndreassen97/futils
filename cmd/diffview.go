@@ -83,15 +83,18 @@ pre{margin:0;padding:.4rem .8rem;overflow-x:auto;font-size:.82rem;line-height:1.
 .empty{color:#888;padding:1rem .8rem}
 </style></head><body>`)
 	b.WriteString("<h1>futils deploy — content diffs (deployed → local)</h1>")
-	total := 0
+	changed := 0
+	for _, g := range groups {
+		changed += len(g.Diffs)
+	}
+	b.WriteString(fmt.Sprintf(`<p style="color:#9cdcfe">%d changed item(s) — click to expand</p>`, changed))
 	for _, g := range groups {
 		if len(g.Diffs) == 0 {
 			continue
 		}
 		b.WriteString("<h2>" + html.EscapeString(g.Target.DisplayName) + "</h2>")
 		for _, it := range g.Diffs {
-			total++
-			b.WriteString(`<details class="item" open><summary>` +
+			b.WriteString(`<details class="item"><summary>` +
 				html.EscapeString(it.Type+"  "+it.Name) + "</summary>")
 			for _, p := range it.Parts {
 				b.WriteString(`<div class="path">` + html.EscapeString(p.Path) + "</div><pre>")
@@ -110,7 +113,7 @@ pre{margin:0;padding:.4rem .8rem;overflow-x:auto;font-size:.82rem;line-height:1.
 			b.WriteString("</details>")
 		}
 	}
-	if total == 0 {
+	if changed == 0 {
 		b.WriteString(`<div class="empty">No changed items to diff.</div>`)
 	}
 	b.WriteString("</body></html>")
