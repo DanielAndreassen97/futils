@@ -47,6 +47,15 @@ func runFormStep(input *huh.Input) error {
 	return nil
 }
 
+// shortGUID truncates a GUID to its first 8 chars + ellipsis for compact
+// display in menus and summaries; strings of 8 or fewer chars are unchanged.
+func shortGUID(g string) string {
+	if len(g) > 8 {
+		return g[:8] + "…"
+	}
+	return g
+}
+
 // sortedCustomerNames gives us a stable menu order regardless of map
 // iteration quirks — keeps the numbered menu predictable across runs.
 func sortedCustomerNames(cfg config.Config) []string {

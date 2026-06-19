@@ -42,9 +42,12 @@ func reasonForStatus(st LookupStatus) string {
 }
 
 // RebindChange records one applied baseline→target rewrite, for the deploy
-// summary. Kind is "Lakehouse", "Workspace", or "SQL endpoint".
+// summary. Kind is "Lakehouse", "Workspace", or "SQL endpoint". Name is the
+// resolved item/workspace display name, shown alongside the GUIDs so the user
+// can tell which reference is which.
 type RebindChange struct {
 	Kind string
+	Name string
 	Old  string
 	New  string
 }
@@ -82,8 +85,18 @@ type Rebinder struct {
 
 	baseEndpoints  map[string]IndexedItem // baseline SQL-endpoint id -> lakehouse (lazy)
 	targetEndpoint map[string][2]string   // target lakehouse GUID -> {host, id} (cache)
+	targetWSNames  map[string]string      // target workspace GUID -> display name (for summaries)
 
 	substitutions []Substitution
+}
+
+// workspaceName returns the display name of a target workspace GUID, or the
+// GUID itself when unknown — so a rebind summary always shows something useful.
+func (rb *Rebinder) workspaceName(guid string) string {
+	if n, ok := rb.targetWSNames[guid]; ok {
+		return n
+	}
+	return guid
 }
 
 // NewRebinder builds the baseline and target name indices and returns a
@@ -102,7 +115,11 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	if overrides == nil {
 		overrides = map[string]Override{}
 	}
-	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides}, nil
+	wsNames := make(map[string]string, len(targetWS))
+	for _, w := range targetWS {
+		wsNames[w.ID] = w.DisplayName
+	}
+	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames}, nil
 }
 
 // resolveGUIDReason translates one baseline GUID to its target item, returning a
@@ -122,13 +139,25 @@ func (rb *Rebinder) resolveGUIDReason(guid string) (IndexedItem, bool, string) {
 	return it, st == LookupFound, reasonForStatus(st)
 }
 
-// resolveGUID translates one baseline GUID to its target item. An override
-// (highest precedence) resolves its ItemName/ItemType directly in the target;
-// otherwise the baseline index supplies the name and the target index supplies
-// the new GUID. Returns false when it cannot be resolved.
-func (rb *Rebinder) resolveGUID(guid string) (IndexedItem, bool) {
-	it, ok, _ := rb.resolveGUIDReason(guid)
-	return it, ok
+// addChange records a baseline→target rewrite on out, deduplicated by Old via
+// seen. No-ops on an empty, identity, or already-seen Old value. Shared by every
+// rebind pass so the dedup rule lives in one place.
+func addChange(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV string) {
+	if oldV == "" || oldV == newV || seen[oldV] {
+		return
+	}
+	seen[oldV] = true
+	out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
+}
+
+// applyChanges string-replaces every recorded rewrite in s. Replacing a value no
+// longer present is a harmless no-op, so an accumulated set (e.g. across the
+// semantic-model passes) can be applied safely.
+func applyChanges(s string, changes []RebindChange) string {
+	for _, c := range changes {
+		s = strings.ReplaceAll(s, c.Old, c.New)
+	}
+	return s
 }
 
 // RebindPart dispatches a single item part to the right rebind pass by item
@@ -158,13 +187,6 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 	}
 	var out RebindOutcome
 	seen := map[string]bool{}
-	add := func(kind, oldG, newG string) {
-		if oldG == "" || oldG == newG || seen[oldG] {
-			return
-		}
-		seen[oldG] = true
-		out.Changes = append(out.Changes, RebindChange{Kind: kind, Old: oldG, New: newG})
-	}
 
 	if lh.DefaultLakehouse != "" {
 		var it IndexedItem
@@ -179,9 +201,9 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 			it, resolved, reason = rb.resolveGUIDReason(lh.DefaultLakehouse)
 		}
 		if resolved {
-			add("Lakehouse", lh.DefaultLakehouse, it.GUID)
+			addChange(&out, seen, "Lakehouse", it.Name, lh.DefaultLakehouse, it.GUID)
 			if lh.DefaultLakehouseWorkspaceID != "" && it.WorkspaceID != "" {
-				add("Workspace", lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
+				addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason})
@@ -192,17 +214,13 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 			continue
 		}
 		if it, ok, reason := rb.resolveGUIDReason(k.ID); ok {
-			add("Lakehouse", k.ID, it.GUID)
+			addChange(&out, seen, "Lakehouse", it.Name, k.ID, it.GUID)
 		} else {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses", Reason: reason})
 		}
 	}
 
-	s := string(content)
-	for _, c := range out.Changes {
-		s = strings.ReplaceAll(s, c.Old, c.New)
-	}
-	return []byte(s), out
+	return []byte(applyChanges(string(content), out.Changes)), out
 }
 
 // SetSubstitutions installs the customer's custom find→replace rules. Called by

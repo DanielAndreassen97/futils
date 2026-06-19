@@ -642,6 +642,9 @@ func printGroupedCompare(groups []deployGroup) {
 			continue
 		}
 		for _, r := range g.Rows {
+			if r.Class == deploy.ClassUnchanged {
+				continue // counted in the summary; not worth a per-row line
+			}
 			line := fmt.Sprintf("  %-9s %-14s %s", r.Class, r.ItemType(), r.Name())
 			fmt.Println(classStyle(r.Class).Render(line))
 		}
@@ -672,7 +675,7 @@ func printRebindSummary(groups []deployGroup) {
 	fmt.Println()
 	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
 	for _, c := range ordered {
-		fmt.Printf("  %-12s %s → %s\n", c.Kind, c.Old, c.New)
+		fmt.Printf("  %-12s %-24s %s → %s\n", c.Kind, c.Name, c.Old, c.New)
 	}
 	fmt.Println()
 }
@@ -692,11 +695,7 @@ func printUnresolved(groups []deployGroup) {
 	fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
 	for _, g := range groups {
 		for _, u := range g.Unresolved {
-			short := u.GUID
-			if len(short) > 8 {
-				short = short[:8] + "…"
-			}
-			fmt.Printf("  %s in %s — looks like a %s (%s)\n", short, u.ItemName, u.ItemType, u.Location)
+			fmt.Printf("  %s in %s — looks like a %s (%s)\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location)
 		}
 	}
 	fmt.Println()
@@ -732,11 +731,7 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef) error {
 	changed := false
 	for _, ref := range refs {
-		short := ref.GUID
-		if len(short) > 8 {
-			short = short[:8] + "…"
-		}
-		fmt.Printf("\n%s in %s — looks like a %s (%s)\n", short, ref.ItemName, ref.ItemType, ref.Location)
+		fmt.Printf("\n%s in %s — looks like a %s (%s)\n", shortGUID(ref.GUID), ref.ItemName, ref.ItemType, ref.Location)
 		choice, err := ui.NumberMenu("How do you want to resolve it?", refActionOptions(ref))
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {

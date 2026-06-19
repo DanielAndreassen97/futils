@@ -140,6 +140,25 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}
 }
 
+func TestPrintGroupedCompareHidesUnchanged(t *testing.T) {
+	rows := []deploy.CompareRow{
+		{Class: deploy.ClassChanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Changed"}},
+		{Class: deploy.ClassUnchanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Unchanged"}},
+	}
+	groups := []deployGroup{{Folder: "F", Target: fabric.Workspace{DisplayName: "WS"}, Rows: rows}}
+	out := captureStdout(t, func() { printGroupedCompare(groups) })
+
+	if !strings.Contains(out, "NB_Changed") {
+		t.Error("changed item should be listed")
+	}
+	if strings.Contains(out, "NB_Unchanged") {
+		t.Error("unchanged item must NOT be listed in the per-row output")
+	}
+	if !strings.Contains(out, "Unchanged") {
+		t.Error("the count summary should still report the Unchanged total")
+	}
+}
+
 func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed []fabric.Item) deployGroup {
 	return deployGroup{
 		Folder:   folder,

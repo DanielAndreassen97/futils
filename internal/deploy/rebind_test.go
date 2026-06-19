@@ -210,6 +210,28 @@ func TestRebindNotebookReportsChanges(t *testing.T) {
 	}
 }
 
+func TestRebindNotebookChangesCarryNames(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
+	_, outcome := rb.RebindNotebookLakehouses(in)
+
+	var lhNamed, wsNamed bool
+	for _, c := range outcome.Changes {
+		if c.Kind == "Lakehouse" && c.Old == devConfigLH && c.Name == "LH_ConfigLog" {
+			lhNamed = true
+		}
+		if c.Kind == "Workspace" && c.Name == "DP - TEST - Config" {
+			wsNamed = true
+		}
+	}
+	if !lhNamed {
+		t.Errorf("Lakehouse change missing Name %q: %#v", "LH_ConfigLog", outcome.Changes)
+	}
+	if !wsNamed {
+		t.Errorf("Workspace change missing Name %q: %#v", "DP - TEST - Config", outcome.Changes)
+	}
+}
+
 func TestDefaultLakehouseNoNameUnknownGUIDReason(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	unknown := "88888888-8888-8888-8888-888888888888"

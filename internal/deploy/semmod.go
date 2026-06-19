@@ -1,9 +1,6 @@
 package deploy
 
-import (
-	"regexp"
-	"strings"
-)
+import "regexp"
 
 // sqlDbRe matches a Direct Lake on SQL data-source expression, capturing the
 // SQL analytics endpoint host (connection string) and its endpoint GUID:
@@ -61,13 +58,6 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 // surfaced. Returns the rewritten string.
 func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 	seen := map[string]bool{}
-	add := func(oldV, newV string) {
-		if oldV == "" || oldV == newV || seen[oldV] {
-			return
-		}
-		seen[oldV] = true
-		out.Changes = append(out.Changes, RebindChange{Kind: "SQL endpoint", Old: oldV, New: newV})
-	}
 	rb.ensureBaseEndpoints()
 	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
 		host, id := m[1], m[2]
@@ -86,15 +76,12 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNotInTarget})
 			continue
 		}
-		add(host, newHost)
-		add(id, newID)
+		addChange(out, seen, "SQL endpoint", tgt.Name, host, newHost)
+		addChange(out, seen, "SQL endpoint", tgt.Name, id, newID)
 	}
 	// out.Changes may include entries appended by a prior pass (OneLake);
-	// ReplaceAll on an old value no longer present is a harmless no-op.
-	for _, c := range out.Changes {
-		s = strings.ReplaceAll(s, c.Old, c.New)
-	}
-	return s
+	// applyChanges over a value no longer present is a harmless no-op.
+	return applyChanges(s, out.Changes)
 }
 
 // RebindSemanticModel rewrites a Direct Lake semantic model part's data-source
@@ -116,26 +103,16 @@ func (rb *Rebinder) RebindSemanticModel(content []byte) ([]byte, RebindOutcome) 
 // changes and unresolved refs are appended to out. Returns the rewritten string.
 func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 	seen := map[string]bool{}
-	add := func(kind, oldV, newV string) {
-		if oldV == "" || oldV == newV || seen[oldV] {
-			return
-		}
-		seen[oldV] = true
-		out.Changes = append(out.Changes, RebindChange{Kind: kind, Old: oldV, New: newV})
-	}
 	for _, m := range onelakeRe.FindAllStringSubmatch(s, -1) {
 		wsGUID, lhGUID := m[1], m[2]
 		if it, ok, reason := rb.resolveGUIDReason(lhGUID); ok {
-			add("Lakehouse", lhGUID, it.GUID)
+			addChange(out, seen, "Lakehouse", it.Name, lhGUID, it.GUID)
 			if it.WorkspaceID != "" {
-				add("Workspace", wsGUID, it.WorkspaceID)
+				addChange(out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), wsGUID, it.WorkspaceID)
 			}
 		} else {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
 		}
 	}
-	for _, c := range out.Changes {
-		s = strings.ReplaceAll(s, c.Old, c.New)
-	}
-	return s
+	return applyChanges(s, out.Changes)
 }

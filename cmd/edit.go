@@ -604,19 +604,11 @@ func manageReferenceOverrides(configPath, customerName string) error {
 		}
 		var options []ui.MenuOption
 		for _, o := range customer.ReferenceOverrides {
-			short := o.SourceGUID
-			if len(short) > 8 {
-				short = short[:8] + "…"
-			}
-			label := fmt.Sprintf("Remove override: %s → %s %q", short, o.ItemType, o.ItemName)
+			label := fmt.Sprintf("Remove override: %s → %s %q", shortGUID(o.SourceGUID), o.ItemType, o.ItemName)
 			options = append(options, ui.MenuOption{Label: label, Value: "ovr:" + o.SourceGUID})
 		}
 		for _, g := range customer.IgnoredReferences {
-			short := g
-			if len(short) > 8 {
-				short = short[:8] + "…"
-			}
-			options = append(options, ui.MenuOption{Label: "Un-ignore: " + short, Value: "ign:" + g})
+			options = append(options, ui.MenuOption{Label: "Un-ignore: " + shortGUID(g), Value: "ign:" + g})
 		}
 		options = append(options, ui.MenuOption{Label: "Back", Value: editActionBack})
 		choice, err := ui.NumberMenu("Action", options)
