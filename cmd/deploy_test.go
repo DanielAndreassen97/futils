@@ -226,3 +226,18 @@ func TestFilterIgnoredUnresolvedDropsIgnored(t *testing.T) {
 		t.Fatalf("after filter = %#v", groups[0].Unresolved)
 	}
 }
+
+func TestCountByClass(t *testing.T) {
+	groups := []deployGroup{
+		{Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew}, {Class: deploy.ClassChanged}, {Class: deploy.ClassChanged},
+		}},
+		{Rows: []deploy.CompareRow{
+			{Class: deploy.ClassUnchanged}, {Class: deploy.ClassOrphan}, {Class: deploy.ClassChanged},
+		}},
+	}
+	c := countByClass(groups)
+	if c[deploy.ClassChanged] != 3 || c[deploy.ClassNew] != 1 || c[deploy.ClassUnchanged] != 1 || c[deploy.ClassOrphan] != 1 {
+		t.Fatalf("counts = %#v", c)
+	}
+}

@@ -552,10 +552,32 @@ func classStyle(c deploy.Class) lipgloss.Style {
 	}
 }
 
+// countByClass tallies compare rows by classification across all groups.
+func countByClass(groups []deployGroup) map[deploy.Class]int {
+	c := map[deploy.Class]int{}
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			c[r.Class]++
+		}
+	}
+	return c
+}
+
 // printGroupedCompare renders the compare result grouped by target workspace,
 // colored by classification with a legend.
 func printGroupedCompare(groups []deployGroup) {
+	counts := countByClass(groups)
+	order := []deploy.Class{deploy.ClassNew, deploy.ClassChanged, deploy.ClassUnchanged, deploy.ClassExists, deploy.ClassOrphan}
+	var parts []string
+	for _, cl := range order {
+		if n := counts[cl]; n > 0 {
+			parts = append(parts, classStyle(cl).Render(fmt.Sprintf("%d %s", n, cl)))
+		}
+	}
 	fmt.Println()
+	if len(parts) > 0 {
+		fmt.Println("  " + strings.Join(parts, "  ·  "))
+	}
 	legend := classStyle(deploy.ClassNew).Render("New") + "  " +
 		classStyle(deploy.ClassChanged).Render("Changed") + "  " +
 		classStyle(deploy.ClassUnchanged).Render("Unchanged") + "  " +
