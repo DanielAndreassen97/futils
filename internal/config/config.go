@@ -75,6 +75,9 @@ type Customer struct {
 	// ExcludedItemTypes lists item types to skip when comparing/deploying.
 	// Empty/nil = include every discovered type (the default).
 	ExcludedItemTypes []string `json:"excluded_item_types,omitempty"`
+	// DeployHistoryPath is a repo-relative folder where a timestamped HTML
+	// deploy-report is written after each real deploy. Empty = history off.
+	DeployHistoryPath string `json:"deploy_history_path,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -213,6 +216,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 		Substitutions       []Substitution      `json:"substitutions,omitempty"`
 		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
+		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -224,6 +228,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.IgnoredReferences = aux.IgnoredReferences
 	c.Substitutions = aux.Substitutions
 	c.ExcludedItemTypes = aux.ExcludedItemTypes
+	c.DeployHistoryPath = aux.DeployHistoryPath
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil

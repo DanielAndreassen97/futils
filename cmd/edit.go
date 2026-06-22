@@ -22,6 +22,7 @@ const (
 	editActionSetBaseline   = "__set_baseline"
 	editActionSubstitutions = "__substitutions"
 	editActionExcludeTypes  = "__exclude_types"
+	editActionDeployHistory = "__deploy_history"
 	envActionAddWS          = "__add_ws"
 	envActionRemoveWS       = "__remove_ws"
 	envActionRenameAlias    = "__rename_alias"
@@ -112,6 +113,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := excludeItemTypes(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionDeployHistory:
+			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -147,6 +152,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
 		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
 		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
+		ui.MenuOption{Label: "Set deploy-history folder", Value: editActionDeployHistory},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -870,5 +876,35 @@ func excludeItemTypes(configPath, customerName string) error {
 		return fmt.Errorf("save excluded item types: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Saved excluded item types."))
+	return nil
+}
+
+// setDeployHistoryPath sets the repo-relative folder where deploy reports are
+// written after each real deploy. Empty input turns history off. Pre-filled
+// with the current value.
+func setDeployHistoryPath(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	path := customer.DeployHistoryPath
+	if err := runFormStep(huh.NewInput().
+		Title("Deploy-history folder (relative to repo root; empty = off)").
+		Value(&path)); err != nil {
+		return err
+	}
+	customer.DeployHistoryPath = strings.TrimSpace(path)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save deploy-history path: %w", err)
+	}
+	if customer.DeployHistoryPath == "" {
+		fmt.Println(infoStyle.Render("Deploy-history saving turned off."))
+	} else {
+		fmt.Println(infoStyle.Render("Saved deploy-history folder: " + customer.DeployHistoryPath))
+	}
 	return nil
 }

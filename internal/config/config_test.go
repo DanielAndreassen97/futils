@@ -554,3 +554,23 @@ func TestSubstitutionsAbsentLegacy(t *testing.T) {
 		t.Error("expected no substitutions on legacy config")
 	}
 }
+
+func TestDeployHistoryPathRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"WS"}}},
+			DeployHistoryPath: "BackEnd/deploymenthistory",
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := out.Customers["acme"].DeployHistoryPath; got != "BackEnd/deploymenthistory" {
+		t.Fatalf("DeployHistoryPath = %q, want %q", got, "BackEnd/deploymenthistory")
+	}
+}
