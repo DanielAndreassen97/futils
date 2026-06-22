@@ -297,7 +297,54 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, env, params, rows, rb)
 		groups = append(groups, g)
 	}
+	reconcileOrphans(groups)
 	return groups, nil
+}
+
+func rowKey(r deploy.CompareRow) string { return r.ItemType() + "\x00" + r.Name() }
+
+// reconcileOrphans corrects orphan classification across deploy groups that
+// share a target workspace. Each group's Compare runs that folder's local items
+// against the workspace's FULL deployed list, so a sibling folder's valid items
+// get mislabeled ClassOrphan, and a genuine orphan surfaces in every sibling
+// group. With orphans now deletable, that would offer valid items for deletion
+// and duplicate true orphans. This keeps an Orphan row only when the item is
+// absent from EVERY folder mapping to that workspace, and keeps each genuine
+// orphan exactly once. It's a no-op when each workspace has a single mapping.
+func reconcileOrphans(groups []deployGroup) {
+	wsLocal := map[string]map[string]bool{} // workspace ID -> set of locally-managed type+name keys
+	for _, g := range groups {
+		keys := wsLocal[g.Target.ID]
+		if keys == nil {
+			keys = map[string]bool{}
+			wsLocal[g.Target.ID] = keys
+		}
+		for _, r := range g.Rows {
+			if r.Class != deploy.ClassOrphan {
+				keys[rowKey(r)] = true
+			}
+		}
+	}
+	kept := map[string]bool{} // workspace+key already kept as an orphan once
+	for gi := range groups {
+		ws := groups[gi].Target.ID
+		out := groups[gi].Rows[:0]
+		for _, r := range groups[gi].Rows {
+			if r.Class == deploy.ClassOrphan {
+				k := rowKey(r)
+				if wsLocal[ws][k] {
+					continue // a sibling folder deploys this — not a real orphan
+				}
+				dk := ws + "\x00" + k
+				if kept[dk] {
+					continue // a sibling group already surfaced this orphan
+				}
+				kept[dk] = true
+			}
+			out = append(out, r)
+		}
+		groups[gi].Rows = out
+	}
 }
 
 // filterIgnoredUnresolved drops any unresolved reference the customer marked

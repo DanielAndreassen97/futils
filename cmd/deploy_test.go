@@ -582,6 +582,61 @@ func TestRunDeployDeleteOnly(t *testing.T) {
 	}
 }
 
+func TestReconcileOrphansSharedWorkspace(t *testing.T) {
+	// Two folders → the SAME workspace. Each folder's Compare ran against the
+	// workspace's full deployed list, so each group flags the sibling's valid
+	// item as an Orphan, and the one true orphan (NB_Gone) appears in both.
+	ws := fabric.Workspace{ID: "ws1", DisplayName: "WS"}
+	groups := []deployGroup{
+		{Folder: "A", Target: ws, Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_A"}},
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_B"}, DeployedID: "b"},    // sibling's real item
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}, DeployedID: "g"}, // true orphan
+		}},
+		{Folder: "B", Target: ws, Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_B"}},
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_A"}, DeployedID: "a"},    // sibling's real item
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}, DeployedID: "g"}, // true orphan (dup)
+		}},
+	}
+	reconcileOrphans(groups)
+
+	orphans, gone := 0, 0
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			if r.Class == deploy.ClassOrphan {
+				orphans++
+				switch r.Name() {
+				case "NB_Gone":
+					gone++
+				case "NB_A", "NB_B":
+					t.Errorf("sibling folder's valid item %q wrongly kept as a deletable orphan", r.Name())
+				}
+			}
+		}
+	}
+	if orphans != 1 || gone != 1 {
+		t.Errorf("want exactly 1 orphan (NB_Gone once), got %d orphan(s), %d NB_Gone", orphans, gone)
+	}
+	// The New rows must survive untouched.
+	if len(groups[0].Rows) != 2 || len(groups[1].Rows) != 1 {
+		t.Errorf("non-orphan rows altered: groupA=%d groupB=%d rows", len(groups[0].Rows), len(groups[1].Rows))
+	}
+}
+
+func TestReconcileOrphansSingleMappingNoOp(t *testing.T) {
+	// One folder → one workspace: a true orphan stays, nothing is dropped.
+	ws := fabric.Workspace{ID: "ws1", DisplayName: "WS"}
+	groups := []deployGroup{{Folder: "A", Target: ws, Rows: []deploy.CompareRow{
+		{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_A"}},
+		{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}, DeployedID: "g"},
+	}}}
+	reconcileOrphans(groups)
+	if len(groups[0].Rows) != 2 {
+		t.Fatalf("single-mapping reconcile should be a no-op, got %d rows", len(groups[0].Rows))
+	}
+}
+
 func TestBuildDeployPickRowsIncludesOrphans(t *testing.T) {
 	groups := []deployGroup{{
 		Target: fabric.Workspace{DisplayName: "WS-A"},
