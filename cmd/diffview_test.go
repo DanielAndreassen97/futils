@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -105,6 +106,41 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 	// A count header summarizing the number of changed items.
 	if !contains(out, "2") {
 		t.Errorf("expected a count of changed items in the header")
+	}
+}
+
+func TestRenderDeployReportIncludesResults(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Diffs: []ItemDiff{{
+			Name: "NB_Config", Type: "Notebook",
+			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "a", New: "b"}},
+		}},
+	}}
+	results := []deploy.Result{
+		{Name: "NB_OK", Type: "Notebook", Action: deploy.ActionCreate},
+		{Name: "NB_Warn", Type: "Notebook", Action: deploy.ActionUpdate, Warning: "description not synced"},
+		{Name: "NB_Err", Type: "Report", Action: deploy.ActionCreate, Err: fmt.Errorf("boom <x>")},
+	}
+	out := renderDeployReport(groups, results)
+
+	if !contains(out, "<!doctype html>") {
+		t.Errorf("expected a doctype")
+	}
+	// Outcomes present and labelled.
+	if !contains(out, "NB_OK") || !contains(out, "NB_Warn") || !contains(out, "NB_Err") {
+		t.Errorf("results section missing item names")
+	}
+	if !contains(out, "description not synced") {
+		t.Errorf("warning text missing")
+	}
+	// Error text is HTML-escaped (no raw <x>).
+	if contains(out, "boom <x>") || !contains(out, "boom &lt;x&gt;") {
+		t.Errorf("error text not HTML-escaped")
+	}
+	// Compare section still rendered.
+	if !contains(out, "NB_Config") {
+		t.Errorf("compare section missing")
 	}
 }
 
