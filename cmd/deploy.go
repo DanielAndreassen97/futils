@@ -189,8 +189,11 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	excluded := excludedSet(customer)
 	if len(customer.ExcludedItemTypes) > 0 {
-		sort.Strings(customer.ExcludedItemTypes)
-		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(customer.ExcludedItemTypes, ", ")))
+		// Sort a copy: customer is a struct copy but its slice shares the backing
+		// array with the in-memory config, so sorting in place would reorder it.
+		shown := append([]string(nil), customer.ExcludedItemTypes...)
+		sort.Strings(shown)
+		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(shown, ", ")))
 	}
 
 	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, rebinder, excluded)
