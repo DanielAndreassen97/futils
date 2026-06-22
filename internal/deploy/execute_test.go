@@ -18,6 +18,7 @@ type recordingFabric struct {
 	updates       map[string]fabric.Definition // existingID -> def
 	rebinds       [][2]string                  // {reportID, datasetID}
 	metaUpdates   []metaUpdate                 // UpdateItem (PATCH) calls
+	deletes       []string                     // DeleteItem(id) calls
 	updateItemErr error                        // when set, UpdateItem returns it (description-sync failure)
 }
 
@@ -42,6 +43,10 @@ func (r *recordingFabric) UpdateItemDefinition(token, ws, id string, def *fabric
 }
 func (r *recordingFabric) RebindReport(token, ws, reportID, datasetID string) error {
 	r.rebinds = append(r.rebinds, [2]string{reportID, datasetID})
+	return nil
+}
+func (r *recordingFabric) DeleteItem(token, ws, id string) error {
+	r.deletes = append(r.deletes, id)
 	return nil
 }
 

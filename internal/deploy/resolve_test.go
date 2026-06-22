@@ -36,6 +36,7 @@ func (f *fakeFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Defi
 	return nil
 }
 func (f *fakeFabric) UpdateItem(token, ws, id, displayName, description string) error { return nil }
+func (f *fakeFabric) DeleteItem(token, ws, id string) error                           { return nil }
 func (f *fakeFabric) RebindReport(token, ws, reportID, datasetID string) error        { return nil }
 func (f *fakeFabric) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	v := f.sqlByLH[lhID]

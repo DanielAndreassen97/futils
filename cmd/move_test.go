@@ -94,6 +94,7 @@ func (f *fakeMoveAPI) UpdateItemDefinition(_, _, itemID string, _ *fabric.Defini
 	return nil
 }
 func (f *fakeMoveAPI) UpdateItem(_, _, _, _, _ string) error { return nil }
+func (f *fakeMoveAPI) DeleteItem(_, _, _ string) error       { return nil }
 func (f *fakeMoveAPI) RebindReport(_, _, _, datasetID string) error {
 	f.rebindCalls++
 	f.lastRebindDataset = datasetID

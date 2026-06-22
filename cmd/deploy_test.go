@@ -71,6 +71,7 @@ func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.D
 	return nil
 }
 func (f *deployFakeAPI) UpdateItem(token, ws, id, displayName, description string) error { return nil }
+func (f *deployFakeAPI) DeleteItem(token, ws, id string) error                           { return nil }
 func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error        { return nil }
 func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	return "", "", nil

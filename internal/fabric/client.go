@@ -360,6 +360,27 @@ func UpdateItem(token, workspaceID, itemID, displayName, description string) err
 	return nil
 }
 
+// DeleteItem removes an item from a workspace via the Core Items DELETE endpoint.
+// Synchronous (200 OK), like UpdateItem — not an LRO. Irreversible; callers must
+// confirm before invoking.
+func DeleteItem(token, workspaceID, itemID string) error {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, itemID)
+	resp, respBody, err := doDelete(token, url)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("delete item %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // ListNotebooks returns all notebook items in a workspace.
 // Thin wrapper over ListItemsByType for backward compatibility.
 func ListNotebooks(token, workspaceID string) ([]Item, error) {
@@ -690,6 +711,10 @@ func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, er
 
 func doPatch(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
 	return doWrite("PATCH", token, rawURL, reqBody)
+}
+
+func doDelete(token, rawURL string) (*http.Response, []byte, error) {
+	return doWrite("DELETE", token, rawURL, nil)
 }
 
 // doWrite issues a body-bearing request (POST/PATCH) with the shared 401-refresh
