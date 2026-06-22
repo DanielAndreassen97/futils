@@ -69,6 +69,28 @@ func unifiedLineDiff(oldText, newText string) []DiffLine {
 	return out
 }
 
+// maxDiffLines caps how many lines either side of a part may have before the
+// (O(n×m)) line diff is skipped. A pathologically large part — e.g. a generated
+// model.bim, or a minified JSON pretty-printed to millions of lines — would
+// otherwise blow up both memory (the LCS table is len(a)×len(b) ints) and the
+// HTML (one <span> per line, which chokes the browser). Past the cap we emit a
+// single summary line instead. ~2000 keeps every realistic Fabric definition
+// while skipping only the runaway cases.
+const maxDiffLines = 2000
+
+// cappedLineDiff is unifiedLineDiff guarded by a size cap: within the cap it
+// returns the real line diff; past it, a single summary line so one huge change
+// can't blow up the report.
+func cappedLineDiff(oldText, newText string) []DiffLine {
+	oldN := strings.Count(oldText, "\n") + 1
+	newN := strings.Count(newText, "\n") + 1
+	if oldN > maxDiffLines || newN > maxDiffLines {
+		return []DiffLine{{' ', fmt.Sprintf(
+			"Content differs: %d → %d lines — too large to diff inline (open the file locally).", oldN, newN)}}
+	}
+	return unifiedLineDiff(oldText, newText)
+}
+
 // renderDeployReport builds a self-contained HTML deploy report. When results
 // is non-nil it leads with a per-item outcome section (✓ deployed / ⚠ warning /
 // ✗ error); it always follows with every Changed item's per-part content diff
@@ -139,7 +161,7 @@ table{border-collapse:collapse;margin:.4rem 0}td{padding:.15rem .8rem;vertical-a
 				html.EscapeString(it.Type+"  "+it.Name) + "</summary>")
 			for _, p := range it.Parts {
 				b.WriteString(`<div class="path">` + html.EscapeString(p.Path) + "</div><pre>")
-				for _, ln := range unifiedLineDiff(p.Old, p.New) {
+				for _, ln := range cappedLineDiff(p.Old, p.New) {
 					cls, prefix := "ctx", " "
 					switch ln.Op {
 					case '-':

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -106,6 +107,36 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 	// A count header summarizing the number of changed items.
 	if !contains(out, "2") {
 		t.Errorf("expected a count of changed items in the header")
+	}
+}
+
+func TestCappedLineDiffSkipsHugeInput(t *testing.T) {
+	huge := strings.Repeat("x\n", maxDiffLines+50)
+	got := cappedLineDiff(huge, huge+"y\n")
+	if len(got) != 1 {
+		t.Fatalf("an over-cap diff must collapse to one summary line, got %d lines", len(got))
+	}
+	if !strings.Contains(got[0].Text, "too large to diff inline") {
+		t.Errorf("expected the cap summary, got %q", got[0].Text)
+	}
+}
+
+func TestCappedLineDiffNormalInputStillDiffs(t *testing.T) {
+	got := cappedLineDiff("a\nb\nc", "a\nB\nc")
+	for _, l := range got {
+		if strings.Contains(l.Text, "too large") {
+			t.Fatalf("a normal-size diff must produce a real diff, not the cap: %+v", got)
+		}
+	}
+	// Sanity: the changed line surfaces.
+	var sawChange bool
+	for _, l := range got {
+		if l.Op == '-' && l.Text == "b" {
+			sawChange = true
+		}
+	}
+	if !sawChange {
+		t.Errorf("expected the changed line in the diff, got %+v", got)
 	}
 }
 
