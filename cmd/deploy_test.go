@@ -395,3 +395,74 @@ func TestCountByClass(t *testing.T) {
 		t.Fatalf("counts = %#v", c)
 	}
 }
+
+func TestBuildDeployPickRows(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "WS-A"},
+		Rows: []deploy.CompareRow{
+			{Class: deploy.ClassChanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Z"}},
+			{Class: deploy.ClassUnchanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Skip"}},
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_A"}},
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}},
+		},
+	}}
+	items, entries, title := buildDeployPickRows(groups)
+
+	// Unchanged + Orphan filtered out; New and Changed kept.
+	if len(items) != 2 || len(entries) != 2 {
+		t.Fatalf("want 2 rows (New+Changed), got %d items / %d entries", len(items), len(entries))
+	}
+	// Sorted New before Changed.
+	if !strings.Contains(items[0].Label, "NB_A") {
+		t.Errorf("New should sort first, got %q", items[0].Label)
+	}
+	if !strings.Contains(items[1].Label, "NB_Z") {
+		t.Errorf("Changed should sort after New, got %q", items[1].Label)
+	}
+	// Skipped rows are absent.
+	for _, it := range items {
+		if strings.Contains(it.Label, "NB_Skip") || strings.Contains(it.Label, "NB_Gone") {
+			t.Errorf("unchanged/orphan leaked into picker: %q", it.Label)
+		}
+	}
+	// Nothing pre-checked.
+	for _, it := range items {
+		if it.Checked {
+			t.Errorf("rows must start unchecked: %q", it.Label)
+		}
+	}
+	// Single target → workspace in the title, not in the row labels.
+	if !strings.Contains(title, "WS-A") {
+		t.Errorf("single-target title should name the workspace, got %q", title)
+	}
+	if strings.Contains(items[0].Label, "WS-A") {
+		t.Errorf("single target must not put workspace in the row label: %q", items[0].Label)
+	}
+	// Index identity: entry k aligns with item k.
+	if entries[0].item.DisplayName != "NB_A" || entries[1].item.DisplayName != "NB_Z" {
+		t.Errorf("entries not index-aligned with items: %+v", entries)
+	}
+}
+
+func TestBuildDeployPickRowsMultiTargetSuffixAndCollision(t *testing.T) {
+	// Same type+name in two different target workspaces — must stay distinct
+	// (the old label-keyed map collapsed them).
+	groups := []deployGroup{
+		{Target: fabric.Workspace{DisplayName: "WS-A"}, Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Dup"}}}},
+		{Target: fabric.Workspace{DisplayName: "WS-B"}, Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Dup"}}}},
+	}
+	items, entries, _ := buildDeployPickRows(groups)
+	if len(items) != 2 || len(entries) != 2 {
+		t.Fatalf("both same-named items must survive, got %d", len(items))
+	}
+	// Multiple targets → each row carries its workspace.
+	if !strings.Contains(items[0].Label, "WS-A") || !strings.Contains(items[1].Label, "WS-B") {
+		t.Errorf("multi-target rows must show their workspace: %q / %q", items[0].Label, items[1].Label)
+	}
+	// Distinct entries point at the two different groups.
+	if entries[0].gi == entries[1].gi {
+		t.Errorf("collided to one group: %+v", entries)
+	}
+}

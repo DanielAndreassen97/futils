@@ -597,44 +597,126 @@ func resolveWorkspaceByName(workspaces []fabric.Workspace, name string) (fabric.
 	return fabric.Workspace{}, fmt.Errorf("workspace %q not found (check spelling and your access)", name)
 }
 
-// pickGroupedRows shows all groups' New/Exists rows as one checkbox list, each
-// label prefixed with its target workspace. Returns the chosen LocalItems keyed
-// by group index. Orphans are shown in the printed compare but excluded here —
-// Phase 1 cannot deploy or delete them.
+// pickGroupedRows shows all groups' deployable rows (New/Changed/Exists, colored
+// by class) as one unchecked checkbox list, sorted by class. Returns the chosen
+// LocalItems keyed by group index. Unchanged and Orphan rows are excluded — Phase
+// 1 cannot deploy or delete them.
 func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, error) {
-	type entry struct {
-		gi   int
-		item deploy.LocalItem
-	}
-	var labels []string
-	var initial []string
-	byLabel := map[string]entry{}
-	for gi, g := range groups {
-		for _, r := range g.Rows {
-			if r.Class == deploy.ClassOrphan {
-				continue
-			}
-			label := fmt.Sprintf("%-22s %-9s %-14s %s", g.Target.DisplayName, r.Class, r.ItemType(), r.Name())
-			labels = append(labels, label)
-			byLabel[label] = entry{gi, r.Local}
-			if r.Class != deploy.ClassUnchanged {
-				initial = append(initial, label)
-			}
-		}
-	}
-	if len(labels) == 0 {
+	items, entries, title := buildDeployPickRows(groups)
+	if len(items) == 0 {
 		return map[int][]deploy.LocalItem{}, nil
 	}
-	chosen, err := ui.MultiSelect("Select items to deploy", labels, initial)
+	idx, err := ui.MultiSelectRich(title, items)
 	if err != nil {
 		return nil, err
 	}
 	out := map[int][]deploy.LocalItem{}
-	for _, l := range chosen {
-		e := byLabel[l]
+	for _, k := range idx {
+		e := entries[k]
 		out[e.gi] = append(out[e.gi], e.item)
 	}
 	return out, nil
+}
+
+// pickEntry is the identity behind one picker CheckItem: which group and which
+// local item. Index-aligned with the CheckItem slice, so identical labels never
+// collide (the old label-keyed map silently dropped duplicates).
+type pickEntry struct {
+	gi   int
+	item deploy.LocalItem
+}
+
+// classRank orders the picker: New first, then Changed, then Exists (unverified).
+// Unchanged and Orphan never reach the picker (Orphan gets a rank when a future
+// delete feature makes it selectable).
+func classRank(c deploy.Class) int {
+	switch c {
+	case deploy.ClassNew:
+		return 0
+	case deploy.ClassChanged:
+		return 1
+	default: // ClassExists
+		return 2
+	}
+}
+
+// classLegend renders the given classes' names, each in its class color, joined
+// with " · " — the picker's color key.
+func classLegend(classes []deploy.Class) string {
+	parts := make([]string, 0, len(classes))
+	for _, c := range classes {
+		parts = append(parts, classStyle(c).Render(c.String()))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// buildDeployPickRows turns the compare groups into the picker's rows: deployable
+// items only (Unchanged and Orphan filtered out), sorted by class → type → name,
+// each colored by classStyle and unchecked by default. Returns the CheckItems, an
+// index-aligned entry slice (CheckItem k ↔ entry k), and the picker title (with a
+// color legend). With a single target workspace the workspace is named in the
+// title; with multiple, each row carries a " → <ws>" suffix (inherits the row's
+// class color, since the whole label is class-styled).
+func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, string) {
+	type row struct {
+		gi     int
+		class  deploy.Class
+		typ    string
+		name   string
+		target string
+		item   deploy.LocalItem
+	}
+	var rows []row
+	targets := map[string]bool{}
+	for gi, g := range groups {
+		for _, r := range g.Rows {
+			if r.Class == deploy.ClassUnchanged || r.Class == deploy.ClassOrphan {
+				continue
+			}
+			rows = append(rows, row{gi, r.Class, r.ItemType(), r.Name(), g.Target.DisplayName, r.Local})
+			targets[g.Target.DisplayName] = true
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if ri, rj := classRank(rows[i].class), classRank(rows[j].class); ri != rj {
+			return ri < rj
+		}
+		if rows[i].typ != rows[j].typ {
+			return rows[i].typ < rows[j].typ
+		}
+		return rows[i].name < rows[j].name
+	})
+
+	multiTarget := len(targets) > 1
+	items := make([]ui.CheckItem, len(rows))
+	entries := make([]pickEntry, len(rows))
+	seen := map[deploy.Class]bool{}
+	for k, r := range rows {
+		label := fmt.Sprintf("%-14s %s", r.typ, r.name)
+		if multiTarget {
+			label += " → " + r.target
+		}
+		items[k] = ui.CheckItem{Label: label, Style: classStyle(r.class), Checked: false}
+		entries[k] = pickEntry{gi: r.gi, item: r.item}
+		seen[r.class] = true
+	}
+
+	title := "Select items to deploy"
+	if len(targets) == 1 {
+		for t := range targets {
+			title += " to " + t
+		}
+	}
+	var present []deploy.Class
+	for _, c := range []deploy.Class{deploy.ClassNew, deploy.ClassChanged, deploy.ClassExists} {
+		if seen[c] {
+			present = append(present, c)
+		}
+	}
+	if len(present) > 0 {
+		title += "\n  " + classLegend(present)
+	}
+	return items, entries, title
 }
 
 // classStyle colors a compare row by its classification: green=new,
