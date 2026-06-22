@@ -28,6 +28,8 @@ const checkboxJumpSize = 5
 type checkboxItem struct {
 	label   string
 	checked bool
+	style   lipgloss.Style // when styled, the label's base style (class color)
+	styled  bool           // true for MultiSelectRich items; false keeps legacy rendering
 }
 
 type checkboxModel struct {
@@ -114,12 +116,24 @@ func (m checkboxModel) renderItem(i int) string {
 		box = checkboxCheckedBoxStyle.Render("■ ")
 	}
 
-	label := item.label
-	switch {
-	case isCursor:
-		label = checkboxCursorLabelStyle.Render(label)
-	case item.checked:
-		label = checkboxCheckedLabelStyle.Render(label)
+	var label string
+	if item.styled {
+		// Colored row (e.g. a class-colored deploy item): the style is the label's
+		// base so the color shows whether or not the row is checked — the ■ box is
+		// the checked indicator. The cursor row keeps the color, bolded.
+		s := item.style
+		if isCursor {
+			s = s.Bold(true)
+		}
+		label = s.Render(item.label)
+	} else {
+		label = item.label
+		switch {
+		case isCursor:
+			label = checkboxCursorLabelStyle.Render(label)
+		case item.checked:
+			label = checkboxCheckedLabelStyle.Render(label)
+		}
 	}
 
 	return fmt.Sprintf("%s%s%s", pointer, box, label)
@@ -133,6 +147,17 @@ func (m checkboxModel) countChecked() int {
 		}
 	}
 	return n
+}
+
+// checkedIndices returns the indices of the checked items, in list order.
+func (m checkboxModel) checkedIndices() []int {
+	var out []int
+	for i, it := range m.items {
+		if it.checked {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (m checkboxModel) View() string {
@@ -197,6 +222,43 @@ func (m checkboxModel) View() string {
 	}
 
 	return b.String()
+}
+
+// CheckItem is one row for MultiSelectRich: a display label, an optional lipgloss
+// style (zero value renders plain), and whether it starts checked.
+type CheckItem struct {
+	Label   string
+	Style   lipgloss.Style
+	Checked bool
+}
+
+func toCheckboxItems(items []CheckItem) []checkboxItem {
+	out := make([]checkboxItem, len(items))
+	for i, it := range items {
+		out[i] = checkboxItem{label: it.Label, checked: it.Checked, style: it.Style, styled: true}
+	}
+	return out
+}
+
+// MultiSelectRich shows an interactive checkbox list of styled items and returns
+// the indices of the checked items in list order. Unlike MultiSelect (which keys
+// on the label string), callers map the returned indices back to their own data,
+// so two rows with identical labels stay distinct. Returns ErrGoBack on esc,
+// ErrQuit on ctrl+c/q.
+func MultiSelectRich(title string, items []CheckItem) ([]int, error) {
+	model := checkboxModel{title: title, items: toCheckboxItems(items)}
+	final, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return nil, err
+	}
+	result := final.(checkboxModel)
+	if result.quit {
+		return nil, ErrQuit
+	}
+	if result.goBack {
+		return nil, ErrGoBack
+	}
+	return result.checkedIndices(), nil
 }
 
 // MultiSelect shows an interactive checkbox list. Items in `initial` are
