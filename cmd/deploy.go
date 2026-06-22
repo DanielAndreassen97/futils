@@ -782,11 +782,24 @@ func printGroupedCompare(groups []deployGroup) {
 			fmt.Println("  (no items)")
 			continue
 		}
-		for _, r := range g.Rows {
+		// Sort a display copy by class (New → Changed → Exists → Orphan) then
+		// type then name — matching the picker. The class is conveyed by color
+		// (the legend above is the key), so the per-row class word is dropped.
+		rows := append([]deploy.CompareRow(nil), g.Rows...)
+		sort.SliceStable(rows, func(i, j int) bool {
+			if ri, rj := classRank(rows[i].Class), classRank(rows[j].Class); ri != rj {
+				return ri < rj
+			}
+			if rows[i].ItemType() != rows[j].ItemType() {
+				return rows[i].ItemType() < rows[j].ItemType()
+			}
+			return rows[i].Name() < rows[j].Name()
+		})
+		for _, r := range rows {
 			if r.Class == deploy.ClassUnchanged {
 				continue // counted in the summary; not worth a per-row line
 			}
-			line := fmt.Sprintf("  %-9s %-14s %s", r.Class, r.ItemType(), r.Name())
+			line := fmt.Sprintf("  %-14s %s", r.ItemType(), r.Name())
 			fmt.Println(classStyle(r.Class).Render(line))
 		}
 	}

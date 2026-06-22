@@ -189,6 +189,30 @@ func TestPrintGroupedCompareHidesUnchanged(t *testing.T) {
 	}
 }
 
+func TestPrintGroupedCompareSortsByClass(t *testing.T) {
+	// Rows given out of class order; output must group New before Changed before
+	// Orphan (the class word is dropped — color + legend convey it).
+	rows := []deploy.CompareRow{
+		{Class: deploy.ClassChanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Changed"}},
+		{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Orphan"}},
+		{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_New"}},
+	}
+	groups := []deployGroup{{Folder: "F", Target: fabric.Workspace{DisplayName: "WS"}, Rows: rows}}
+	out := captureStdout(t, func() { printGroupedCompare(groups) })
+
+	// Only assert on the per-row region (after the legend, which names every class).
+	body := out[strings.Index(out, "WS"):]
+	iNew := strings.Index(body, "NB_New")
+	iChanged := strings.Index(body, "NB_Changed")
+	iOrphan := strings.Index(body, "NB_Orphan")
+	if iNew < 0 || iChanged < 0 || iOrphan < 0 {
+		t.Fatalf("missing a row: new=%d changed=%d orphan=%d\n%s", iNew, iChanged, iOrphan, body)
+	}
+	if !(iNew < iChanged && iChanged < iOrphan) {
+		t.Errorf("rows not sorted New<Changed<Orphan: new=%d changed=%d orphan=%d", iNew, iChanged, iOrphan)
+	}
+}
+
 func TestTargetsSummary(t *testing.T) {
 	groups := []deployGroup{
 		{Target: fabric.Workspace{DisplayName: "WS-A"}},
