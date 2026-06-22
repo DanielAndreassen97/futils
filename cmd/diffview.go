@@ -92,20 +92,35 @@ table{border-collapse:collapse;margin:.4rem 0}td{padding:.15rem .8rem;vertical-a
 	b.WriteString("<h1>futils deploy report</h1>")
 
 	if results != nil {
-		b.WriteString("<h2>Deployed items</h2><table>")
+		var deployed, deleted []deploy.Result
 		for _, r := range results {
-			cls, mark, detail := "ok", "✓", r.Action.String()
-			switch {
-			case r.Err != nil:
-				cls, mark, detail = "err", "✗", r.Err.Error()
-			case r.Warning != "":
-				cls, mark, detail = "warn", "⚠", r.Warning
+			if r.Action == deploy.ActionDelete {
+				deleted = append(deleted, r)
+			} else {
+				deployed = append(deployed, r)
 			}
-			b.WriteString(`<tr><td class="` + cls + `">` + mark + `</td><td>` +
-				html.EscapeString(r.Type+"  "+r.Name) + `</td><td class="` + cls + `">` +
-				html.EscapeString(detail) + `</td></tr>`)
 		}
-		b.WriteString("</table>")
+		renderRows := func(heading string, rs []deploy.Result) {
+			if len(rs) == 0 {
+				return
+			}
+			b.WriteString("<h2>" + heading + "</h2><table>")
+			for _, r := range rs {
+				cls, mark, detail := "ok", "✓", r.Action.String()
+				switch {
+				case r.Err != nil:
+					cls, mark, detail = "err", "✗", r.Err.Error()
+				case r.Warning != "":
+					cls, mark, detail = "warn", "⚠", r.Warning
+				}
+				b.WriteString(`<tr><td class="` + cls + `">` + mark + `</td><td>` +
+					html.EscapeString(r.Type+"  "+r.Name) + `</td><td class="` + cls + `">` +
+					html.EscapeString(detail) + `</td></tr>`)
+			}
+			b.WriteString("</table>")
+		}
+		renderRows("Deployed items", deployed)
+		renderRows("Deleted items", deleted)
 	}
 
 	b.WriteString("<h2>Content diffs (deployed → local)</h2>")

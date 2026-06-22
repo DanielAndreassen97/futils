@@ -511,6 +511,47 @@ func TestBuildDeployPickRowsEmpty(t *testing.T) {
 	}
 }
 
+func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
+	groups := []deployGroup{makeGroup("F", "ws1", "WS",
+		[]deploy.LocalItem{{Type: "Notebook", DisplayName: "NB", LogicalID: "lid"}}, nil)}
+	selectWithDelete := func(gs []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
+		return map[int][]deploy.LocalItem{0: {gs[0].Rows[0].Local}},
+			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
+	}
+	hasDelete := func(res []deploy.Result) bool {
+		for _, r := range res {
+			if r.Action == deploy.ActionDelete {
+				return true
+			}
+		}
+		return false
+	}
+	newFake := func() *deployFakeAPI {
+		return &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS"}}}
+	}
+
+	// Deploy confirm yes, delete confirm NO → no delete runs.
+	calls := 0
+	res, err := runDeploy(newFake(), "tok", "", groups, nil, selectWithDelete,
+		func(string) (bool, error) { calls++; return calls == 1, nil }) // 1st (deploy) yes, 2nd (delete) no
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if hasDelete(res) {
+		t.Errorf("delete ran despite a declined delete confirm")
+	}
+
+	// Both confirms yes → the delete runs.
+	res2, err := runDeploy(newFake(), "tok", "", groups, nil, selectWithDelete,
+		func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if !hasDelete(res2) {
+		t.Errorf("delete should run when the delete confirm is yes")
+	}
+}
+
 func TestBuildDeployPickRowsIncludesOrphans(t *testing.T) {
 	groups := []deployGroup{{
 		Target: fabric.Workspace{DisplayName: "WS-A"},

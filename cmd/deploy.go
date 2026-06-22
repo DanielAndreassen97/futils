@@ -471,6 +471,15 @@ func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace) 
 	return mappings, nil
 }
 
+// deleteCount returns the total number of items to be deleted across all groups.
+func deleteCount(m map[int][]deploy.DeleteTarget) int {
+	n := 0
+	for _, d := range m {
+		n += len(d)
+	}
+	return n
+}
+
 // runDeploy lets the user cherry-pick across groups, confirms, and executes each
 // group against its own workspace. Returns the aggregated per-item results. On a
 // mid-run Execute failure it returns the results accumulated so far alongside the
@@ -483,7 +492,7 @@ func runDeploy(
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error),
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
-	selected, _, err := selectItems(groups)
+	selected, deletesByGroup, err := selectItems(groups)
 	if err != nil {
 		return nil, err
 	}
@@ -525,6 +534,28 @@ func runDeploy(
 		allResults = append(allResults, results...)
 		if execErr != nil {
 			return allResults, execErr
+		}
+	}
+
+	// Deletes are confirmed and run SEPARATELY — never on the deploy "yes".
+	if n := deleteCount(deletesByGroup); n > 0 {
+		ok, derr := confirm(fmt.Sprintf("⚠ DELETE %d item(s) from %s? This is irreversible.", n, env))
+		if derr != nil {
+			return allResults, derr
+		}
+		if !ok {
+			fmt.Println("Deletes skipped.")
+			return allResults, nil
+		}
+		for i, g := range groups {
+			dels := deletesByGroup[i]
+			if len(dels) == 0 {
+				continue
+			}
+			sp := ui.NewSpinner(fmt.Sprintf("Deleting from %s...", g.Target.DisplayName))
+			sp.Start()
+			allResults = append(allResults, deploy.DeleteItems(client, token, g.Target, dels)...)
+			sp.Stop()
 		}
 	}
 	return allResults, nil
