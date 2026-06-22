@@ -407,6 +407,27 @@ func TestReferenceOverridesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExcludedItemTypesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"WS"}}},
+			ExcludedItemTypes: []string{"Lakehouse", "Report"},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := out.Customers["acme"].ExcludedItemTypes
+	if len(got) != 2 || got[0] != "Lakehouse" || got[1] != "Report" {
+		t.Fatalf("ExcludedItemTypes = %#v, want [Lakehouse Report]", got)
+	}
+}
+
 func TestReferenceOverridesAbsentLegacyConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600); err != nil {
@@ -430,7 +451,7 @@ func TestAllWorkspacesUnionsAndDedupes(t *testing.T) {
 		Alias:      "DEV",
 		Workspaces: []string{"DP - DEV - Config", "DP - DEV - Data"},
 		Deployments: []DeployMapping{
-			{Folder: "Backend", Workspace: "DP - DEV - Config"}, // dup of a Workspaces entry
+			{Folder: "Backend", Workspace: "DP - DEV - Config"},  // dup of a Workspaces entry
 			{Folder: "Frontend", Workspace: "DP - DEV - SemMod"}, // new
 		},
 	}

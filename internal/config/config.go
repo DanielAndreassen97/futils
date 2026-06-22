@@ -72,6 +72,9 @@ type Customer struct {
 	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 	Substitutions       []Substitution      `json:"substitutions,omitempty"`
+	// ExcludedItemTypes lists item types to skip when comparing/deploying.
+	// Empty/nil = include every discovered type (the default).
+	ExcludedItemTypes []string `json:"excluded_item_types,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -209,6 +212,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 		Substitutions       []Substitution      `json:"substitutions,omitempty"`
+		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -219,6 +223,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.ReferenceOverrides = aux.ReferenceOverrides
 	c.IgnoredReferences = aux.IgnoredReferences
 	c.Substitutions = aux.Substitutions
+	c.ExcludedItemTypes = aux.ExcludedItemTypes
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil

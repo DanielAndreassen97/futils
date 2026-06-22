@@ -93,7 +93,7 @@ func TestDiffExistingRows_DescriptionDriftIsChanged(t *testing.T) {
 		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
 	}}
 	deployed := []fabric.Item{{ID: "nb-a-id", DisplayName: "NB_A", Type: "Notebook", WorkspaceID: "ws-1"}}
-	rows := deploy.Compare(local, deployed, deployItemScope)
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
 	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
 		"nb-a-id": platformDef("x=1", "Old desc"), // content matches, description differs
 	}}
@@ -124,7 +124,7 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
 	}}
 	deployed := []fabric.Item{{ID: "nb-a-id", DisplayName: "NB_A", Type: "Notebook", WorkspaceID: "ws-1"}}
-	rows := deploy.Compare(local, deployed, deployItemScope)
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
 	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
 		"nb-a-id": platformDef("x=1", "Same"), // content + description both match
 	}}
@@ -137,6 +137,35 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}
 	if len(diffs) != 0 {
 		t.Errorf("want no diffs, got %+v", diffs)
+	}
+}
+
+func TestExcludedSet(t *testing.T) {
+	if s := excludedSet(config.Customer{}); len(s) != 0 {
+		t.Errorf("default = nothing excluded, got %#v", s)
+	}
+	s := excludedSet(config.Customer{ExcludedItemTypes: []string{"Lakehouse"}})
+	if !s["Lakehouse"] || s["Notebook"] {
+		t.Errorf("only Lakehouse excluded, got %#v", s)
+	}
+}
+
+func TestFilterExcludedTypes(t *testing.T) {
+	items := []deploy.LocalItem{
+		{Type: "Notebook", DisplayName: "NB"},
+		{Type: "Lakehouse", DisplayName: "LH"},
+	}
+	got := filterExcludedTypes(items, map[string]bool{"Lakehouse": true})
+	if len(got) != 1 || got[0].DisplayName != "NB" {
+		t.Errorf("expected only NB kept, got %#v", got)
+	}
+}
+
+func TestLocalTypeScope(t *testing.T) {
+	items := []deploy.LocalItem{{Type: "Notebook"}, {Type: "Notebook"}, {Type: "Report"}}
+	s := localTypeScope(items)
+	if !s["Notebook"] || !s["Report"] || len(s) != 2 {
+		t.Errorf("scope = %#v, want {Notebook,Report}", s)
 	}
 }
 
@@ -163,7 +192,7 @@ func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed [
 	return deployGroup{
 		Folder:   folder,
 		Target:   fabric.Workspace{ID: wsID, DisplayName: wsName},
-		Rows:     deploy.Compare(local, deployed, deployItemScope),
+		Rows:     deploy.Compare(local, deployed, localTypeScope(local)),
 		Deployed: deployed,
 	}
 }

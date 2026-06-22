@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,15 +18,38 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// deployItemScope is the set of types Phase 1 publishes / flags as orphans.
-var deployItemScope = map[string]bool{
-	"Notebook": true, "DataPipeline": true, "SemanticModel": true, "Report": true,
+// excludedSet is the customer's per-type exclusion as a lookup. Empty = nothing
+// excluded (compare every discovered type).
+func excludedSet(customer config.Customer) map[string]bool {
+	s := make(map[string]bool, len(customer.ExcludedItemTypes))
+	for _, t := range customer.ExcludedItemTypes {
+		s[t] = true
+	}
+	return s
 }
 
-// comparableTypes are the item types futils content-diffs (mirrors fabric-cicd's
-// COMPARABLE_TYPES). Other existing types are shown as Exists rather than diffed —
-// they're shell types or lack a reliable normalizer yet.
-var comparableTypes = map[string]bool{"Notebook": true, "DataPipeline": true}
+// filterExcludedTypes drops local items whose type the customer excluded.
+func filterExcludedTypes(items []deploy.LocalItem, excluded map[string]bool) []deploy.LocalItem {
+	out := make([]deploy.LocalItem, 0, len(items))
+	for _, it := range items {
+		if !excluded[it.Type] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// localTypeScope is the set of item types present in the local items — used as
+// the orphan scope so only types you actually manage in the repo can be flagged
+// Orphan (target-only system/auto items are never flagged). Orphans are shown,
+// never deleted (Execute has create/update only).
+func localTypeScope(items []deploy.LocalItem) map[string]bool {
+	s := map[string]bool{}
+	for _, it := range items {
+		s[it.Type] = true
+	}
+	return s
+}
 
 // deployGroup is one folder→workspace mapping resolved for a run: the items
 // discovered under that folder, the target workspace, the compare rows, and the
@@ -163,7 +187,13 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	env := alias
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, rebinder)
+	excluded := excludedSet(customer)
+	if len(customer.ExcludedItemTypes) > 0 {
+		sort.Strings(customer.ExcludedItemTypes)
+		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(customer.ExcludedItemTypes, ", ")))
+	}
+
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, rebinder, excluded)
 	if err != nil {
 		return err
 	}
@@ -225,7 +255,7 @@ const diffConcurrency = 16
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, rb *deploy.Rebinder) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -235,12 +265,12 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 
 		var params deploy.Parameters
 
-		items := deploy.ItemsInFolder(all, m.Folder)
+		items := filterExcludedTypes(deploy.ItemsInFolder(all, m.Folder), excluded)
 		deployed, err := client.ListItems(token, target.ID)
 		if err != nil {
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
 		}
-		rows := deploy.Compare(items, deployed, deployItemScope)
+		rows := deploy.Compare(items, deployed, localTypeScope(items))
 		g := deployGroup{
 			Folder:   m.Folder,
 			Target:   target,
@@ -276,7 +306,7 @@ func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
 func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
 	var existsIdx []int
 	for i := range rows {
-		if rows[i].Class == deploy.ClassExists && comparableTypes[rows[i].ItemType()] {
+		if rows[i].Class == deploy.ClassExists {
 			existsIdx = append(existsIdx, i)
 		}
 	}
