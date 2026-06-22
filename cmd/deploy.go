@@ -521,8 +521,10 @@ func runDeploy(
 			return nil, err
 		}
 		if !ok {
+			// Cancelling the deploy aborts the whole run, including any selected
+			// deletes — re-run and pick only orphans for a delete-only pass.
 			fmt.Println("Cancelled.")
-			return nil, nil
+			return allResults, nil
 		}
 		for i, g := range groups {
 			items := selected[i]
