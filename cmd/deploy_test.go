@@ -457,12 +457,24 @@ func TestBuildDeployPickRowsMultiTargetSuffixAndCollision(t *testing.T) {
 	if len(items) != 2 || len(entries) != 2 {
 		t.Fatalf("both same-named items must survive, got %d", len(items))
 	}
-	// Multiple targets → each row carries its workspace.
+	// Multiple targets → each row carries its workspace. Both rows tie on every
+	// sort key (New/Notebook/NB_Dup), so the WS-A-before-WS-B order holds only
+	// because sort.SliceStable preserves the group-iteration order.
 	if !strings.Contains(items[0].Label, "WS-A") || !strings.Contains(items[1].Label, "WS-B") {
 		t.Errorf("multi-target rows must show their workspace: %q / %q", items[0].Label, items[1].Label)
 	}
 	// Distinct entries point at the two different groups.
 	if entries[0].gi == entries[1].gi {
 		t.Errorf("collided to one group: %+v", entries)
+	}
+}
+
+func TestBuildDeployPickRowsEmpty(t *testing.T) {
+	items, entries, title := buildDeployPickRows(nil)
+	if len(items) != 0 || len(entries) != 0 {
+		t.Errorf("empty input → no rows, got %d items / %d entries", len(items), len(entries))
+	}
+	if title != "Select items to deploy" {
+		t.Errorf("empty title = %q, want %q", title, "Select items to deploy")
 	}
 }

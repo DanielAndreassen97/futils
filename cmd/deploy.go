@@ -627,16 +627,19 @@ type pickEntry struct {
 }
 
 // classRank orders the picker: New first, then Changed, then Exists (unverified).
-// Unchanged and Orphan never reach the picker (Orphan gets a rank when a future
-// delete feature makes it selectable).
+// Unchanged and Orphan never reach the picker today. Each rank is explicit so a
+// future delete feature that makes Orphan selectable gives it a deliberate rank
+// (e.g. last) instead of silently interleaving with Exists via the default.
 func classRank(c deploy.Class) int {
 	switch c {
 	case deploy.ClassNew:
 		return 0
 	case deploy.ClassChanged:
 		return 1
-	default: // ClassExists
+	case deploy.ClassExists:
 		return 2
+	default: // not currently shown in the picker — sort last if one ever is
+		return 99
 	}
 }
 
