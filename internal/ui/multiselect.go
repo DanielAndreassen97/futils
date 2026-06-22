@@ -26,10 +26,11 @@ var (
 const checkboxJumpSize = 5
 
 type checkboxItem struct {
-	label   string
-	checked bool
-	style   lipgloss.Style // when styled, the label's base style (class color)
-	styled  bool           // true for MultiSelectRich items; false keeps legacy rendering
+	label    string
+	checked  bool
+	style    lipgloss.Style // when styled, the label's base style (class color)
+	styled   bool           // true for MultiSelectRich items; false keeps legacy rendering
+	skipBulk bool           // true = excluded from select-all (a); deliberate per-item only
 }
 
 type checkboxModel struct {
@@ -73,17 +74,22 @@ func (m checkboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// standard checkbox-toggle key in terminal UIs.
 			m.items[m.cursor].checked = !m.items[m.cursor].checked
 		case "a":
-			// Select all if anything is unchecked; otherwise uncheck all.
-			// Gives a one-keystroke "clear everything" when the list is
-			// already fully checked.
+			// Select all if any bulk-selectable row is unchecked; otherwise clear
+			// them. Rows flagged skipBulk (destructive deletes) are never touched.
 			allChecked := true
 			for _, it := range m.items {
+				if it.skipBulk {
+					continue
+				}
 				if !it.checked {
 					allChecked = false
 					break
 				}
 			}
 			for i := range m.items {
+				if m.items[i].skipBulk {
+					continue
+				}
 				m.items[i].checked = !allChecked
 			}
 		case "enter":
@@ -230,12 +236,15 @@ type CheckItem struct {
 	Label   string
 	Style   lipgloss.Style
 	Checked bool
+	// SkipBulkSelect excludes this row from the select-all (a) key — used for
+	// destructive (delete) rows so a bulk select never marks one.
+	SkipBulkSelect bool
 }
 
 func toCheckboxItems(items []CheckItem) []checkboxItem {
 	out := make([]checkboxItem, len(items))
 	for i, it := range items {
-		out[i] = checkboxItem{label: it.Label, checked: it.Checked, style: it.Style, styled: true}
+		out[i] = checkboxItem{label: it.Label, checked: it.Checked, style: it.Style, styled: true, skipBulk: it.SkipBulkSelect}
 	}
 	return out
 }

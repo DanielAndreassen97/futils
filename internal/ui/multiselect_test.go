@@ -145,3 +145,18 @@ func TestToCheckboxItemsThreadsFields(t *testing.T) {
 		t.Errorf("item 1 = %+v, want label y, unchecked, styled", out[1])
 	}
 }
+
+func TestSelectAllSkipsBulkExcluded(t *testing.T) {
+	m := checkboxModel{items: []checkboxItem{
+		{label: "deploy1"},
+		{label: "delete1", skipBulk: true},
+		{label: "deploy2"},
+	}}
+	// Press 'a' — select-all must check only the non-skip rows.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got := m2.(checkboxModel)
+	if !got.items[0].checked || got.items[1].checked || !got.items[2].checked {
+		t.Errorf("a should check only non-skip rows, got %v/%v/%v",
+			got.items[0].checked, got.items[1].checked, got.items[2].checked)
+	}
+}
