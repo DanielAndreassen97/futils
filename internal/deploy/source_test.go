@@ -75,9 +75,9 @@ func (f *fakeGit) run(args ...string) ([]byte, error) {
 
 func TestRepoRoot(t *testing.T) {
 	g := &fakeGit{responses: map[string]string{
-		"rev-parse --show-toplevel": "/Users/dan/Repos/Datavarehus\n",
+		"rev-parse --show-toplevel": "/repo/warehouse\n",
 	}}
-	if got := repoRoot(g.run); got != "/Users/dan/Repos/Datavarehus" {
+	if got := repoRoot(g.run); got != "/repo/warehouse" {
 		t.Errorf("repoRoot = %q", got)
 	}
 }
@@ -96,8 +96,8 @@ func TestDetectDefaultBranch(t *testing.T) {
 }
 
 func TestSourceRepoAccessor(t *testing.T) {
-	s := &Source{repo: "/Users/dan/Repos/Datavarehus", ref: "origin/main"}
-	if s.Repo() != "/Users/dan/Repos/Datavarehus" {
+	s := &Source{repo: "/repo/warehouse", ref: "origin/main"}
+	if s.Repo() != "/repo/warehouse" {
 		t.Errorf("Repo() = %q", s.Repo())
 	}
 }
