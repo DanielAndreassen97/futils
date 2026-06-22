@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -79,8 +78,8 @@ type PartDiff struct {
 
 // DiffParts returns, for each part whose normalized content differs between the
 // substituted local parts and the deployed definition, the normalized old
-// (deployed) and new (local) text. Uses the same normalization as PartsChanged,
-// so the diffs it reports correspond exactly to the Changed verdict.
+// (deployed) and new (local) text. It is the single source of the content
+// verdict — PartsChanged is just len(DiffParts) > 0.
 func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []PartDiff {
 	deployedNorm := make(map[string]string, len(deployed.Parts))
 	for _, p := range deployed.Parts {
@@ -135,30 +134,9 @@ func DeployedDescription(deployed *fabric.Definition) string {
 
 // PartsChanged reports whether the local substituted parts differ from the
 // deployed definition, after per-part normalization. A differing set of part
-// paths (one added or removed) counts as changed.
+// paths (one added or removed) counts as changed. It is exactly DiffParts
+// reduced to a yes/no, so the two can never disagree on the .platform skip or
+// the normalization.
 func PartsChanged(localParts map[string][]byte, deployed *fabric.Definition) bool {
-	deployedNorm := make(map[string][]byte, len(deployed.Parts))
-	for _, p := range deployed.Parts {
-		if path.Base(p.Path) == ".platform" {
-			continue // local parts exclude .platform; its description is diffed as a field
-		}
-		raw, err := base64.StdEncoding.DecodeString(p.Payload)
-		if err != nil {
-			raw = []byte(p.Payload) // non-base64 payloads compared as-is
-		}
-		deployedNorm[p.Path] = normalizePart(raw)
-	}
-	if len(deployedNorm) != len(localParts) {
-		return true
-	}
-	for path, lb := range localParts {
-		db, ok := deployedNorm[path]
-		if !ok {
-			return true
-		}
-		if !bytes.Equal(normalizePart(lb), db) {
-			return true
-		}
-	}
-	return false
+	return len(DiffParts(localParts, deployed)) > 0
 }

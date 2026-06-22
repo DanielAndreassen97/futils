@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -327,23 +326,12 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		}
 		return msg + "..."
 	}
+	// The spinner repaints render() on every frame, so the "rate-limited, N
+	// waiting" gauge stays fresh even during a 429 stall — when every worker is
+	// sleeping and the done counter is frozen, the repaint still reflects it.
 	sp := ui.NewSpinner(render())
+	sp.SetMessageFunc(render)
 	sp.Start()
-	// Refresh the message on a timer so a throttle stall stays visible: the
-	// counter freezes while every worker sleeps on a 429, and without this the
-	// spinner would give no hint that we're being rate-limited rather than hung.
-	ticker := time.NewTicker(500 * time.Millisecond)
-	stopTicker := make(chan struct{})
-	go func() {
-		for {
-			select {
-			case <-stopTicker:
-				return
-			case <-ticker.C:
-				sp.SetMessage(render())
-			}
-		}
-	}()
 	type fetched struct {
 		def *fabric.Definition
 		err error
@@ -363,8 +351,6 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		}(j, idx)
 	}
 	wg.Wait()
-	ticker.Stop()
-	close(stopTicker)
 	sp.Stop()
 
 	// One-line, after-the-fact note when Fabric rate-limited us during the
