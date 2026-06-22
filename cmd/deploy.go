@@ -661,13 +661,14 @@ func classLegend(classes []deploy.Class) string {
 	return strings.Join(parts, " · ")
 }
 
-// buildDeployPickRows turns the compare groups into the picker's rows: deployable
-// items only (Unchanged and Orphan filtered out), sorted by class → type → name,
-// each colored by classStyle and unchecked by default. Returns the CheckItems, an
-// index-aligned entry slice (CheckItem k ↔ entry k), and the picker title (with a
-// color legend). With a single target workspace the workspace is named in the
-// title; with multiple, each row carries a " → <ws>" suffix (inherits the row's
-// class color, since the whole label is class-styled).
+// buildDeployPickRows turns the compare groups into the picker's rows: New/Changed/
+// Exists items to deploy plus Orphan items to delete (only Unchanged is filtered
+// out), sorted by class → type → name, each colored by classStyle and unchecked by
+// default. Orphan rows are SkipBulkSelect (select-all never marks a delete) and carry
+// a DeleteTarget on their entry. Returns the CheckItems, an index-aligned entry slice
+// (CheckItem k ↔ entry k), and the picker title (with a color legend). With a single
+// target workspace the workspace is named in the title; with multiple, each row carries
+// a " → <ws>" suffix (inherits the row's class color, since the whole label is class-styled).
 func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, string) {
 	type row struct {
 		gi         int
