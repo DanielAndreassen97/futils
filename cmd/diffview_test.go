@@ -134,6 +134,13 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 	if !contains(out, "description not synced") {
 		t.Errorf("warning text missing")
 	}
+	// Outcome markers and the action label must render (guards the results section).
+	if !contains(out, "✓") || !contains(out, "⚠") || !contains(out, "✗") {
+		t.Errorf("outcome markers (✓/⚠/✗) missing")
+	}
+	if !contains(out, results[0].Action.String()) {
+		t.Errorf("action label %q missing for happy-path row", results[0].Action.String())
+	}
 	// Error text is HTML-escaped (no raw <x>).
 	if contains(out, "boom <x>") || !contains(out, "boom &lt;x&gt;") {
 		t.Errorf("error text not HTML-escaped")
