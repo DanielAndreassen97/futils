@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
+	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
 	"github.com/charmbracelet/huh"
@@ -20,6 +21,7 @@ const (
 	editActionRefOverrides  = "__ref_overrides"
 	editActionSetBaseline   = "__set_baseline"
 	editActionSubstitutions = "__substitutions"
+	editActionExcludeTypes  = "__exclude_types"
 	envActionAddWS          = "__add_ws"
 	envActionRemoveWS       = "__remove_ws"
 	envActionRenameAlias    = "__rename_alias"
@@ -106,6 +108,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := setBaselineEnvironment(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionExcludeTypes:
+			if err := excludeItemTypes(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -140,6 +146,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
 		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
 		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
+		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -798,5 +805,47 @@ func removeDeploymentMapping(configPath, customerName, alias string, customer co
 		return fmt.Errorf("save customer: %w", err)
 	}
 	fmt.Printf("Removed mapping from env %q\n", alias)
+	return nil
+}
+
+// excludeItemTypes lets the user pick which item types to skip when comparing.
+// The picker is populated from the item types actually present in the customer's
+// repo (a local scan). Selected = excluded; default nothing selected = compare
+// everything. Stored as Customer.ExcludedItemTypes.
+func excludeItemTypes(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if customer.RepoPath == "" {
+		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list item types."))
+		return ui.ErrGoBack
+	}
+	types, err := deploy.RepoItemTypes(customer.RepoPath)
+	if err != nil {
+		return fmt.Errorf("scan repo for item types: %w", err)
+	}
+	if len(types) == 0 {
+		fmt.Println(infoStyle.Render("No Fabric items found under the repo path."))
+		return ui.ErrGoBack
+	}
+
+	chosen, err := ui.MultiSelect("Select item types to EXCLUDE from compare (none = compare all)", types, customer.ExcludedItemTypes)
+	if err != nil {
+		return err
+	}
+	if len(chosen) == 0 {
+		customer.ExcludedItemTypes = nil
+	} else {
+		customer.ExcludedItemTypes = chosen
+	}
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save excluded item types: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved excluded item types."))
 	return nil
 }
