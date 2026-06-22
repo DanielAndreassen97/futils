@@ -233,9 +233,10 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		if ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved))); cerr == nil && ok {
 			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved); merr != nil {
 				fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
+			} else {
+				// Mapping changed config; the user re-runs deploy to pick it up.
+				fmt.Println(infoStyle.Render("References updated — re-run deploy to apply them."))
 			}
-			// Mapping changed config; the user re-runs deploy to pick it up.
-			fmt.Println(infoStyle.Render("References updated — re-run deploy to apply them."))
 			return nil
 		}
 	}

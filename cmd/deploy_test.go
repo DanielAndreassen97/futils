@@ -217,17 +217,6 @@ func TestRunDeployHappyPath(t *testing.T) {
 			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}
 	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
-	selectAll := func(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
-		out := map[int][]deploy.LocalItem{}
-		for i, g := range gs {
-			for _, r := range g.Rows {
-				if r.Class != deploy.ClassOrphan {
-					out[i] = append(out[i], r.Local)
-				}
-			}
-		}
-		return out, nil
-	}
 	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -266,15 +255,6 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 	groups := []deployGroup{
 		makeGroup("Backend", "ws-config", "Config", backend, nil),
 		makeGroup("Frontend", "ws-semmod", "SemMod", frontend, nil),
-	}
-	selectAll := func(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
-		out := map[int][]deploy.LocalItem{}
-		for i, g := range gs {
-			for _, r := range g.Rows {
-				out[i] = append(out[i], r.Local)
-			}
-		}
-		return out, nil
 	}
 	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
