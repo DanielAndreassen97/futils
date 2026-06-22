@@ -182,6 +182,24 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 	}
 }
 
+func TestPrettyForDiff(t *testing.T) {
+	min := `{"a":1,"b":{"c":2}}`
+	got := prettyForDiff(min)
+	if !strings.Contains(got, "\n") || !strings.Contains(got, "  \"a\": 1") {
+		t.Errorf("minified JSON should be indented, got:\n%s", got)
+	}
+	if prettyForDiff("x=1\ny=2") != "x=1\ny=2" {
+		t.Errorf("non-JSON must be returned verbatim")
+	}
+	// Whitespace-only difference collapses to identical output (no diff noise).
+	if prettyForDiff(`{"a":1}`) != prettyForDiff(`{ "a" : 1 }`) {
+		t.Errorf("formatting-only JSON differences must normalize equal")
+	}
+	if !isJSON(`{"a":1}`) || isJSON("x=1") {
+		t.Errorf("isJSON misclassified")
+	}
+}
+
 func contains(s, sub string) bool { return len(s) >= len(sub) && (stringIndex(s, sub) >= 0) }
 func stringIndex(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {

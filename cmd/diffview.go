@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"html"
 	"os"
@@ -91,6 +93,22 @@ func cappedLineDiff(oldText, newText string) []DiffLine {
 	return unifiedLineDiff(oldText, newText)
 }
 
+// prettyForDiff pretty-prints content as 2-space-indented JSON when it parses
+// as JSON, so minified/awkward Fabric .json parts diff readably and pure
+// formatting differences collapse. Non-JSON content is returned unchanged.
+func prettyForDiff(content string) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(content), "", "  "); err != nil {
+		return content
+	}
+	return buf.String()
+}
+
+// isJSON reports whether content is valid JSON (drives the "prettified" badge).
+func isJSON(content string) bool {
+	return json.Valid([]byte(content))
+}
+
 // renderDeployReport builds a self-contained HTML deploy report. When results
 // is non-nil it leads with a per-item outcome section (✓ deployed / ⚠ warning /
 // ✗ error); it always follows with every Changed item's per-part content diff
@@ -160,8 +178,12 @@ table{border-collapse:collapse;margin:.4rem 0}td{padding:.15rem .8rem;vertical-a
 			b.WriteString(`<details class="item"><summary>` +
 				html.EscapeString(it.Type+"  "+it.Name) + "</summary>")
 			for _, p := range it.Parts {
-				b.WriteString(`<div class="path">` + html.EscapeString(p.Path) + "</div><pre>")
-				for _, ln := range cappedLineDiff(p.Old, p.New) {
+				badge := ""
+				if isJSON(p.Old) || isJSON(p.New) {
+					badge = ` <span class="badge">json · prettified</span>`
+				}
+				b.WriteString(`<div class="path">` + html.EscapeString(p.Path) + badge + "</div><pre>")
+				for _, ln := range cappedLineDiff(prettyForDiff(p.Old), prettyForDiff(p.New)) {
 					cls, prefix := "ctx", " "
 					switch ln.Op {
 					case '-':
