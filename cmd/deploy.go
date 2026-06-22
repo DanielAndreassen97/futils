@@ -480,10 +480,10 @@ func runDeploy(
 	token, env string,
 	groups []deployGroup,
 	rb *deploy.Rebinder,
-	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, error),
+	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error),
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
-	selected, err := selectItems(groups)
+	selected, _, err := selectItems(groups)
 	if err != nil {
 		return nil, err
 	}
@@ -598,32 +598,38 @@ func resolveWorkspaceByName(workspaces []fabric.Workspace, name string) (fabric.
 }
 
 // pickGroupedRows shows all groups' deployable rows (New/Changed/Exists, colored
-// by class) as one unchecked checkbox list, sorted by class. Returns the chosen
-// LocalItems keyed by group index. Unchanged and Orphan rows are excluded — Phase
-// 1 cannot deploy or delete them.
-func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, error) {
+// by class) as one unchecked checkbox list, sorted by class. Orphan rows appear
+// as red skip-bulk-select rows. Returns chosen LocalItems keyed by group index
+// (deploys) and chosen DeleteTargets keyed by group index (deletes).
+func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
 	items, entries, title := buildDeployPickRows(groups)
 	if len(items) == 0 {
-		return map[int][]deploy.LocalItem{}, nil
+		return map[int][]deploy.LocalItem{}, nil, nil
 	}
 	idx, err := ui.MultiSelectRich(title, items)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := map[int][]deploy.LocalItem{}
+	deploys := map[int][]deploy.LocalItem{}
+	deletes := map[int][]deploy.DeleteTarget{}
 	for _, k := range idx {
 		e := entries[k]
-		out[e.gi] = append(out[e.gi], e.item)
+		if e.delete != nil {
+			deletes[e.gi] = append(deletes[e.gi], *e.delete)
+		} else {
+			deploys[e.gi] = append(deploys[e.gi], e.item)
+		}
 	}
-	return out, nil
+	return deploys, deletes, nil
 }
 
 // pickEntry is the identity behind one picker CheckItem: which group and which
 // local item. Index-aligned with the CheckItem slice, so identical labels never
 // collide (the old label-keyed map silently dropped duplicates).
 type pickEntry struct {
-	gi   int
-	item deploy.LocalItem
+	gi     int
+	item   deploy.LocalItem     // set for a deploy row
+	delete *deploy.DeleteTarget // non-nil for an orphan delete row
 }
 
 // classRank orders the picker: New first, then Changed, then Exists (unverified).
@@ -638,7 +644,9 @@ func classRank(c deploy.Class) int {
 		return 1
 	case deploy.ClassExists:
 		return 2
-	default: // not currently shown in the picker — sort last if one ever is
+	case deploy.ClassOrphan:
+		return 3
+	default:
 		return 99
 	}
 }
@@ -662,21 +670,22 @@ func classLegend(classes []deploy.Class) string {
 // class color, since the whole label is class-styled).
 func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, string) {
 	type row struct {
-		gi     int
-		class  deploy.Class
-		typ    string
-		name   string
-		target string
-		item   deploy.LocalItem
+		gi         int
+		class      deploy.Class
+		typ        string
+		name       string
+		target     string
+		item       deploy.LocalItem
+		deployedID string
 	}
 	var rows []row
 	targets := map[string]bool{}
 	for gi, g := range groups {
 		for _, r := range g.Rows {
-			if r.Class == deploy.ClassUnchanged || r.Class == deploy.ClassOrphan {
+			if r.Class == deploy.ClassUnchanged {
 				continue
 			}
-			rows = append(rows, row{gi, r.Class, r.ItemType(), r.Name(), g.Target.DisplayName, r.Local})
+			rows = append(rows, row{gi, r.Class, r.ItemType(), r.Name(), g.Target.DisplayName, r.Local, r.DeployedID})
 			targets[g.Target.DisplayName] = true
 		}
 	}
@@ -699,8 +708,13 @@ func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, str
 		if multiTarget {
 			label += " → " + r.target
 		}
-		items[k] = ui.CheckItem{Label: label, Style: classStyle(r.class), Checked: false}
-		entries[k] = pickEntry{gi: r.gi, item: r.item}
+		isOrphan := r.class == deploy.ClassOrphan
+		items[k] = ui.CheckItem{Label: label, Style: classStyle(r.class), Checked: false, SkipBulkSelect: isOrphan}
+		if isOrphan {
+			entries[k] = pickEntry{gi: r.gi, delete: &deploy.DeleteTarget{ID: r.deployedID, Name: r.name, Type: r.typ}}
+		} else {
+			entries[k] = pickEntry{gi: r.gi, item: r.item}
+		}
 		seen[r.class] = true
 	}
 
@@ -711,7 +725,7 @@ func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, str
 		}
 	}
 	var present []deploy.Class
-	for _, c := range []deploy.Class{deploy.ClassNew, deploy.ClassChanged, deploy.ClassExists} {
+	for _, c := range []deploy.Class{deploy.ClassNew, deploy.ClassChanged, deploy.ClassExists, deploy.ClassOrphan} {
 		if seen[c] {
 			present = append(present, c)
 		}

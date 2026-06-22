@@ -269,7 +269,7 @@ func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed [
 }
 
 // selectAll is a test helper that selects every non-orphan item across all groups.
-func selectAll(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
+func selectAll(gs []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
 	out := map[int][]deploy.LocalItem{}
 	for i, g := range gs {
 		for _, r := range g.Rows {
@@ -278,7 +278,7 @@ func selectAll(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
 			}
 		}
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 func TestRunDeployHappyPath(t *testing.T) {
@@ -428,26 +428,29 @@ func TestBuildDeployPickRows(t *testing.T) {
 			{Class: deploy.ClassChanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Z"}},
 			{Class: deploy.ClassUnchanged, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Skip"}},
 			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_A"}},
-			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}},
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{Type: "Notebook", DisplayName: "NB_Gone"}, DeployedID: "gone-id"},
 		},
 	}}
 	items, entries, title := buildDeployPickRows(groups)
 
-	// Unchanged + Orphan filtered out; New and Changed kept.
-	if len(items) != 2 || len(entries) != 2 {
-		t.Fatalf("want 2 rows (New+Changed), got %d items / %d entries", len(items), len(entries))
+	// Unchanged filtered out; New, Changed, and Orphan kept.
+	if len(items) != 3 || len(entries) != 3 {
+		t.Fatalf("want 3 rows (New+Changed+Orphan), got %d items / %d entries", len(items), len(entries))
 	}
-	// Sorted New before Changed.
+	// Sorted New before Changed before Orphan.
 	if !strings.Contains(items[0].Label, "NB_A") {
 		t.Errorf("New should sort first, got %q", items[0].Label)
 	}
 	if !strings.Contains(items[1].Label, "NB_Z") {
 		t.Errorf("Changed should sort after New, got %q", items[1].Label)
 	}
-	// Skipped rows are absent.
+	if !strings.Contains(items[2].Label, "NB_Gone") {
+		t.Errorf("Orphan should sort last, got %q", items[2].Label)
+	}
+	// Unchanged row absent; Orphan present.
 	for _, it := range items {
-		if strings.Contains(it.Label, "NB_Skip") || strings.Contains(it.Label, "NB_Gone") {
-			t.Errorf("unchanged/orphan leaked into picker: %q", it.Label)
+		if strings.Contains(it.Label, "NB_Skip") {
+			t.Errorf("unchanged leaked into picker: %q", it.Label)
 		}
 	}
 	// Nothing pre-checked.
@@ -463,9 +466,13 @@ func TestBuildDeployPickRows(t *testing.T) {
 	if strings.Contains(items[0].Label, "WS-A") {
 		t.Errorf("single target must not put workspace in the row label: %q", items[0].Label)
 	}
-	// Index identity: entry k aligns with item k.
+	// Index identity: deploy entries align with items.
 	if entries[0].item.DisplayName != "NB_A" || entries[1].item.DisplayName != "NB_Z" {
-		t.Errorf("entries not index-aligned with items: %+v", entries)
+		t.Errorf("deploy entries not index-aligned with items: %+v", entries)
+	}
+	// Orphan entry carries a DeleteTarget, not a deploy item.
+	if entries[2].delete == nil || entries[2].delete.ID != "gone-id" {
+		t.Errorf("orphan entry must carry DeleteTarget with correct ID, got %+v", entries[2])
 	}
 }
 
@@ -501,5 +508,33 @@ func TestBuildDeployPickRowsEmpty(t *testing.T) {
 	}
 	if title != "Select items to deploy" {
 		t.Errorf("empty title = %q, want %q", title, "Select items to deploy")
+	}
+}
+
+func TestBuildDeployPickRowsIncludesOrphans(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "WS-A"},
+		Rows: []deploy.CompareRow{
+			{Class: deploy.ClassNew, Local: deploy.LocalItem{Type: "Notebook", DisplayName: "NB_New"}},
+			{Class: deploy.ClassOrphan, Deployed: fabric.Item{ID: "orphan-id", Type: "Notebook", DisplayName: "NB_Gone"}, DeployedID: "orphan-id"},
+		},
+	}}
+	items, entries, _ := buildDeployPickRows(groups)
+	if len(items) != 2 {
+		t.Fatalf("want New + Orphan rows, got %d", len(items))
+	}
+	// Orphan sorts last, is SkipBulkSelect, and carries a DeleteTarget entry.
+	if !strings.Contains(items[1].Label, "NB_Gone") {
+		t.Fatalf("orphan should sort last, got %q", items[1].Label)
+	}
+	if !items[1].SkipBulkSelect {
+		t.Errorf("orphan row must be SkipBulkSelect")
+	}
+	if entries[1].delete == nil || entries[1].delete.ID != "orphan-id" || entries[1].delete.Name != "NB_Gone" {
+		t.Errorf("orphan entry must carry a DeleteTarget, got %+v", entries[1])
+	}
+	// The deploy row carries no delete target.
+	if entries[0].delete != nil {
+		t.Errorf("deploy row must not be a delete: %+v", entries[0])
 	}
 }
