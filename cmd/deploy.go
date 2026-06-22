@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -202,45 +204,56 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	filterIgnoredUnresolved(groups, customer)
 
-	dryRun, err := pickDeployMode()
+	// Always compare first, then gate on an explicit "continue to deployment".
+	fmt.Println(infoStyle.Render(fmt.Sprintf("Comparing %s → %s", env, targetsSummary(groups))))
+	printGroupedCompare(groups)
+	printRebindSummary(groups)
+	printUnresolved(groups)
+
+	hasDiffs := false
+	for _, g := range groups {
+		if len(g.Diffs) > 0 {
+			hasDiffs = true
+			break
+		}
+	}
+	if hasDiffs {
+		if ok, cerr := ui.Confirm("Open content diffs in browser?"); cerr == nil && ok {
+			if derr := showDiffsInBrowser(groups); derr != nil {
+				fmt.Println(warningStyle.Render("Couldn't open diffs: " + derr.Error()))
+			}
+		}
+	}
+
+	var unresolved []deploy.UnresolvedRef
+	for _, g := range groups {
+		unresolved = append(unresolved, g.Unresolved...)
+	}
+	if len(unresolved) > 0 {
+		if ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved))); cerr == nil && ok {
+			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved); merr != nil {
+				fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
+			}
+			// Mapping changed config; the user re-runs deploy to pick it up.
+			fmt.Println(infoStyle.Render("References updated — re-run deploy to apply them."))
+			return nil
+		}
+	}
+
+	cont, err := ui.Confirm("Continue to deployment?")
 	if err != nil {
 		return err
 	}
+	if !cont {
+		return nil // declined: this was a dry-run
+	}
 
-	results, err := runDeploy(client, token, env, groups, dryRun, rebinder, pickGroupedRows, ui.Confirm)
+	results, err := runDeploy(client, token, env, groups, rebinder, pickGroupedRows, ui.Confirm)
 	printDeployResults(results)
 	if err != nil {
 		return err
 	}
-	if dryRun {
-		hasDiffs := false
-		for _, g := range groups {
-			if len(g.Diffs) > 0 {
-				hasDiffs = true
-				break
-			}
-		}
-		if hasDiffs {
-			ok, cerr := ui.Confirm("Open content diffs in browser?")
-			if cerr == nil && ok {
-				if derr := showDiffsInBrowser(groups); derr != nil {
-					fmt.Println(warningStyle.Render("Couldn't open diffs: " + derr.Error()))
-				}
-			}
-		}
-		var unresolved []deploy.UnresolvedRef
-		for _, g := range groups {
-			unresolved = append(unresolved, g.Unresolved...)
-		}
-		if len(unresolved) > 0 {
-			ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved)))
-			if cerr == nil && ok {
-				if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved); merr != nil {
-					fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
-				}
-			}
-		}
-	}
+	saveDeployHistory(customer, groups, results)
 	return nil
 }
 
@@ -457,27 +470,18 @@ func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace) 
 	return mappings, nil
 }
 
-// runDeploy prints the grouped compare, stops if dryRun, otherwise lets the
-// user cherry-pick across groups, confirms, and executes each group against its
-// own workspace. Returns the aggregated per-item results. On a mid-run Execute
-// failure it returns the results accumulated so far alongside the error, so
-// callers should print results before checking err.
+// runDeploy lets the user cherry-pick across groups, confirms, and executes each
+// group against its own workspace. Returns the aggregated per-item results. On a
+// mid-run Execute failure it returns the results accumulated so far alongside the
+// error, so callers should print results before checking err.
 func runDeploy(
 	client deploy.FabricClient,
 	token, env string,
 	groups []deployGroup,
-	dryRun bool,
 	rb *deploy.Rebinder,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, error),
 	confirm func(string) (bool, error),
 ) ([]deploy.Result, error) {
-	printGroupedCompare(groups)
-	printRebindSummary(groups)
-	printUnresolved(groups)
-	if dryRun {
-		return nil, nil
-	}
-
 	selected, err := selectItems(groups)
 	if err != nil {
 		return nil, err
@@ -525,6 +529,37 @@ func runDeploy(
 	return allResults, nil
 }
 
+// targetsSummary lists the distinct target workspace names for the compare header.
+func targetsSummary(groups []deployGroup) string {
+	seen := map[string]bool{}
+	var names []string
+	for _, g := range groups {
+		if !seen[g.Target.DisplayName] {
+			seen[g.Target.DisplayName] = true
+			names = append(names, g.Target.DisplayName)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// saveDeployHistory writes an HTML deploy-report to the customer's configured
+// repo-relative history folder. No-op (with a notice) when no folder or repo
+// path is set. A write failure is non-fatal — the deploy already happened.
+func saveDeployHistory(customer config.Customer, groups []deployGroup, results []deploy.Result) {
+	if customer.DeployHistoryPath == "" || customer.RepoPath == "" {
+		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
+		return
+	}
+	dir := filepath.Join(customer.RepoPath, customer.DeployHistoryPath)
+	htmlDoc := renderDeployReport(groups, results)
+	path, err := writeHistoryReport(dir, time.Now(), htmlDoc)
+	if err != nil {
+		fmt.Println(warningStyle.Render("Couldn't save deploy report: " + err.Error()))
+		return
+	}
+	fmt.Println(infoStyle.Render("Saved deploy report: " + path))
+}
+
 // pickEnvironment shows the customer's environment aliases as a numbered menu.
 func pickEnvironment(customer config.Customer) (string, error) {
 	options := make([]ui.MenuOption, len(customer.Environments))
@@ -536,18 +571,6 @@ func pickEnvironment(customer config.Customer) (string, error) {
 		options[i] = ui.MenuOption{Label: label, Value: e.Alias}
 	}
 	return ui.NumberMenu("Select environment to deploy to", options)
-}
-
-// pickDeployMode asks whether to compare-only (dry run) or compare-and-deploy.
-func pickDeployMode() (bool, error) {
-	choice, err := ui.NumberMenu("What would you like to do?", []ui.MenuOption{
-		{Label: "Compare only (dry run)", Value: "dry"},
-		{Label: "Compare and deploy", Value: "deploy"},
-	})
-	if err != nil {
-		return false, err
-	}
-	return choice == "dry", nil
 }
 
 // resolveWorkspaceByName finds a workspace by display name among those the user

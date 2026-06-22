@@ -197,6 +197,19 @@ func makeGroup(folder, wsID, wsName string, local []deploy.LocalItem, deployed [
 	}
 }
 
+// selectAll is a test helper that selects every non-orphan item across all groups.
+func selectAll(gs []deployGroup) (map[int][]deploy.LocalItem, error) {
+	out := map[int][]deploy.LocalItem{}
+	for i, g := range gs {
+		for _, r := range g.Rows {
+			if r.Class != deploy.ClassOrphan {
+				out[i] = append(out[i], r.Local)
+			}
+		}
+	}
+	return out, nil
+}
+
 func TestRunDeployHappyPath(t *testing.T) {
 	fake := &deployFakeAPI{}
 	local := []deploy.LocalItem{
@@ -215,7 +228,7 @@ func TestRunDeployHappyPath(t *testing.T) {
 		}
 		return out, nil
 	}
-	res, err := runDeploy(fake, "tok", "", groups, false, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -227,24 +240,20 @@ func TestRunDeployHappyPath(t *testing.T) {
 	}
 }
 
-func TestRunDeployDryRunDoesNotExecute(t *testing.T) {
-	fake := &deployFakeAPI{}
-	local := []deploy.LocalItem{{Type: "Notebook", DisplayName: "NB_A",
-		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}}
-	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
-	mustNotCall := func([]deployGroup) (map[int][]deploy.LocalItem, error) {
-		t.Fatal("selectItems must not be called in dry-run")
-		return nil, nil
-	}
-	res, err := runDeploy(fake, "tok", "", groups, true, nil, mustNotCall, func(string) (bool, error) { return true, nil })
+func TestRunDeployDeclinedConfirmDoesNotExecute(t *testing.T) {
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS"}}}
+	groups := []deployGroup{makeGroup("F", "ws1", "WS",
+		[]deploy.LocalItem{{Type: "Notebook", DisplayName: "NB", LogicalID: "lid"}}, nil)}
+
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return false, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
-	if res != nil {
-		t.Errorf("dry-run should return nil results, got %+v", res)
+	if len(res) != 0 {
+		t.Errorf("declined confirm must execute nothing, got %d results", len(res))
 	}
 	if len(fake.created) != 0 {
-		t.Errorf("dry-run must not create, got %d", len(fake.created))
+		t.Errorf("declined confirm must create nothing, got %d", len(fake.created))
 	}
 }
 
@@ -267,7 +276,7 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 		}
 		return out, nil
 	}
-	res, err := runDeploy(fake, "tok", "", groups, false, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
