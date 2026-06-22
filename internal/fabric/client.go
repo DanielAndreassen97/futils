@@ -375,6 +375,9 @@ func DeleteItem(token, workspaceID, itemID string) error {
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone — deletion is idempotent, the desired end-state holds
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("delete item %d: %s", resp.StatusCode, string(respBody))
 	}

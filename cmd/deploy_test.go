@@ -582,6 +582,43 @@ func TestRunDeployDeleteOnly(t *testing.T) {
 	}
 }
 
+func TestPrintDeployResultsCountsDeletesSeparately(t *testing.T) {
+	results := []deploy.Result{
+		{Name: "NB_A", Type: "Notebook", Action: deploy.ActionCreate},
+		{Name: "NB_Gone", Type: "Notebook", Action: deploy.ActionDelete},
+		{Name: "NB_Gone2", Type: "Notebook", Action: deploy.ActionDelete},
+	}
+	out := captureStdout(t, func() { printDeployResults(results) })
+	if !strings.Contains(out, "Deployed 1 item(s)") || !strings.Contains(out, "deleted 2") {
+		t.Errorf("headline must separate deploys from deletes (Deployed 1, deleted 2), got:\n%s", out)
+	}
+	if strings.Contains(out, "Deployed 3") {
+		t.Errorf("deleted items must not be counted as deployed:\n%s", out)
+	}
+}
+
+func TestRunDeployDeleteConfirmNamesWorkspace(t *testing.T) {
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS-Prod"}}}
+	groups := []deployGroup{makeGroup("F", "ws1", "WS-Prod", nil, nil)}
+	selectDel := func(gs []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
+		return map[int][]deploy.LocalItem{},
+			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
+	}
+	var deletePrompt string
+	_, err := runDeploy(fake, "tok", "TEST", groups, nil, selectDel, func(p string) (bool, error) {
+		if strings.Contains(p, "DELETE") {
+			deletePrompt = p
+		}
+		return false, nil // decline — we only assert the prompt text
+	})
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if !strings.Contains(deletePrompt, "WS-Prod") {
+		t.Errorf("delete confirm must name the target workspace, got %q", deletePrompt)
+	}
+}
+
 func TestReconcileOrphansSharedWorkspace(t *testing.T) {
 	// Two folders → the SAME workspace. Each folder's Compare ran against the
 	// workspace's full deployed list, so each group flags the sibling's valid

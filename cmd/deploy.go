@@ -585,6 +585,9 @@ func runDeploy(
 			sp.Stop()
 			allResults = append(allResults, results...)
 			if execErr != nil {
+				if nDel > 0 {
+					fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy failed — the %d selected delete(s) were NOT run.", nDel)))
+				}
 				return allResults, execErr
 			}
 		}
@@ -592,7 +595,17 @@ func runDeploy(
 
 	// Deletes are confirmed and run SEPARATELY — never on the deploy "yes".
 	if nDel > 0 {
-		ok, derr := confirm(fmt.Sprintf("⚠ DELETE %d item(s) from %s? This is irreversible.", nDel, env))
+		// Name the actual target workspace(s), not just the env alias, so the user
+		// sees exactly where items will be irreversibly removed.
+		var wsNames []string
+		seenWS := map[string]bool{}
+		for i, g := range groups {
+			if len(deletesByGroup[i]) > 0 && !seenWS[g.Target.DisplayName] {
+				seenWS[g.Target.DisplayName] = true
+				wsNames = append(wsNames, g.Target.DisplayName)
+			}
+		}
+		ok, derr := confirm(fmt.Sprintf("⚠ DELETE %d item(s) from %s? This is irreversible.", nDel, strings.Join(wsNames, ", ")))
 		if derr != nil {
 			return allResults, derr
 		}
@@ -716,10 +729,10 @@ type pickEntry struct {
 	delete *deploy.DeleteTarget // non-nil for an orphan delete row
 }
 
-// classRank orders the picker: New first, then Changed, then Exists (unverified).
-// Unchanged and Orphan never reach the picker today. Each rank is explicit so a
-// future delete feature that makes Orphan selectable gives it a deliberate rank
-// (e.g. last) instead of silently interleaving with Exists via the default.
+// classRank orders the picker: New first, then Changed, then Exists (unverified),
+// then Orphan (the selectable-for-deletion rows) last. Unchanged never reaches the
+// picker. Each rank is explicit so the default catches only genuinely-unranked
+// classes (sorted last) rather than silently interleaving them with Orphan.
 func classRank(c deploy.Class) int {
 	switch c {
 	case deploy.ClassNew:
@@ -1099,26 +1112,38 @@ func printDeployResults(results []deploy.Result) {
 	if len(results) == 0 {
 		return
 	}
-	var failed, warned int
+	// Deletes are counted separately from deploys so the headline never claims a
+	// deleted item was "deployed" (it never reached the workspace as content).
+	var deployed, deleted, failed, warned int
 	var b string
 	for _, r := range results {
 		switch {
 		case r.Err != nil:
 			failed++
 			b += fmt.Sprintf("  ✗ %s (%s): %v\n", r.Name, r.Type, r.Err)
+		case r.Action == deploy.ActionDelete:
+			deleted++
+			b += fmt.Sprintf("  ✓ %s (%s) %s\n", r.Name, r.Type, r.Action)
 		case r.Warning != "":
+			deployed++
 			warned++
 			b += fmt.Sprintf("  ⚠ %s (%s) %s — %s\n", r.Name, r.Type, r.Action, r.Warning)
 		default:
+			deployed++
 			b += fmt.Sprintf("  ✓ %s (%s) %s\n", r.Name, r.Type, r.Action)
 		}
 	}
+	summary := fmt.Sprintf("Deployed %d item(s)", deployed)
+	if deleted > 0 {
+		summary += fmt.Sprintf(", deleted %d", deleted)
+	}
+	if warned > 0 {
+		summary += fmt.Sprintf(", %d with warnings", warned)
+	}
 	fmt.Println()
 	if failed > 0 {
-		fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy finished with %d failure(s)\n%s", failed, b)))
-	} else if warned > 0 {
-		fmt.Println(successStyle.Render(fmt.Sprintf("Deployed %d item(s), %d with warnings\n%s", len(results), warned, b)))
+		fmt.Println(warningStyle.Render(fmt.Sprintf("%s, %d failure(s)\n%s", summary, failed, b)))
 	} else {
-		fmt.Println(successStyle.Render(fmt.Sprintf("Deployed %d item(s)\n%s", len(results), b)))
+		fmt.Println(successStyle.Render(summary + "\n" + b))
 	}
 }
