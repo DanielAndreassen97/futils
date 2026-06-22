@@ -234,3 +234,29 @@ func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 		t.Errorf("rebind dataset = %q, want MyModel-newid", rf.rebinds[0][1])
 	}
 }
+
+func TestDeleteItems(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	targets := []DeleteTarget{
+		{ID: "id-1", Name: "NB_Gone", Type: "Notebook"},
+		{ID: "id-2", Name: "PL_Gone", Type: "DataPipeline"},
+	}
+	results := DeleteItems(rf, "tok", target, targets)
+
+	if len(rf.deletes) != 2 || rf.deletes[0] != "id-1" || rf.deletes[1] != "id-2" {
+		t.Fatalf("want both ids deleted in order, got %v", rf.deletes)
+	}
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %d", len(results))
+	}
+	if results[0].Action != ActionDelete || results[0].Name != "NB_Gone" || results[0].Err != nil {
+		t.Errorf("result 0 = %+v, want {NB_Gone Notebook Delete nil-err}", results[0])
+	}
+	if ActionDelete.String() != "Delete" {
+		t.Errorf("ActionDelete.String() = %q, want Delete", ActionDelete.String())
+	}
+}

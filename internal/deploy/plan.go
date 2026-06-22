@@ -7,13 +7,18 @@ type Action int
 const (
 	ActionCreate Action = iota
 	ActionUpdate
+	ActionDelete
 )
 
 func (a Action) String() string {
-	if a == ActionUpdate {
+	switch a {
+	case ActionUpdate:
 		return "Update"
+	case ActionDelete:
+		return "Delete"
+	default:
+		return "Create"
 	}
-	return "Create"
 }
 
 // PlannedItem is one item to publish, with its resolved create/update action.
