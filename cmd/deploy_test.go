@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -185,6 +186,51 @@ func TestPrintGroupedCompareHidesUnchanged(t *testing.T) {
 	}
 	if !strings.Contains(out, "Unchanged") {
 		t.Error("the count summary should still report the Unchanged total")
+	}
+}
+
+func TestTargetsSummary(t *testing.T) {
+	groups := []deployGroup{
+		{Target: fabric.Workspace{DisplayName: "WS-A"}},
+		{Target: fabric.Workspace{DisplayName: "WS-B"}},
+		{Target: fabric.Workspace{DisplayName: "WS-A"}}, // duplicate collapses
+	}
+	if got := targetsSummary(groups); got != "WS-A, WS-B" {
+		t.Errorf("targetsSummary = %q, want %q", got, "WS-A, WS-B")
+	}
+	if got := targetsSummary(nil); got != "(none)" {
+		t.Errorf("empty targetsSummary = %q, want (none)", got)
+	}
+}
+
+func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
+	repo := t.TempDir()
+	customer := config.Customer{RepoPath: repo, DeployHistoryPath: "history"}
+	groups := []deployGroup{{Target: fabric.Workspace{DisplayName: "WS"}}}
+	results := []deploy.Result{{Name: "NB", Type: "Notebook", Action: deploy.ActionCreate}}
+
+	// Nothing published (empty results) → no report, no folder created.
+	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, nil) })
+	if entries, _ := os.ReadDir(filepath.Join(repo, "history")); len(entries) != 0 {
+		t.Errorf("empty results must write no report, found %d file(s)", len(entries))
+	}
+
+	// Items deployed → a .html report appears in the configured folder.
+	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, results) })
+	entries, err := os.ReadDir(filepath.Join(repo, "history"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected 1 report file, got %d (err %v)", len(entries), err)
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".html") {
+		t.Errorf("report should be .html, got %q", entries[0].Name())
+	}
+
+	// Deployed but history unconfigured → skip notice, no panic.
+	out := captureStdout(t, func() {
+		saveDeployHistory(config.Customer{RepoPath: repo}, groups, results)
+	})
+	if !strings.Contains(out, "No deploy-history folder set") {
+		t.Errorf("expected skip notice when unconfigured, got %q", out)
 	}
 }
 

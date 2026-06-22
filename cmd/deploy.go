@@ -540,13 +540,25 @@ func targetsSummary(groups []deployGroup) string {
 			names = append(names, g.Target.DisplayName)
 		}
 	}
+	if len(names) == 0 {
+		return "(none)"
+	}
 	return strings.Join(names, ", ")
 }
 
 // saveDeployHistory writes an HTML deploy-report to the customer's configured
-// repo-relative history folder. No-op (with a notice) when no folder or repo
-// path is set. A write failure is non-fatal — the deploy already happened.
+// repo-relative history folder. It's a no-op when nothing was published (empty
+// results — e.g. the user continued past the gate but selected nothing or
+// cancelled the inner confirm), so aborted runs don't litter the history with
+// empty reports. When items WERE deployed but no folder/repo is configured it
+// prints a skip notice. The report's diff section reflects every compared item
+// while the results section reflects what was actually deployed (a cherry-picked
+// subset shows fewer results than diffs). A write failure is non-fatal — the
+// deploy already happened.
 func saveDeployHistory(customer config.Customer, groups []deployGroup, results []deploy.Result) {
+	if len(results) == 0 {
+		return // nothing was published — no report to write
+	}
 	if customer.DeployHistoryPath == "" || customer.RepoPath == "" {
 		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
 		return
