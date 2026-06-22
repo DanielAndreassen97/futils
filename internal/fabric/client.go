@@ -76,13 +76,20 @@ var httpCallCount int64
 // HTTPCallCount returns the number of HTTP requests issued this process.
 func HTTPCallCount() int64 { return atomic.LoadInt64(&httpCallCount) }
 
+// debugMu serializes writes to debugW: logHTTP fires from up to diffConcurrency
+// worker goroutines, and Fprintf isn't guaranteed atomic on a shared writer, so
+// without this the debug lines interleave byte-for-byte.
+var debugMu sync.Mutex
+
 func logHTTP(method string, status int, dur time.Duration, rawURL string) {
 	atomic.AddInt64(&httpCallCount, 1)
 	if !httpDebug {
 		return
 	}
 	path := strings.TrimPrefix(strings.TrimPrefix(rawURL, baseURL), powerBIBaseURL)
+	debugMu.Lock()
 	fmt.Fprintf(debugW, "[http] %-6s %3d %5dms  %s\n", method, status, dur.Milliseconds(), path)
+	debugMu.Unlock()
 }
 
 // throttleHits is the cumulative count of 429 backoffs since process start;
@@ -103,26 +110,47 @@ func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
 // back to zero once the throttling clears, so a UI signal won't get stuck on.
 func ActiveThrottles() int64 { return atomic.LoadInt64(&throttleActive) }
 
-// firstThrottle captures the details of the first 429 seen this process so a UI
-// can show WHY Fabric throttled — its own error body names the limit that was
-// hit, which beats guessing.
+// firstThrottle captures the details of the first 429 seen since the last reset
+// so a UI can show WHY Fabric throttled — its own error body names the limit
+// that was hit, which beats guessing. A mutex (not sync.Once) guards it so the
+// compare can ResetThrottleFirst() per group: otherwise a later group's "first
+// 429" line would misattribute the very first 429 of the whole process.
 var (
-	firstThrottleOnce sync.Once
-	firstThrottle     string
+	firstThrottleMu  sync.Mutex
+	firstThrottle    string
+	firstThrottleSet bool
 )
 
-// FirstThrottle returns the first 429's "METHOD url — Retry-After=… — <body>",
-// or "" if none seen.
-func FirstThrottle() string { return firstThrottle }
+// FirstThrottle returns the first 429's "METHOD url — Retry-After=… — <body>"
+// since the last reset, or "" if none seen.
+func FirstThrottle() string {
+	firstThrottleMu.Lock()
+	defer firstThrottleMu.Unlock()
+	return firstThrottle
+}
+
+// ResetThrottleFirst clears the recorded first-429 detail so the next throttle
+// is attributed to the current batch. Callers that report a per-batch throttle
+// delta (the deploy compare, per group) reset before the batch starts.
+func ResetThrottleFirst() {
+	firstThrottleMu.Lock()
+	firstThrottle = ""
+	firstThrottleSet = false
+	firstThrottleMu.Unlock()
+}
 
 func recordThrottle(method, rawURL, retryAfter string, body []byte) {
-	firstThrottleOnce.Do(func() {
-		b := strings.TrimSpace(string(body))
-		if len(b) > 240 {
-			b = b[:240] + "…"
-		}
-		firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
-	})
+	firstThrottleMu.Lock()
+	defer firstThrottleMu.Unlock()
+	if firstThrottleSet {
+		return
+	}
+	firstThrottleSet = true
+	b := strings.TrimSpace(string(body))
+	if len(b) > 240 {
+		b = b[:240] + "…"
+	}
+	firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
 }
 
 // throttleDelay computes how long to wait before retrying a 429. It honors the

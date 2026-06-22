@@ -319,6 +319,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	total := len(existsIdx)
 	var done int64
 	baseThrottle := fabric.ThrottleHits()
+	fabric.ResetThrottleFirst() // scope the "first 429" detail to this group's compare
 	render := func() string {
 		msg := fmt.Sprintf("Comparing %d/%d item(s) in %s", atomic.LoadInt64(&done), total, target.DisplayName)
 		if active := fabric.ActiveThrottles(); active > 0 {
@@ -865,19 +866,25 @@ func printDeployResults(results []deploy.Result) {
 	if len(results) == 0 {
 		return
 	}
-	var failed int
+	var failed, warned int
 	var b string
 	for _, r := range results {
-		if r.Err != nil {
+		switch {
+		case r.Err != nil:
 			failed++
 			b += fmt.Sprintf("  ✗ %s (%s): %v\n", r.Name, r.Type, r.Err)
-		} else {
+		case r.Warning != "":
+			warned++
+			b += fmt.Sprintf("  ⚠ %s (%s) %s — %s\n", r.Name, r.Type, r.Action, r.Warning)
+		default:
 			b += fmt.Sprintf("  ✓ %s (%s) %s\n", r.Name, r.Type, r.Action)
 		}
 	}
 	fmt.Println()
 	if failed > 0 {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy finished with %d failure(s)\n%s", failed, b)))
+	} else if warned > 0 {
+		fmt.Println(successStyle.Render(fmt.Sprintf("Deployed %d item(s), %d with warnings\n%s", len(results), warned, b)))
 	} else {
 		fmt.Println(successStyle.Render(fmt.Sprintf("Deployed %d item(s)\n%s", len(results), b)))
 	}

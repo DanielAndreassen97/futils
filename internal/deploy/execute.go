@@ -12,11 +12,12 @@ import (
 
 // Result is the per-item outcome of a deploy run.
 type Result struct {
-	Name   string
-	Type   string
-	Action Action
-	ID     string // deployed item ID
-	Err    error
+	Name    string
+	Type    string
+	Action  Action
+	ID      string // deployed item ID
+	Err     error
+	Warning string // non-fatal issue after a successful publish (e.g. description not synced)
 }
 
 // Execute publishes a plan against the target workspace. For each item, in
@@ -65,9 +66,12 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 		// Item metadata (description) lives in .platform, which is never part of
 		// the published definition — set it explicitly so git stays the source of
 		// truth for descriptions, mirroring fabric-cicd. A failure here is
-		// non-fatal: the definition is already published.
+		// non-fatal: the definition is already published, so it's recorded as a
+		// Warning (not Err) — the item still counts as deployed, and a real
+		// failure below (e.g. RebindReport) can still set Err without being
+		// clobbered.
 		if err := client.UpdateItem(token, target.ID, deployedID, p.Item.DisplayName, p.Item.Description); err != nil {
-			res.Err = fmt.Errorf("definition published but description update failed: %w", err)
+			res.Warning = fmt.Sprintf("description not synced: %v", err)
 		}
 
 		if p.Item.LogicalID != "" {

@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,18 +13,19 @@ import (
 // create/update/rebind calls.
 type recordingFabric struct {
 	fakeFabric
-	created      []fabric.Definition
-	createdNames []string
-	updates      map[string]fabric.Definition // existingID -> def
-	rebinds      [][2]string                  // {reportID, datasetID}
-	metaUpdates  []metaUpdate                 // UpdateItem (PATCH) calls
+	created       []fabric.Definition
+	createdNames  []string
+	updates       map[string]fabric.Definition // existingID -> def
+	rebinds       [][2]string                  // {reportID, datasetID}
+	metaUpdates   []metaUpdate                 // UpdateItem (PATCH) calls
+	updateItemErr error                        // when set, UpdateItem returns it (description-sync failure)
 }
 
 type metaUpdate struct{ id, displayName, description string }
 
 func (r *recordingFabric) UpdateItem(token, ws, id, displayName, description string) error {
 	r.metaUpdates = append(r.metaUpdates, metaUpdate{id, displayName, description})
-	return nil
+	return r.updateItemErr
 }
 
 func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
@@ -159,6 +161,41 @@ func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
 	}
 	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
 		t.Errorf("want metadata update of existing-id with 'Updated desc', got %+v", rf.metaUpdates)
+	}
+}
+
+func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
+	rf := &recordingFabric{
+		fakeFabric: fakeFabric{
+			workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+			itemsByWS:  map[string][]fabric.Item{},
+		},
+		updateItemErr: fmt.Errorf("429 after retries"),
+	}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{{
+		Action: ActionCreate,
+		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
+			Description: "My desc",
+			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
+	}}
+	results, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	// The definition published fine; only the description PATCH failed. That must
+	// be a Warning (item still deployed), never an Err (which counts as failure).
+	if results[0].Err != nil {
+		t.Errorf("description failure must not set Err, got %v", results[0].Err)
+	}
+	if results[0].Warning == "" {
+		t.Errorf("description failure should set a Warning, got empty")
+	}
+	if results[0].ID != "NB_A-newid" {
+		t.Errorf("item should still be recorded as published, got ID %q", results[0].ID)
 	}
 }
 

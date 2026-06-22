@@ -808,6 +808,23 @@ func removeDeploymentMapping(configPath, customerName, alias string, customer co
 	return nil
 }
 
+// mergeSorted returns the sorted, de-duplicated union of two string slices.
+func mergeSorted(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		seen[s] = true
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // excludeItemTypes lets the user pick which item types to skip when comparing.
 // The picker is populated from the item types actually present in the customer's
 // repo (a local scan). Selected = excluded; default nothing selected = compare
@@ -829,12 +846,18 @@ func excludeItemTypes(configPath, customerName string) error {
 	if err != nil {
 		return fmt.Errorf("scan repo for item types: %w", err)
 	}
-	if len(types) == 0 {
+	// Offer the union of what's in the repo now AND what's already excluded:
+	// MultiSelect only returns checked options that appear in the list, so a
+	// previously-excluded type missing from the current scan (folder renamed,
+	// not yet pulled, or temporarily removed) would be silently dropped on
+	// confirm. Keeping it in the list — pre-checked — preserves the choice.
+	options := mergeSorted(types, customer.ExcludedItemTypes)
+	if len(options) == 0 {
 		fmt.Println(infoStyle.Render("No Fabric items found under the repo path."))
 		return ui.ErrGoBack
 	}
 
-	chosen, err := ui.MultiSelect("Select item types to EXCLUDE from compare (none = compare all)", types, customer.ExcludedItemTypes)
+	chosen, err := ui.MultiSelect("Select item types to EXCLUDE from compare (none = compare all)", options, customer.ExcludedItemTypes)
 	if err != nil {
 		return err
 	}
