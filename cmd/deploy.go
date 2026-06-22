@@ -500,46 +500,50 @@ func runDeploy(
 	for _, items := range selected {
 		total += len(items)
 	}
-	if total == 0 {
-		fmt.Println("Nothing selected to deploy.")
-		return nil, nil
-	}
-
-	wsCount := 0
-	for _, items := range selected {
-		if len(items) > 0 {
-			wsCount++
-		}
-	}
-	ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s)?", total, wsCount))
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		fmt.Println("Cancelled.")
+	nDel := deleteCount(deletesByGroup)
+	if total == 0 && nDel == 0 {
+		fmt.Println("Nothing selected.")
 		return nil, nil
 	}
 
 	var allResults []deploy.Result
-	for i, g := range groups {
-		items := selected[i]
-		if len(items) == 0 {
-			continue
+	// Deploy (create/update). Skipped entirely on a delete-only run so we never
+	// prompt "Deploy 0 item(s)?" — the delete flow below handles orphan-only runs.
+	if total > 0 {
+		wsCount := 0
+		for _, items := range selected {
+			if len(items) > 0 {
+				wsCount++
+			}
 		}
-		plan := deploy.BuildPlan(items, g.Deployed)
-		sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
-		sp.Start()
-		results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb)
-		sp.Stop()
-		allResults = append(allResults, results...)
-		if execErr != nil {
-			return allResults, execErr
+		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s)?", total, wsCount))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			fmt.Println("Cancelled.")
+			return nil, nil
+		}
+		for i, g := range groups {
+			items := selected[i]
+			if len(items) == 0 {
+				continue
+			}
+			plan := deploy.BuildPlan(items, g.Deployed)
+			sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
+			sp.Start()
+			results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb)
+			sp.Stop()
+			allResults = append(allResults, results...)
+			if execErr != nil {
+				return allResults, execErr
+			}
 		}
 	}
 
 	// Deletes are confirmed and run SEPARATELY — never on the deploy "yes".
-	if n := deleteCount(deletesByGroup); n > 0 {
-		ok, derr := confirm(fmt.Sprintf("⚠ DELETE %d item(s) from %s? This is irreversible.", n, env))
+	if nDel > 0 {
+		ok, derr := confirm(fmt.Sprintf("⚠ DELETE %d item(s) from %s? This is irreversible.", nDel, env))
 		if derr != nil {
 			return allResults, derr
 		}

@@ -552,6 +552,36 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 	}
 }
 
+func TestRunDeployDeleteOnly(t *testing.T) {
+	// Only an orphan to delete, no deploys: the deploy confirm must be SKIPPED
+	// (no "Deploy 0 item(s)?") and the delete must run on its own affirmative
+	// confirm — the primary "just clean up orphans" use case.
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS"}}}
+	groups := []deployGroup{makeGroup("F", "ws1", "WS", nil, nil)}
+	selectDeleteOnly := func(gs []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
+		return map[int][]deploy.LocalItem{},
+			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
+	}
+	calls := 0
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectDeleteOnly,
+		func(string) (bool, error) { calls++; return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("delete-only run should prompt exactly once (the delete confirm), got %d", calls)
+	}
+	var deleted bool
+	for _, r := range res {
+		if r.Action == deploy.ActionDelete {
+			deleted = true
+		}
+	}
+	if !deleted {
+		t.Errorf("delete-only run with an affirmative confirm must run the delete")
+	}
+}
+
 func TestBuildDeployPickRowsIncludesOrphans(t *testing.T) {
 	groups := []deployGroup{{
 		Target: fabric.Workspace{DisplayName: "WS-A"},
