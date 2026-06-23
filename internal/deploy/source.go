@@ -1,16 +1,24 @@
 package deploy
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // gitRunner runs a git subcommand and returns stdout. The real one targets a
 // repo dir via `git -C <repo>`. Tests swap in a fake.
 type gitRunner func(args ...string) ([]byte, error)
+
+// gitBatchRunner runs a git subcommand with data piped on stdin and returns
+// stdout. Used for git cat-file --batch to read many blobs in one subprocess.
+type gitBatchRunner func(stdin []byte, args ...string) ([]byte, error)
 
 func realGitRunner(repo string) gitRunner {
 	return func(args ...string) ([]byte, error) {
@@ -26,11 +34,28 @@ func realGitRunner(repo string) gitRunner {
 	}
 }
 
+func realGitBatchRunner(repo string) gitBatchRunner {
+	return func(stdin []byte, args ...string) ([]byte, error) {
+		full := append([]string{"-C", repo}, args...)
+		cmd := exec.Command("git", full...)
+		cmd.Stdin = bytes.NewReader(stdin)
+		out, err := cmd.Output()
+		if err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				return nil, fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+			}
+			return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		}
+		return out, nil
+	}
+}
+
 // Source reads Fabric items from a single git ref (always origin/<default>).
 type Source struct {
-	repo string
-	ref  string // e.g. "origin/main"
-	git  gitRunner
+	repo     string
+	ref      string // e.g. "origin/main"
+	git      gitRunner
+	gitBatch gitBatchRunner // nil falls back to git cat-file via s.git
 }
 
 // NewSource validates the repo and resolves the deploy ref to origin/<default>.
@@ -47,7 +72,12 @@ func NewSource(repo string) (*Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Source{repo: repo, ref: "origin/" + branch, git: g}, nil
+	return &Source{
+		repo:     repo,
+		ref:      "origin/" + branch,
+		git:      g,
+		gitBatch: realGitBatchRunner(repo),
+	}, nil
 }
 
 // repoRoot returns the repository's top-level directory via the runner, or ""
@@ -107,6 +137,10 @@ func (s *Source) ReadFile(p string) ([]byte, error) {
 // DiscoverItems lists every tree path at the deploy ref, treats each folder
 // containing a .platform as an item, and reads that folder's files (excluding
 // .platform) as definition parts. Part paths are relative to the item folder.
+//
+// Efficiency: files are bucketed into item folders in a single O(files×folders)
+// pass, and all blob content is fetched in one git cat-file --batch subprocess
+// call, eliminating the N+1 git show pattern.
 func (s *Source) DiscoverItems() ([]LocalItem, error) {
 	out, err := s.git("ls-tree", "-r", "--name-only", s.ref)
 	if err != nil {
@@ -119,7 +153,7 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 		}
 	}
 
-	// Group files by the item folder that owns them (folder = dir of .platform).
+	// Identify item folders (any directory that contains a .platform file).
 	itemFolders := map[string]bool{}
 	for _, p := range all {
 		if path.Base(p) == ".platform" {
@@ -127,11 +161,54 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 		}
 	}
 
-	var items []LocalItem
+	// Single-pass bucketing: assign each file to the item folder whose prefix
+	// it matches. When item folders can be nested, pick the longest match —
+	// identical to the original strings.HasPrefix(p, folder+"/") semantics.
+	filesByFolder := make(map[string][]string, len(itemFolders))
+	for _, p := range all {
+		best := ""
+		for folder := range itemFolders {
+			prefix := folder + "/"
+			if strings.HasPrefix(p, prefix) && len(folder) > len(best) {
+				best = folder
+			}
+		}
+		if best != "" {
+			filesByFolder[best] = append(filesByFolder[best], p)
+		}
+	}
+
+	// Build the ordered spec list for git cat-file --batch. Specs are ordered:
+	// for each item folder (in deterministic sorted order) we emit the
+	// .platform spec first, then the part file specs in all-list order.
+	sortedFolders := make([]string, 0, len(itemFolders))
 	for folder := range itemFolders {
-		platRaw, err := s.ReadFile(folder + "/.platform")
-		if err != nil {
-			return nil, err
+		sortedFolders = append(sortedFolders, folder)
+	}
+	sort.Strings(sortedFolders)
+
+	var specs []string
+	for _, folder := range sortedFolders {
+		specs = append(specs, s.ref+":"+folder+"/.platform")
+		for _, p := range filesByFolder[folder] {
+			if path.Base(p) != ".platform" {
+				specs = append(specs, s.ref+":"+p)
+			}
+		}
+	}
+
+	// Fetch all blobs in one subprocess call.
+	blobs, err := s.batchReadBlobs(specs)
+	if err != nil {
+		return nil, err
+	}
+
+	var items []LocalItem
+	for _, folder := range sortedFolders {
+		platSpec := s.ref + ":" + folder + "/.platform"
+		platRaw, ok := blobs[platSpec]
+		if !ok {
+			return nil, fmt.Errorf("read %s: blob missing from batch output", platSpec)
 		}
 		meta, err := parsePlatform(platRaw)
 		if err != nil {
@@ -144,18 +221,15 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			LogicalID:   meta.LogicalID,
 			FolderPath:  folder,
 		}
-		prefix := folder + "/"
-		for _, p := range all {
-			if !strings.HasPrefix(p, prefix) {
-				continue
-			}
-			rel := strings.TrimPrefix(p, prefix)
+		for _, p := range filesByFolder[folder] {
+			rel := strings.TrimPrefix(p, folder+"/")
 			if rel == ".platform" {
 				continue
 			}
-			content, err := s.ReadFile(p)
-			if err != nil {
-				return nil, err
+			spec := s.ref + ":" + p
+			content, ok := blobs[spec]
+			if !ok {
+				return nil, fmt.Errorf("read %s: blob missing from batch output", spec)
 			}
 			item.Parts = append(item.Parts, Part{Path: rel, Content: content})
 		}
@@ -163,4 +237,96 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].FolderPath < items[j].FolderPath })
 	return items, nil
+}
+
+// batchReadBlobs fetches the content of all given object specs
+// (<ref>:<path> format) using one git cat-file --batch subprocess.
+// Output is matched to specs by position (git cat-file --batch outputs
+// results in the same order as the input).
+func (s *Source) batchReadBlobs(specs []string) (map[string][]byte, error) {
+	if len(specs) == 0 {
+		return map[string][]byte{}, nil
+	}
+
+	stdin := []byte(strings.Join(specs, "\n") + "\n")
+
+	var raw []byte
+	var runErr error
+	if s.gitBatch != nil {
+		raw, runErr = s.gitBatch(stdin, "cat-file", "--batch")
+	} else {
+		// Fallback: use the real git runner directly (integration test path
+		// where gitBatch is nil). The integration test uses realGitRunner which
+		// doesn't support stdin, but the integration test exercises real git
+		// via NewSource which sets gitBatch.
+		raw, runErr = s.realBatchFallback(stdin)
+	}
+	if runErr != nil {
+		return nil, fmt.Errorf("git cat-file --batch: %w", runErr)
+	}
+
+	return parseCatFileBatchOrdered(raw, specs)
+}
+
+// realBatchFallback is used when gitBatch is nil (should not happen in
+// production since NewSource always sets it, but kept as a safety net).
+func (s *Source) realBatchFallback(stdin []byte) ([]byte, error) {
+	return realGitBatchRunner(s.repo)(stdin, "cat-file", "--batch")
+}
+
+// parseCatFileBatchOrdered parses git cat-file --batch output, matching
+// results to specs by position (output order == input order).
+//
+// Binary-safety: content bytes are read via io.ReadFull(size), never by
+// splitting on newlines, so embedded newlines and null bytes survive intact.
+//
+// Format per object:
+//
+//	found:   "<oid> <type> <size>\n" + exactly <size> raw content bytes + "\n"
+//	missing: "<spec> missing\n"      (no content bytes follow)
+func parseCatFileBatchOrdered(data []byte, specs []string) (map[string][]byte, error) {
+	result := make(map[string][]byte, len(specs))
+	r := bufio.NewReader(bytes.NewReader(data))
+
+	for _, spec := range specs {
+		header, err := r.ReadString('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("cat-file parse: read header for %q: %w", spec, err)
+		}
+		header = strings.TrimRight(header, "\n")
+
+		// Missing object: leave key absent — caller detects the gap.
+		if strings.HasSuffix(header, " missing") {
+			continue
+		}
+
+		// Found: "<oid> <type> <size>"
+		fields := strings.Fields(header)
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("cat-file parse: unexpected header %q for spec %q", header, spec)
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("cat-file parse: bad size %q in header for spec %q", fields[2], spec)
+		}
+
+		// Read exactly <size> bytes — binary-safe.
+		content := make([]byte, size)
+		if _, err := io.ReadFull(r, content); err != nil {
+			return nil, fmt.Errorf("cat-file parse: read %d bytes for spec %q: %w", size, spec, err)
+		}
+
+		// Consume the trailing newline git appends after content.
+		if b, err := r.ReadByte(); err != nil && err != io.EOF {
+			return nil, fmt.Errorf("cat-file parse: trailing newline for spec %q: %w", spec, err)
+		} else if err == nil && b != '\n' {
+			return nil, fmt.Errorf("cat-file parse: expected trailing newline for spec %q, got 0x%02x", spec, b)
+		}
+
+		result[spec] = content
+	}
+	return result, nil
 }

@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
@@ -20,13 +21,18 @@ func TestDiscoverItems(t *testing.T) {
 	modelPlatform := `{"metadata":{"type":"SemanticModel","displayName":"MyModel"},"config":{"logicalId":"bbb"}}`
 
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main":                              tree,
-		"show origin/main:NB_Foo.Notebook/.platform":                     fooPlatform,
-		"show origin/main:NB_Foo.Notebook/notebook-content.py":           "print(1)\n",
-		"show origin/main:MyModel.SemanticModel/.platform":                modelPlatform,
-		"show origin/main:MyModel.SemanticModel/definition/model.tmdl":   "table X\n",
+		"ls-tree -r --name-only origin/main": tree,
 	}}
-	s := &Source{ref: "origin/main", git: g.run}
+
+	batchBlobs := map[string][]byte{
+		"origin/main:NB_Foo.Notebook/.platform":                   []byte(fooPlatform),
+		"origin/main:NB_Foo.Notebook/notebook-content.py":         []byte("print(1)\n"),
+		"origin/main:MyModel.SemanticModel/.platform":             []byte(modelPlatform),
+		"origin/main:MyModel.SemanticModel/definition/model.tmdl": []byte("table X\n"),
+	}
+	fb := &fakeBatch{blobs: batchBlobs}
+
+	s := &Source{ref: "origin/main", git: g.run, gitBatch: fb.run}
 
 	items, err := s.DiscoverItems()
 	if err != nil {
@@ -57,6 +63,175 @@ func TestDiscoverItems(t *testing.T) {
 	}
 }
 
+// TestDiscoverItemsBatchCalledOnce proves that DiscoverItems issues exactly one
+// git cat-file --batch call regardless of how many items/parts there are,
+// eliminating the N+1 subprocess pattern.
+func TestDiscoverItemsBatchCalledOnce(t *testing.T) {
+	tree := strings.Join([]string{
+		"ItemA.Notebook/.platform",
+		"ItemA.Notebook/file1.py",
+		"ItemA.Notebook/file2.py",
+		"ItemB.SemanticModel/.platform",
+		"ItemB.SemanticModel/definition/model.tmdl",
+		"ItemB.SemanticModel/definition/table.tmdl",
+	}, "\n") + "\n"
+
+	platA := `{"metadata":{"type":"Notebook","displayName":"ItemA"},"config":{"logicalId":"aaa"}}`
+	platB := `{"metadata":{"type":"SemanticModel","displayName":"ItemB"},"config":{"logicalId":"bbb"}}`
+
+	g := &fakeGit{responses: map[string]string{
+		"ls-tree -r --name-only origin/main": tree,
+	}}
+	batchBlobs := map[string][]byte{
+		"origin/main:ItemA.Notebook/.platform":                  []byte(platA),
+		"origin/main:ItemA.Notebook/file1.py":                   []byte("x = 1\n"),
+		"origin/main:ItemA.Notebook/file2.py":                   []byte("x = 2\n"),
+		"origin/main:ItemB.SemanticModel/.platform":             []byte(platB),
+		"origin/main:ItemB.SemanticModel/definition/model.tmdl": []byte("model M\n"),
+		"origin/main:ItemB.SemanticModel/definition/table.tmdl": []byte("table T\n"),
+	}
+	fb := &fakeBatch{blobs: batchBlobs}
+
+	s := &Source{ref: "origin/main", git: g.run, gitBatch: fb.run}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2", len(items))
+	}
+
+	// Only ONE batch call, not 6 (one per file).
+	if fb.calls != 1 {
+		t.Errorf("gitBatch called %d times, want exactly 1", fb.calls)
+	}
+
+	// Verify no git show calls were made (old N+1 pattern).
+	for _, call := range g.calls {
+		if len(call) > 0 && call[0] == "show" {
+			t.Errorf("unexpected git show call: %v (should use cat-file --batch)", call)
+		}
+	}
+}
+
+// TestDiscoverItemsBinaryContent proves the batch parser is binary-safe: content
+// with embedded newlines and non-ASCII bytes round-trips byte-for-byte.
+func TestDiscoverItemsBinaryContent(t *testing.T) {
+	// Content with embedded newlines AND a non-ASCII byte (0xFF).
+	multilinePart := "line one\nline two\nline three\n"
+	binaryPart := "header\x00\xff\xfe data\nnewline in binary\x00tail"
+
+	tree := strings.Join([]string{
+		"Widget.Notebook/.platform",
+		"Widget.Notebook/multiline.py",
+		"Widget.Notebook/binary.bin",
+	}, "\n") + "\n"
+
+	plat := `{"metadata":{"type":"Notebook","displayName":"Widget"},"config":{"logicalId":"ccc"}}`
+
+	g := &fakeGit{responses: map[string]string{
+		"ls-tree -r --name-only origin/main": tree,
+	}}
+	batchBlobs := map[string][]byte{
+		"origin/main:Widget.Notebook/.platform":    []byte(plat),
+		"origin/main:Widget.Notebook/multiline.py": []byte(multilinePart),
+		"origin/main:Widget.Notebook/binary.bin":   []byte(binaryPart),
+	}
+	fb := &fakeBatch{blobs: batchBlobs}
+
+	s := &Source{ref: "origin/main", git: g.run, gitBatch: fb.run}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if len(items[0].Parts) != 2 {
+		t.Fatalf("got %d parts, want 2", len(items[0].Parts))
+	}
+
+	byPath := map[string][]byte{}
+	for _, p := range items[0].Parts {
+		byPath[p.Path] = p.Content
+	}
+
+	if !bytes.Equal(byPath["multiline.py"], []byte(multilinePart)) {
+		t.Errorf("multiline.py: got %q, want %q", byPath["multiline.py"], multilinePart)
+	}
+	if !bytes.Equal(byPath["binary.bin"], []byte(binaryPart)) {
+		t.Errorf("binary.bin: got %q, want %q", byPath["binary.bin"], binaryPart)
+	}
+}
+
+// TestDiscoverItemsBucketing verifies that multi-folder discovery assigns each
+// file to exactly the item folder that owns it (longest matching prefix).
+func TestDiscoverItemsBucketing(t *testing.T) {
+	tree := strings.Join([]string{
+		"GroupA/ItemX.Notebook/.platform",
+		"GroupA/ItemX.Notebook/x.py",
+		"GroupA/ItemY.SemanticModel/.platform",
+		"GroupA/ItemY.SemanticModel/model.tmdl",
+		"GroupB/ItemZ.Notebook/.platform",
+		"GroupB/ItemZ.Notebook/z.py",
+		"toplevel.txt", // non-item file, must not appear anywhere
+	}, "\n") + "\n"
+
+	platX := `{"metadata":{"type":"Notebook","displayName":"ItemX"},"config":{"logicalId":"x1"}}`
+	platY := `{"metadata":{"type":"SemanticModel","displayName":"ItemY"},"config":{"logicalId":"y1"}}`
+	platZ := `{"metadata":{"type":"Notebook","displayName":"ItemZ"},"config":{"logicalId":"z1"}}`
+
+	g := &fakeGit{responses: map[string]string{
+		"ls-tree -r --name-only origin/main": tree,
+	}}
+	batchBlobs := map[string][]byte{
+		"origin/main:GroupA/ItemX.Notebook/.platform":       []byte(platX),
+		"origin/main:GroupA/ItemX.Notebook/x.py":            []byte("x code\n"),
+		"origin/main:GroupA/ItemY.SemanticModel/.platform":  []byte(platY),
+		"origin/main:GroupA/ItemY.SemanticModel/model.tmdl": []byte("model Y\n"),
+		"origin/main:GroupB/ItemZ.Notebook/.platform":       []byte(platZ),
+		"origin/main:GroupB/ItemZ.Notebook/z.py":            []byte("z code\n"),
+	}
+	fb := &fakeBatch{blobs: batchBlobs}
+
+	s := &Source{ref: "origin/main", git: g.run, gitBatch: fb.run}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+	byName := map[string]LocalItem{}
+	for _, it := range items {
+		byName[it.DisplayName] = it
+	}
+
+	// ItemX gets only x.py, not ItemY's model.tmdl.
+	x := byName["ItemX"]
+	if len(x.Parts) != 1 || x.Parts[0].Path != "x.py" {
+		t.Errorf("ItemX parts = %+v", x.Parts)
+	}
+	// ItemY gets only model.tmdl.
+	y := byName["ItemY"]
+	if len(y.Parts) != 1 || y.Parts[0].Path != "model.tmdl" {
+		t.Errorf("ItemY parts = %+v", y.Parts)
+	}
+	// ItemZ gets only z.py.
+	z := byName["ItemZ"]
+	if len(z.Parts) != 1 || z.Parts[0].Path != "z.py" {
+		t.Errorf("ItemZ parts = %+v", z.Parts)
+	}
+
+	// Items sorted by FolderPath.
+	wantOrder := []string{"GroupA/ItemX.Notebook", "GroupA/ItemY.SemanticModel", "GroupB/ItemZ.Notebook"}
+	for i, item := range items {
+		if item.FolderPath != wantOrder[i] {
+			t.Errorf("items[%d].FolderPath = %q, want %q", i, item.FolderPath, wantOrder[i])
+		}
+	}
+}
+
 // fakeGit records calls and returns canned output keyed by the joined args.
 type fakeGit struct {
 	responses map[string]string // key: strings.Join(args, " ")
@@ -71,6 +246,36 @@ func (f *fakeGit) run(args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("fakeGit: no canned response for %q", key)
 	}
 	return []byte(out), nil
+}
+
+// fakeBatch simulates a git cat-file --batch runner. It produces real
+// cat-file --batch formatted output from the blobs map, so that
+// parseCatFileBatch is exercised end-to-end.
+type fakeBatch struct {
+	blobs map[string][]byte // key: "<ref>:<path>"
+	calls int
+}
+
+func (f *fakeBatch) run(stdin []byte, args ...string) ([]byte, error) {
+	f.calls++
+	var out bytes.Buffer
+	for _, line := range strings.Split(strings.TrimRight(string(stdin), "\n"), "\n") {
+		spec := strings.TrimSpace(line)
+		if spec == "" {
+			continue
+		}
+		data, ok := f.blobs[spec]
+		if !ok {
+			fmt.Fprintf(&out, "%s missing\n", spec)
+			continue
+		}
+		// Produce real cat-file --batch header: "<oid> blob <size>\n<content>\n"
+		// Use a synthetic oid for the fake.
+		fmt.Fprintf(&out, "deadbeef0000000000000000000000000000000000 blob %d\n", len(data))
+		out.Write(data)
+		out.WriteByte('\n')
+	}
+	return out.Bytes(), nil
 }
 
 func TestRepoRoot(t *testing.T) {
