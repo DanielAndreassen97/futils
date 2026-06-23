@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -594,6 +595,28 @@ func TestPrintDeployResultsCountsDeletesSeparately(t *testing.T) {
 	}
 	if strings.Contains(out, "Deployed 3") {
 		t.Errorf("deleted items must not be counted as deployed:\n%s", out)
+	}
+}
+
+func TestPrintDeployResultsBothErrAndWarning(t *testing.T) {
+	// A result with BOTH Err and Warning set must surface both in the output.
+	// Before the fix, the switch falls into the Err case and the warning is
+	// silently dropped.
+	results := []deploy.Result{
+		{
+			Name:    "NB_Broken",
+			Type:    "Notebook",
+			Action:  deploy.ActionUpdate,
+			Err:     fmt.Errorf("upload failed: timeout"),
+			Warning: "description not synced",
+		},
+	}
+	out := captureStdout(t, func() { printDeployResults(results) })
+	if !strings.Contains(out, "upload failed: timeout") {
+		t.Errorf("error text missing from output:\n%s", out)
+	}
+	if !strings.Contains(out, "description not synced") {
+		t.Errorf("warning text missing from output — was silently dropped:\n%s", out)
 	}
 }
 

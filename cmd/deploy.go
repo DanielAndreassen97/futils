@@ -1121,6 +1121,10 @@ func printDeployResults(results []deploy.Result) {
 		case r.Err != nil:
 			failed++
 			b += fmt.Sprintf("  ✗ %s (%s): %v\n", r.Name, r.Type, r.Err)
+			if r.Warning != "" {
+				warned++
+				b += fmt.Sprintf("  ⚠ %s (%s): %s\n", r.Name, r.Type, r.Warning)
+			}
 		case r.Action == deploy.ActionDelete:
 			deleted++
 			b += fmt.Sprintf("  ✓ %s (%s) %s\n", r.Name, r.Type, r.Action)

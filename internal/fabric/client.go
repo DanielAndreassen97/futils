@@ -45,6 +45,10 @@ const (
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
 
+// retryTokenFn is the function used by doGet/doWrite to obtain a fresh token
+// after a 401. Defined as a variable so tests can inject a controlled value.
+var retryTokenFn = retryWithFreshToken
+
 // httpDebug logs every HTTP call (method, status, duration, path) so you can see
 // exactly what API work futils does during a run. Enable via FUTILS_DEBUG:
 //
@@ -641,8 +645,9 @@ func doGet(token, rawURL string) ([]byte, error) {
 		// (browser auth is NOT triggered here — that requires interactive
 		// terminal context) and retry once.
 		if status == http.StatusUnauthorized {
-			if fresh, ok := retryWithFreshToken(); ok {
-				body, status, retryAfter, err = doGetOnce(fresh, rawURL)
+			if fresh, ok := retryTokenFn(); ok {
+				token = fresh
+				body, status, retryAfter, err = doGetOnce(token, rawURL)
 				if err != nil {
 					return nil, err
 				}
@@ -740,8 +745,9 @@ func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, [
 			return resp, body, err
 		}
 		if resp.StatusCode == http.StatusUnauthorized {
-			if fresh, ok := retryWithFreshToken(); ok {
-				resp, body, err = doWriteOnce(method, fresh, rawURL, bodyBytes)
+			if fresh, ok := retryTokenFn(); ok {
+				token = fresh
+				resp, body, err = doWriteOnce(method, token, rawURL, bodyBytes)
 				if err != nil {
 					return resp, body, err
 				}

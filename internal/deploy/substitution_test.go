@@ -71,6 +71,27 @@ func TestApplyCustomSubstitutionsUnresolved(t *testing.T) {
 	}
 }
 
+func TestApplyCustomSubstitutionsRegexRecordsConcreteOld(t *testing.T) {
+	// A regex substitution must record the concrete matched value in RebindChange.Old,
+	// not the raw pattern string. Before the fix, Old is set to sub.FindValue
+	// (the pattern "cfg-[0-9]+") regardless of what was actually matched.
+	rb := newSemmodSQLRebinder(t)
+	rb.SetSubstitutions([]Substitution{{FindValue: `cfg-[0-9]+`, Literal: "cfg-prod", IsRegex: true}})
+	item := LocalItem{Type: "Notebook", DisplayName: "NB"}
+	content := []byte(`connection = "cfg-123"`)
+	_, outcome := rb.ApplyCustomSubstitutions(item, "notebook-content.py", content)
+	if len(outcome.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d: %#v", len(outcome.Changes), outcome.Changes)
+	}
+	ch := outcome.Changes[0]
+	if ch.Old == `cfg-[0-9]+` {
+		t.Errorf("RebindChange.Old = regex pattern %q — must be the concrete matched value", ch.Old)
+	}
+	if ch.Old != "cfg-123" {
+		t.Errorf("RebindChange.Old = %q, want %q (the concrete matched value)", ch.Old, "cfg-123")
+	}
+}
+
 func TestApplyCustomSubstitutionsItemFilter(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	rb.SetSubstitutions([]Substitution{{FindValue: "X", Literal: "Y", ItemType: "DataPipeline"}})

@@ -271,12 +271,24 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 				continue // skip an invalid regex rather than abort the deploy
 			}
 			next = re.ReplaceAllString(s, repl)
+			if next != s {
+				// Record one RebindChange per distinct concrete matched value so
+				// the summary shows what was actually replaced, not the raw pattern.
+				seen := map[string]bool{}
+				for _, m := range re.FindAllString(s, -1) {
+					if !seen[m] {
+						seen[m] = true
+						out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: m, New: repl})
+					}
+				}
+				s = next
+			}
 		} else {
 			next = strings.ReplaceAll(s, sub.FindValue, repl)
-		}
-		if next != s {
-			out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl})
-			s = next
+			if next != s {
+				out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl})
+				s = next
+			}
 		}
 	}
 	return []byte(s), out
