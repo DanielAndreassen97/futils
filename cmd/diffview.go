@@ -273,20 +273,22 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 
 	// Build the deployed-items gate for fix [6]: when results != nil, only render
 	// diffs for items that were actually deployed (i.e. not deleted).
+	// Key is type+"\x00"+name — mirrors internal/deploy's item-identity convention,
+	// since Fabric allows duplicate display names across different item types.
 	var deployedSet map[string]bool
 	if results != nil {
 		deployedSet = make(map[string]bool, len(results))
 		for _, r := range results {
 			if r.Action != deploy.ActionDelete {
-				deployedSet[r.Name] = true
+				deployedSet[r.Type+"\x00"+r.Name] = true
 			}
 		}
 	}
 
 	// itemRenderable reports whether a diff item passes the deployed-set gate.
 	// When deployedSet is nil (preview), all items render.
-	itemRenderable := func(name string) bool {
-		return deployedSet == nil || deployedSet[name]
+	itemRenderable := func(it ItemDiff) bool {
+		return deployedSet == nil || deployedSet[it.Type+"\x00"+it.Name]
 	}
 
 	// Count how many diffs will actually render (respecting the gate), and how
@@ -296,7 +298,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 	for _, g := range groups {
 		groupCount := 0
 		for _, it := range g.Diffs {
-			if itemRenderable(it.Name) {
+			if itemRenderable(it) {
 				changed++
 				groupCount++
 			}
@@ -323,7 +325,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 		// the per-workspace heading (avoid orphan headings with no diffs below them).
 		hasRenderable := false
 		for _, it := range g.Diffs {
-			if itemRenderable(it.Name) {
+			if itemRenderable(it) {
 				hasRenderable = true
 				break
 			}
@@ -336,7 +338,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 		}
 		for _, it := range g.Diffs {
 			// Fix [6]: skip items not in the deployed set when results are present.
-			if !itemRenderable(it.Name) {
+			if !itemRenderable(it) {
 				continue
 			}
 			b.WriteString(`<details class="item changed">`)

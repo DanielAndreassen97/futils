@@ -97,8 +97,9 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 		},
 	}}
 	out := renderDeployDiffHTML(groups)
-	// Items must NOT be open by default.
-	if contains(out, "<details class=\"item\" open>") {
+	// Items must NOT be open by default — the new markup emits `<details class="item changed">`,
+	// so guard against the variant the code could wrongly produce.
+	if contains(out, `<details class="item changed" open`) {
 		t.Errorf("items should be collapsed by default (no open attribute)")
 	}
 	if !contains(out, "<details") {
@@ -257,6 +258,26 @@ func TestRenderSummaryCardsClassification(t *testing.T) {
 	out := renderSummaryCards(groups, nil)
 	if !strings.Contains(out, "New") || !strings.Contains(out, "Changed") || !strings.Contains(out, "Orphan") {
 		t.Errorf("classification cards missing labels in:\n%s", out)
+	}
+}
+
+func TestRenderDeployReportGatesDiffByTypeAndName(t *testing.T) {
+	// Only a DataPipeline named "X" was deployed. A Notebook named "X" was NOT deployed.
+	// The Notebook's diff must NOT render, even though the name "X" matches — the gate
+	// must key by type+name, not name alone.
+	results := []deploy.Result{
+		{Name: "X", Type: "DataPipeline", Action: deploy.ActionUpdate},
+	}
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "WS"},
+		Diffs: []ItemDiff{{
+			Name: "X", Type: "Notebook",
+			Parts: []deploy.PartDiff{{Path: "notebook-only-marker.py", Old: "a", New: "b"}},
+		}},
+	}}
+	out := renderDeployReport(groups, results)
+	if strings.Contains(out, "notebook-only-marker.py") {
+		t.Error("Notebook diff for type=Notebook name=X must not render when only type=DataPipeline name=X was deployed (gate must key by type+name)")
 	}
 }
 
