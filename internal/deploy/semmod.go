@@ -20,6 +20,7 @@ var onelakeRe = regexp.MustCompile(`onelake\.dfs\.fabric\.microsoft\.com/([^/"]+
 // ensureBaseEndpoints lazily builds baseline { SQL-endpoint id -> lakehouse }
 // by querying GetLakehouseSqlEndpoint for every baseline lakehouse. Lakehouses
 // whose endpoint can't be fetched (e.g. still provisioning) are skipped.
+// Caller must hold rb.mu.
 func (rb *Rebinder) ensureBaseEndpoints() {
 	if rb.baseEndpoints != nil {
 		return
@@ -34,9 +35,23 @@ func (rb *Rebinder) ensureBaseEndpoints() {
 	}
 }
 
+// baseEndpointLookup returns the baseline lakehouse for a SQL-endpoint id,
+// populating the cache on first use. Guards the lazy fill + read so it's safe
+// to call from concurrent compare workers.
+func (rb *Rebinder) baseEndpointLookup(id string) (IndexedItem, bool) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.ensureBaseEndpoints()
+	lake, ok := rb.baseEndpoints[id]
+	return lake, ok
+}
+
 // targetEndpointFor returns the target lakehouse's SQL endpoint (host, id),
-// cached by lakehouse GUID.
+// cached by lakehouse GUID. The lock spans the check-and-fill so two workers
+// can't both populate the cache; the memoClient dedups the underlying call.
 func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
 	if rb.targetEndpoint == nil {
 		rb.targetEndpoint = map[string][2]string{}
 	}
@@ -58,10 +73,9 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 // surfaced. Returns the rewritten string.
 func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 	seen := map[string]bool{}
-	rb.ensureBaseEndpoints()
 	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
 		host, id := m[1], m[2]
-		lake, ok := rb.baseEndpoints[id]
+		lake, ok := rb.baseEndpointLookup(id)
 		if !ok {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNameUnknown})
 			continue

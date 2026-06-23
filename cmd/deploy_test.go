@@ -38,6 +38,7 @@ type deployFakeAPI struct {
 	createdWS  map[string]string             // displayName -> workspaceID
 	defByID    map[string]*fabric.Definition // itemID -> deployed definition (compare tests)
 	rebinds    [][3]string                   // {workspaceID, reportID, datasetID}
+	sqlByLH    map[string][2]string          // lakehouseID -> {host, id} (endpoint tests)
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -79,7 +80,8 @@ func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) erro
 	return nil
 }
 func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
-	return "", "", nil
+	v := f.sqlByLH[lhID]
+	return v[0], v[1], nil
 }
 
 // platformDef builds a deployed definition for a notebook: a matching content
@@ -243,6 +245,168 @@ func TestDiffExistingRows_ClassNewDepMakesRefChanged(t *testing.T) {
 	}
 	if uRow.Class != deploy.ClassUnchanged {
 		t.Errorf("NB_U does not reference the ClassNew dep — must stay ClassUnchanged, got %v", uRow.Class)
+	}
+}
+
+// TestDiffExistingRows_MultiItemDeterministicOrder is the determinism guard for
+// the parallelized compare (#9). It drives a handful of Exists rows mixing
+// changed / unchanged / unverified items and asserts the merged outputs
+// (reclassifications + itemDiffs/changes/unresolved AND their order) match what
+// the old serial existsIdx-ordered loop produced. The parallel pool must not
+// reorder anything; only wall-clock changes.
+func TestDiffExistingRows_MultiItemDeterministicOrder(t *testing.T) {
+	// Five notebooks, fixed local order. A custom substitution rewrites the
+	// literal "DEV-HOST" -> the target lakehouse's GUID by name, so every
+	// "changed" item emits a deterministic RebindChange{Kind:"Substitution"}.
+	mk := func(name, content string) deploy.LocalItem {
+		return deploy.LocalItem{
+			Type: "Notebook", DisplayName: name,
+			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte(content)}},
+		}
+	}
+	local := []deploy.LocalItem{
+		mk("NB_1", "host=DEV-HOST # one"),   // changed (sub rewrites + content drift)
+		mk("NB_2", "x=2"),                   // unchanged (deployed matches)
+		mk("NB_3", "host=DEV-HOST # three"), // changed
+		mk("NB_4", "x=4-unverified"),        // unverified (no deployed def -> fetch returns empty, content differs => actually changed)
+		mk("NB_5", "host=DEV-HOST # five"),  // changed
+	}
+	deployed := []fabric.Item{
+		{ID: "nb1", DisplayName: "NB_1", Type: "Notebook", WorkspaceID: "ws-1"},
+		{ID: "nb2", DisplayName: "NB_2", Type: "Notebook", WorkspaceID: "ws-1"},
+		{ID: "nb3", DisplayName: "NB_3", Type: "Notebook", WorkspaceID: "ws-1"},
+		{ID: "nb4", DisplayName: "NB_4", Type: "Notebook", WorkspaceID: "ws-1"},
+		{ID: "nb5", DisplayName: "NB_5", Type: "Notebook", WorkspaceID: "ws-1"},
+	}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+
+	// Deployed definitions: NB_2 matches exactly (unchanged); the rest differ.
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-1", DisplayName: "Config"}},
+		items:      map[string][]fabric.Item{"ws-1": {{ID: "tgt-lh", DisplayName: "LH_Target", Type: "Lakehouse"}}},
+		defByID: map[string]*fabric.Definition{
+			"nb1": simpleDef("notebook-content.py", "host=OLD # one"),
+			"nb2": simpleDef("notebook-content.py", "x=2"),
+			"nb3": simpleDef("notebook-content.py", "host=OLD # three"),
+			"nb4": simpleDef("notebook-content.py", "host=OLD # four"),
+			"nb5": simpleDef("notebook-content.py", "host=OLD # five"),
+		},
+	}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+	ws := []fabric.Workspace{target}
+	rb, err := deploy.NewRebinder(fake, "tok", ws, ws, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	rb.SetSubstitutions([]deploy.Substitution{{
+		FindValue:  "DEV-HOST",
+		TargetType: "Lakehouse",
+		TargetName: "LH_Target",
+		Attr:       "id",
+	}})
+
+	unresolved, changes, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, rb)
+
+	// itemDiffs must be in existsIdx (== local) order: NB_1, NB_3, NB_4, NB_5.
+	wantDiffOrder := []string{"NB_1", "NB_3", "NB_4", "NB_5"}
+	var gotDiffOrder []string
+	for _, d := range diffs {
+		gotDiffOrder = append(gotDiffOrder, d.Name)
+	}
+	if strings.Join(gotDiffOrder, ",") != strings.Join(wantDiffOrder, ",") {
+		t.Fatalf("itemDiffs order = %v, want %v", gotDiffOrder, wantDiffOrder)
+	}
+	// NB_2 unchanged, the rest changed.
+	byName := map[string]deploy.Class{}
+	for i := range rows {
+		byName[rows[i].Name()] = rows[i].Class
+	}
+	for _, n := range []string{"NB_1", "NB_3", "NB_4", "NB_5"} {
+		if byName[n] != deploy.ClassChanged {
+			t.Errorf("%s want Changed, got %v", n, byName[n])
+		}
+	}
+	if byName["NB_2"] != deploy.ClassUnchanged {
+		t.Errorf("NB_2 want Unchanged, got %v", byName["NB_2"])
+	}
+	// The substitution fires for NB_1/NB_3/NB_5 (DEV-HOST present) — one
+	// RebindChange each, in existsIdx order. NB_4 has no DEV-HOST, no change.
+	if len(changes) != 3 {
+		t.Fatalf("want 3 substitution changes, got %d: %+v", len(changes), changes)
+	}
+	for _, c := range changes {
+		if c.Old != "DEV-HOST" || c.New != "tgt-lh" || c.Kind != "Substitution" {
+			t.Errorf("unexpected change: %+v", c)
+		}
+	}
+	if len(unresolved) != 0 {
+		t.Errorf("want no unresolved, got %+v", unresolved)
+	}
+}
+
+// TestDiffExistingRows_RaceSharedCaches drives diffExistingRows with many Exists
+// items that all resolve the SAME target lakehouse via a custom substitution, so
+// the internally-created Resolver and the shared Rebinder have their lazy caches
+// populated by the parallel compare workers at once. Run under `go test -race`:
+// must be clean. Without the Resolver/Rebinder mutexes this trips the detector.
+func TestDiffExistingRows_RaceSharedCaches(t *testing.T) {
+	const n = 24
+	var local []deploy.LocalItem
+	var deployed []fabric.Item
+	defByID := map[string]*fabric.Definition{}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("NB_%02d", i)
+		id := fmt.Sprintf("id-%02d", i)
+		local = append(local, deploy.LocalItem{
+			Type: "Notebook", DisplayName: name,
+			// "$ENDPOINT$" -> target lakehouse SQL endpoint host (hits the
+			// Rebinder targetEndpointFor cache); content differs from deployed.
+			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("ep=$ENDPOINT$")}},
+		})
+		deployed = append(deployed, fabric.Item{ID: id, DisplayName: name, Type: "Notebook", WorkspaceID: "ws-1"})
+		defByID[id] = simpleDef("notebook-content.py", "ep=OLD")
+	}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-1", DisplayName: "Config"}},
+		items:      map[string][]fabric.Item{"ws-1": {{ID: "tgt-lh", DisplayName: "LH_Target", Type: "Lakehouse"}}},
+		defByID:    defByID,
+		sqlByLH:    map[string][2]string{"tgt-lh": {"target.datawarehouse.fabric.microsoft.com", "tgt-ep"}},
+	}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+	ws := []fabric.Workspace{target}
+	rb, err := deploy.NewRebinder(fake, "tok", ws, ws, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	// Every item resolves the SAME lakehouse endpoint -> contended cache fill.
+	rb.SetSubstitutions([]deploy.Substitution{{
+		FindValue:  "$ENDPOINT$",
+		TargetType: "Lakehouse",
+		TargetName: "LH_Target",
+		Attr:       "sqlendpoint",
+	}})
+
+	_, changes, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, rb)
+
+	if len(diffs) != n {
+		t.Fatalf("want %d changed items, got %d", n, len(diffs))
+	}
+	// One substitution change recorded per item, all rewriting to the resolved
+	// target endpoint host. Order must follow existsIdx (NB_00..NB_23).
+	if len(changes) != n {
+		t.Fatalf("want %d changes, got %d", n, len(changes))
+	}
+	for i, c := range changes {
+		if c.New != "target.datawarehouse.fabric.microsoft.com" {
+			t.Fatalf("change %d resolved to %q, want target endpoint host", i, c.New)
+		}
+	}
+	for i, d := range diffs {
+		if want := fmt.Sprintf("NB_%02d", i); d.Name != want {
+			t.Fatalf("diff %d = %q, want %q (order not preserved)", i, d.Name, want)
+		}
 	}
 }
 

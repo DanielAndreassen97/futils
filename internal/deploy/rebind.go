@@ -4,6 +4,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -76,6 +77,13 @@ type Substitution struct {
 }
 
 // Rebinder translates baseline-environment GUIDs to a target env by item name.
+//
+// The lazy SQL-endpoint caches (baseEndpoints, targetEndpoint) are guarded by mu
+// so the rebinder is safe to share across the concurrent per-item compare
+// workers. Every other field is set in NewRebinder / SetSubstitutions and never
+// mutated afterwards (the *NameIndex maps are build-once, read-only), so only
+// the two endpoint caches need the lock. substitutions is installed once before
+// any concurrent use, so it is read-only during the compare.
 type Rebinder struct {
 	client    FabricClient
 	token     string
@@ -83,8 +91,9 @@ type Rebinder struct {
 	target    *NameIndex
 	overrides map[string]Override // baseline GUID -> override
 
-	baseEndpoints  map[string]IndexedItem // baseline SQL-endpoint id -> lakehouse (lazy)
-	targetEndpoint map[string][2]string   // target lakehouse GUID -> {host, id} (cache)
+	mu             sync.Mutex             // guards baseEndpoints + targetEndpoint
+	baseEndpoints  map[string]IndexedItem // baseline SQL-endpoint id -> lakehouse (lazy, guarded by mu)
+	targetEndpoint map[string][2]string   // target lakehouse GUID -> {host, id} (cache, guarded by mu)
 	targetWSNames  map[string]string      // target workspace GUID -> display name (for summaries)
 
 	substitutions []Substitution

@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -10,12 +11,17 @@ import (
 // Resolver expands fabric-cicd dynamic variables against the TARGET workspace
 // at deploy time. It caches workspace and item lookups so repeated variables
 // don't re-hit the API.
+//
+// The lazy caches (wsByName, itemsWS) are guarded by mu so the resolver is safe
+// to share across the concurrent per-item compare workers. client/token/target
+// are set at construction and never mutated, so they need no lock.
 type Resolver struct {
 	client   FabricClient
 	token    string
 	target   fabric.Workspace
-	wsByName map[string]string        // displayName -> id (lazy)
-	itemsWS  map[string][]fabric.Item // workspaceID -> items (lazy)
+	mu       sync.Mutex
+	wsByName map[string]string        // displayName -> id (lazy, guarded by mu)
+	itemsWS  map[string][]fabric.Item // workspaceID -> items (lazy, guarded by mu)
 }
 
 func NewResolver(client FabricClient, token string, target fabric.Workspace) *Resolver {
@@ -100,6 +106,11 @@ func (r *Resolver) resolveItemIn(wsID, value string) (string, error) {
 }
 
 func (r *Resolver) workspaceID(name string) (string, error) {
+	// Lock spans the check-and-fill so two workers can't both populate the
+	// cache; the memoClient already dedups the underlying ListWorkspaces, so
+	// holding the lock across the call is cheap and avoids a double-fill race.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.wsByName == nil {
 		ws, err := r.client.ListWorkspaces(r.token)
 		if err != nil {
@@ -118,15 +129,19 @@ func (r *Resolver) workspaceID(name string) (string, error) {
 }
 
 func (r *Resolver) findItem(wsID, itemType, itemName string) (fabric.Item, error) {
+	// Lock spans the check-and-fill (see workspaceID for the rationale).
+	r.mu.Lock()
 	items, ok := r.itemsWS[wsID]
 	if !ok {
 		var err error
 		items, err = r.client.ListItems(r.token, wsID)
 		if err != nil {
+			r.mu.Unlock()
 			return fabric.Item{}, err
 		}
 		r.itemsWS[wsID] = items
 	}
+	r.mu.Unlock()
 	for _, it := range items {
 		if it.Type == itemType && it.DisplayName == itemName {
 			return it, nil

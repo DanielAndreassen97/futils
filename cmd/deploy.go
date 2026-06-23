@@ -458,12 +458,85 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	}
 	resolver := deploy.NewResolver(client, token, target)
 
+	// The per-item compare work (logicalId+param substitution, name-based
+	// rebind, JSON normalize/diff) is CPU-bound and runs once per changed item.
+	// Done serially it freezes the spinner on a big workspace, so fold it into
+	// the same bounded pool the fetch used. The shared resolver and rb have
+	// lazy caches (guarded by their own mutexes), so concurrent use is safe.
+	//
+	// Each worker writes ONLY its own pre-sized slot — no shared appends, no
+	// shared map/field writes — then a serial merge pass folds the slots in
+	// deterministic existsIdx order. That keeps the output (reclassifications,
+	// itemDiffs/changes/unresolved sets AND their order) byte-for-byte identical
+	// to the old serial loop; only the wall-clock changes.
+	type compareResult struct {
+		class      deploy.Class
+		itemDiff   *ItemDiff
+		unresolved []deploy.UnresolvedRef
+		changes    []deploy.RebindChange
+		err        error
+	}
+	compared := make([]compareResult, len(existsIdx))
+	csem := make(chan struct{}, diffConcurrency)
+	var cwg sync.WaitGroup
+	for j, idx := range existsIdx {
+		if results[j].err != nil {
+			compared[j] = compareResult{err: results[j].err}
+			continue
+		}
+		cwg.Add(1)
+		csem <- struct{}{}
+		go func(j, idx int) {
+			defer cwg.Done()
+			defer func() { <-csem }()
+			localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
+			res := compareResult{
+				unresolved: outcome.Unresolved,
+				changes:    outcome.Changes,
+			}
+			if perr != nil {
+				res.err = perr
+				compared[j] = res
+				return
+			}
+			// Description lives in .platform (excluded from the part diff) and is
+			// deployed separately via UpdateItem, so drift in it is a real change.
+			// DiffParts is the single source of the content verdict (non-empty ==
+			// changed), avoiding a redundant PartsChanged normalization pass.
+			deployedDesc := deploy.DeployedDescription(results[j].def)
+			descChanged := deployedDesc != rows[idx].Local.Description
+			parts := deploy.DiffParts(localParts, results[j].def)
+			if len(parts) > 0 || descChanged {
+				res.class = deploy.ClassChanged
+				if descChanged {
+					parts = append(parts, deploy.PartDiff{
+						Path: "(item description)", Old: deployedDesc, New: rows[idx].Local.Description,
+					})
+				}
+				res.itemDiff = &ItemDiff{
+					Name:  rows[idx].Name(),
+					Type:  rows[idx].ItemType(),
+					Parts: parts,
+				}
+			} else {
+				res.class = deploy.ClassUnchanged
+			}
+			compared[j] = res
+		}(j, idx)
+	}
+	cwg.Wait()
+
+	// Serial merge in existsIdx order: preserves the exact accumulation order
+	// the old loop produced. SubstituteParts always returns its outcome
+	// (changes/unresolved) even on error, so those are merged regardless — the
+	// old loop appended them before the perr check too.
 	var unverified int
 	var firstErr error
 	var unresolved []deploy.UnresolvedRef
 	var changes []deploy.RebindChange
 	var itemDiffs []ItemDiff
 	for j, idx := range existsIdx {
+		c := compared[j]
 		if results[j].err != nil {
 			unverified++
 			if firstErr == nil {
@@ -471,37 +544,18 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			}
 			continue
 		}
-		localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
-		unresolved = append(unresolved, outcome.Unresolved...)
-		changes = append(changes, outcome.Changes...)
-		if perr != nil {
+		unresolved = append(unresolved, c.unresolved...)
+		changes = append(changes, c.changes...)
+		if c.err != nil {
 			unverified++
 			if firstErr == nil {
-				firstErr = fmt.Errorf("%s: %w", rows[idx].Name(), perr)
+				firstErr = fmt.Errorf("%s: %w", rows[idx].Name(), c.err)
 			}
 			continue
 		}
-		// Description lives in .platform (excluded from the part diff) and is
-		// deployed separately via UpdateItem, so drift in it is a real change.
-		// DiffParts is the single source of the content verdict (non-empty ==
-		// changed), avoiding a redundant PartsChanged normalization pass.
-		deployedDesc := deploy.DeployedDescription(results[j].def)
-		descChanged := deployedDesc != rows[idx].Local.Description
-		parts := deploy.DiffParts(localParts, results[j].def)
-		if len(parts) > 0 || descChanged {
-			rows[idx].Class = deploy.ClassChanged
-			if descChanged {
-				parts = append(parts, deploy.PartDiff{
-					Path: "(item description)", Old: deployedDesc, New: rows[idx].Local.Description,
-				})
-			}
-			itemDiffs = append(itemDiffs, ItemDiff{
-				Name:  rows[idx].Name(),
-				Type:  rows[idx].ItemType(),
-				Parts: parts,
-			})
-		} else {
-			rows[idx].Class = deploy.ClassUnchanged
+		rows[idx].Class = c.class
+		if c.itemDiff != nil {
+			itemDiffs = append(itemDiffs, *c.itemDiff)
 		}
 	}
 	if unverified > 0 {
