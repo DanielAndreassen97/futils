@@ -211,6 +211,64 @@ func renderDeployDiffHTML(groups []deployGroup) string {
 	return renderDeployReport(groups, nil)
 }
 
+// renderSummaryCards builds the colored summary-card row. With results it shows
+// the deploy OUTCOME (Created/Updated/Deleted/Failed/Warnings); without (the
+// compare preview) it shows the CLASSIFICATION (New/Changed/Orphan/Unchanged/Exists).
+func renderSummaryCards(groups []deployGroup, results []deploy.Result) string {
+	type card struct {
+		n          int
+		label, cls string
+	}
+	var cards []card
+	if results != nil {
+		var created, updated, deleted, failed, warned int
+		for _, r := range results {
+			switch {
+			case r.Err != nil:
+				failed++
+			case r.Action == deploy.ActionDelete:
+				deleted++
+			case r.Action == deploy.ActionUpdate:
+				updated++
+				if r.Warning != "" {
+					warned++
+				}
+			default:
+				created++
+				if r.Warning != "" {
+					warned++
+				}
+			}
+		}
+		cards = []card{{created, "Created", "new"}, {updated, "Updated", "changed"}, {deleted, "Deleted", "deleted"}}
+		if failed > 0 {
+			cards = append(cards, card{failed, "Failed", "fail"})
+		}
+		if warned > 0 {
+			cards = append(cards, card{warned, "Warnings", "warn"})
+		}
+	} else {
+		c := countByClass(groups)
+		cards = []card{
+			{c[deploy.ClassNew], "New", "new"},
+			{c[deploy.ClassChanged], "Changed", "changed"},
+			{c[deploy.ClassOrphan], "Orphan", "deleted"},
+			{c[deploy.ClassUnchanged], "Unchanged", "unchanged"},
+		}
+		if c[deploy.ClassExists] > 0 {
+			cards = append(cards, card{c[deploy.ClassExists], "Exists", "exists"})
+		}
+	}
+	var b strings.Builder
+	b.WriteString(`<div class="cards">`)
+	for _, cd := range cards {
+		b.WriteString(fmt.Sprintf(`<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`,
+			cd.cls, cd.n, cd.label))
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
 // openInBrowser opens a local file in the OS default browser.
 func openInBrowser(path string) error {
 	var cmd *exec.Cmd

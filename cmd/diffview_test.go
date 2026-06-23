@@ -200,6 +200,32 @@ func TestPrettyForDiff(t *testing.T) {
 	}
 }
 
+func TestRenderSummaryCardsOutcome(t *testing.T) {
+	results := []deploy.Result{
+		{Action: deploy.ActionCreate},
+		{Action: deploy.ActionUpdate},
+		{Action: deploy.ActionDelete},
+		{Action: deploy.ActionDelete},
+		{Action: deploy.ActionUpdate, Err: fmt.Errorf("boom")},
+	}
+	out := renderSummaryCards(nil, results)
+	for _, want := range []string{">1<", "Created", ">2<", "Deleted", "Failed", `class="card`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("outcome cards missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderSummaryCardsClassification(t *testing.T) {
+	groups := []deployGroup{{Rows: []deploy.CompareRow{
+		{Class: deploy.ClassNew}, {Class: deploy.ClassNew}, {Class: deploy.ClassChanged}, {Class: deploy.ClassOrphan},
+	}}}
+	out := renderSummaryCards(groups, nil)
+	if !strings.Contains(out, "New") || !strings.Contains(out, "Changed") || !strings.Contains(out, "Orphan") {
+		t.Errorf("classification cards missing labels in:\n%s", out)
+	}
+}
+
 func contains(s, sub string) bool { return len(s) >= len(sub) && (stringIndex(s, sub) >= 0) }
 func stringIndex(s, sub string) int {
 	for i := 0; i+len(sub) <= len(s); i++ {
