@@ -147,6 +147,105 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}
 }
 
+// simpleDef builds a deployed definition with a single content part (no .platform).
+func simpleDef(path, content string) *fabric.Definition {
+	enc := base64.StdEncoding.EncodeToString([]byte(content))
+	return &fabric.Definition{Parts: []fabric.DefinitionPart{
+		{Path: path, Payload: enc, PayloadType: "InlineBase64"},
+	}}
+}
+
+// TestDiffExistingRows_ClassNewDepMakesRefChanged verifies that an Exists item R
+// whose local content references a ClassNew dependency D's logicalId is reported
+// as ClassChanged (not ClassUnchanged) — because publish will substitute a fresh
+// GUID for D's logicalId, mutating R even if the deployed copy looks identical.
+// An unrelated Exists item that does NOT reference D must remain ClassUnchanged.
+func TestDiffExistingRows_ClassNewDepMakesRefChanged(t *testing.T) {
+	const depLogicalID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+	// D: ClassNew item — will be created fresh during publish.
+	depLocal := deploy.LocalItem{
+		Type: "SemanticModel", DisplayName: "Model_D", LogicalID: depLogicalID,
+		Parts: []deploy.Part{{Path: "model.bim", Content: []byte(`{"name":"Model_D"}`)}},
+	}
+
+	// R: ClassExists item whose local part content embeds D's logicalId.
+	// The deployed copy also contains the literal logicalId (pre-fix normalizes equal → Unchanged).
+	// Description is intentionally empty on both sides so only content drives the verdict.
+	const rContent = `{"datasetId":"` + depLogicalID + `","extra":"val"}`
+	refLocal := deploy.LocalItem{
+		Type: "Report", DisplayName: "Report_R", LogicalID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		Parts: []deploy.Part{{Path: "report.json", Content: []byte(rContent)}},
+	}
+
+	// U: ClassExists item whose content does NOT reference depLogicalID.
+	// Description is intentionally empty on both sides so only content drives the verdict.
+	unrelLocal := deploy.LocalItem{
+		Type: "Notebook", DisplayName: "NB_U", LogicalID: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
+	}
+
+	deployedItems := []fabric.Item{
+		{ID: "report-r-id", DisplayName: "Report_R", Type: "Report", WorkspaceID: "ws-1"},
+		{ID: "nb-u-id", DisplayName: "NB_U", Type: "Notebook", WorkspaceID: "ws-1"},
+	}
+	localItems := []deploy.LocalItem{depLocal, refLocal, unrelLocal}
+	rows := deploy.Compare(localItems, deployedItems, localTypeScope(localItems))
+
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		// R's deployed definition contains the literal logicalId (same as local) → would be Unchanged without the fix.
+		"report-r-id": simpleDef("report.json", rContent),
+		// U's deployed definition matches its local content exactly (no description drift either).
+		"nb-u-id": simpleDef("notebook-content.py", "x=1"),
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+
+	// Find rows by display name for clear assertions.
+	rowByName := map[string]*deploy.CompareRow{}
+	for i := range rows {
+		rowByName[rows[i].Name()] = &rows[i]
+	}
+
+	rRow := rowByName["Report_R"]
+	if rRow == nil {
+		t.Fatal("Report_R row not found")
+	}
+	if rRow.Class != deploy.ClassChanged {
+		t.Errorf("Report_R references a ClassNew dep — must be ClassChanged, got %v", rRow.Class)
+	}
+
+	var foundR bool
+	for _, d := range diffs {
+		if d.Name == "Report_R" {
+			foundR = true
+			// The diff's new side should contain the sentinel (not the logicalId).
+			var sentinelFound bool
+			for _, p := range d.Parts {
+				if strings.Contains(p.New, "futils:pending-new-item:") {
+					sentinelFound = true
+				}
+			}
+			if !sentinelFound {
+				t.Errorf("Report_R diff should show sentinel in New side, got parts: %+v", d.Parts)
+			}
+		}
+	}
+	if !foundR {
+		t.Error("Report_R should appear in itemDiffs")
+	}
+
+	// Guard: unrelated item must still be Unchanged (no false positive).
+	uRow := rowByName["NB_U"]
+	if uRow == nil {
+		t.Fatal("NB_U row not found")
+	}
+	if uRow.Class != deploy.ClassUnchanged {
+		t.Errorf("NB_U does not reference the ClassNew dep — must stay ClassUnchanged, got %v", uRow.Class)
+	}
+}
+
 func TestExcludedSet(t *testing.T) {
 	if s := excludedSet(config.Customer{}); len(s) != 0 {
 		t.Errorf("default = nothing excluded, got %#v", s)

@@ -361,6 +361,15 @@ func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
 	}
 }
 
+// newItemSentinel returns a deterministic placeholder for a ClassNew item's
+// logicalId during compare. It can never equal a real Fabric GUID or any
+// deployed content, so DiffParts will always report the referencing row as
+// Changed — accurately predicting that publish will substitute a fresh GUID.
+// The value is human-readable in HTML diff output.
+func newItemSentinel(logicalID string) string {
+	return "futils:pending-new-item:" + logicalID
+}
+
 // diffExistingRows fetches the deployed definition of every ClassExists row
 // (concurrently, bounded) and reclassifies it ClassChanged or ClassUnchanged by
 // comparing against the local item's substituted parts. Rows whose definition
@@ -427,10 +436,17 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 
 	// Map each source logicalId to its deployed GUID so cross-item references in
 	// the local definition match what's live in the workspace.
+	//
+	// ClassNew items are not yet in the workspace; publish will create them and
+	// assign a fresh GUID, so any Exists item that references a ClassNew dep's
+	// logicalId WILL change on publish. We substitute a sentinel so DiffParts
+	// reports the ref as Changed instead of falsely Unchanged.
 	compareIDs := map[string]string{}
 	for _, r := range rows {
 		if r.Class == deploy.ClassExists && r.Local.LogicalID != "" {
 			compareIDs[r.Local.LogicalID] = r.DeployedID
+		} else if r.Class == deploy.ClassNew && r.Local.LogicalID != "" {
+			compareIDs[r.Local.LogicalID] = newItemSentinel(r.Local.LogicalID)
 		}
 	}
 	resolver := deploy.NewResolver(client, token, target)
