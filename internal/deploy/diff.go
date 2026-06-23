@@ -74,7 +74,7 @@ type PartDiff struct {
 // DiffParts returns, for each part whose normalized content differs between the
 // substituted local parts and the deployed definition, the normalized old
 // (deployed) and new (local) text. It is the single source of the content
-// verdict — PartsChanged is just len(DiffParts) > 0.
+// verdict (len == 0 means unchanged).
 func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []PartDiff {
 	deployedNorm := make(map[string]string, len(deployed.Parts))
 	for _, p := range deployed.Parts {
@@ -125,13 +125,4 @@ func DeployedDescription(deployed *fabric.Definition) string {
 		return meta.Description
 	}
 	return ""
-}
-
-// PartsChanged reports whether the local substituted parts differ from the
-// deployed definition, after per-part normalization. A differing set of part
-// paths (one added or removed) counts as changed. It is exactly DiffParts
-// reduced to a yes/no, so the two can never disagree on the .platform skip or
-// the normalization.
-func PartsChanged(localParts map[string][]byte, deployed *fabric.Definition) bool {
-	return len(DiffParts(localParts, deployed)) > 0
 }

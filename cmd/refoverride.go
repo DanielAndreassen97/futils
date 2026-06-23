@@ -6,15 +6,24 @@ import (
 	"github.com/DanielAndreassen97/futils/internal/ui"
 )
 
+// RefAction kind constants — used as MenuOption Values and matched in dispatch
+// switches so a rename is compiler-checked rather than grep-dependent.
+const (
+	refActionOverride = "override"
+	refActionRegister = "register"
+	refActionIgnore   = "ignore"
+	refActionSkip     = "skip"
+)
+
 // refActionOptions builds the action menu for one unresolved reference, ordered
 // by its Reason: when the item is likely just in an unregistered workspace
 // (not-in-target / ambiguous), lead with "register"; for name-unknown lead with
 // "override" since we have no name to search by. All actions remain available.
 func refActionOptions(ref deploy.UnresolvedRef) []ui.MenuOption {
-	register := ui.MenuOption{Label: "Register the workspace it lives in (resolve by name)", Value: "register"}
-	override := ui.MenuOption{Label: "Map it to a specific item (pick workspace → item)", Value: "override"}
-	ignore := ui.MenuOption{Label: "Ignore (leave as-is, don't ask again)", Value: "ignore"}
-	skip := ui.MenuOption{Label: "Skip for now", Value: "skip"}
+	register := ui.MenuOption{Label: "Register the workspace it lives in (resolve by name)", Value: refActionRegister}
+	override := ui.MenuOption{Label: "Map it to a specific item (pick workspace → item)", Value: refActionOverride}
+	ignore := ui.MenuOption{Label: "Ignore (leave as-is, don't ask again)", Value: refActionIgnore}
+	skip := ui.MenuOption{Label: "Skip for now", Value: refActionSkip}
 	switch ref.Reason {
 	case deploy.ReasonNotInTarget, deploy.ReasonAmbiguous:
 		return []ui.MenuOption{register, override, ignore, skip}
@@ -25,7 +34,7 @@ func refActionOptions(ref deploy.UnresolvedRef) []ui.MenuOption {
 
 // RefAction is one user choice for resolving an unresolved reference.
 type RefAction struct {
-	Kind      string // "override" | "ignore" | "register" | "skip"
+	Kind      string // refActionOverride | refActionIgnore | refActionRegister | refActionSkip
 	ItemType  string // override: the target item's type
 	ItemName  string // override: the target item's name (resolved per env)
 	EnvAlias  string // register: which environment to add the workspace to
@@ -38,7 +47,7 @@ type RefAction struct {
 // workspace to an environment (idempotent); skip is a no-op. Pure — no I/O.
 func applyRefAction(c config.Customer, ref deploy.UnresolvedRef, a RefAction) config.Customer {
 	switch a.Kind {
-	case "override":
+	case refActionOverride:
 		next := make([]config.ReferenceOverride, 0, len(c.ReferenceOverrides)+1)
 		for _, o := range c.ReferenceOverrides {
 			if o.SourceGUID != ref.GUID {
@@ -49,11 +58,11 @@ func applyRefAction(c config.Customer, ref deploy.UnresolvedRef, a RefAction) co
 			SourceGUID: ref.GUID, ItemType: a.ItemType, ItemName: a.ItemName,
 		})
 		c.ReferenceOverrides = next
-	case "ignore":
+	case refActionIgnore:
 		if !c.IsIgnored(ref.GUID) {
 			c.IgnoredReferences = append(c.IgnoredReferences, ref.GUID)
 		}
-	case "register":
+	case refActionRegister:
 		next := make([]config.Environment, len(c.Environments))
 		copy(next, c.Environments)
 		for i := range next {

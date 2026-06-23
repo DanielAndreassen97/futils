@@ -763,7 +763,7 @@ func promptSubstitution(client APIClient, customerName string) (config.Substitut
 	if err != nil {
 		return config.Substitution{}, fmt.Errorf("authentication failed: %w", err)
 	}
-	itemType, itemName, err := pickTargetItem(client, token, config.Customer{}, "")
+	itemType, itemName, err := pickTargetItem(client, token, "")
 	if err != nil {
 		return config.Substitution{}, err
 	}

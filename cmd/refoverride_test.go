@@ -11,7 +11,7 @@ import (
 func TestApplyRefActionOverride(t *testing.T) {
 	c := config.Customer{}
 	ref := deploy.UnresolvedRef{GUID: "dev-guid", ItemType: "Lakehouse"}
-	out := applyRefAction(c, ref, RefAction{Kind: "override", ItemType: "Lakehouse", ItemName: "LH_Silver"})
+	out := applyRefAction(c, ref, RefAction{Kind: refActionOverride, ItemType: "Lakehouse", ItemName: "LH_Silver"})
 	if len(out.ReferenceOverrides) != 1 {
 		t.Fatalf("overrides = %#v", out.ReferenceOverrides)
 	}
@@ -26,7 +26,7 @@ func TestApplyRefActionOverrideReplacesExisting(t *testing.T) {
 		{SourceGUID: "dev-guid", ItemType: "Lakehouse", ItemName: "LH_Old"},
 	}}
 	ref := deploy.UnresolvedRef{GUID: "dev-guid", ItemType: "Lakehouse"}
-	out := applyRefAction(c, ref, RefAction{Kind: "override", ItemType: "Lakehouse", ItemName: "LH_New"})
+	out := applyRefAction(c, ref, RefAction{Kind: refActionOverride, ItemType: "Lakehouse", ItemName: "LH_New"})
 	if len(out.ReferenceOverrides) != 1 || out.ReferenceOverrides[0].ItemName != "LH_New" {
 		t.Fatalf("expected replacement, got %#v", out.ReferenceOverrides)
 	}
@@ -35,12 +35,12 @@ func TestApplyRefActionOverrideReplacesExisting(t *testing.T) {
 func TestApplyRefActionIgnore(t *testing.T) {
 	c := config.Customer{}
 	ref := deploy.UnresolvedRef{GUID: "dev-guid"}
-	out := applyRefAction(c, ref, RefAction{Kind: "ignore"})
+	out := applyRefAction(c, ref, RefAction{Kind: refActionIgnore})
 	if !out.IsIgnored("dev-guid") {
 		t.Error("expected dev-guid ignored")
 	}
 	// Idempotent: applying ignore twice doesn't duplicate.
-	out = applyRefAction(out, ref, RefAction{Kind: "ignore"})
+	out = applyRefAction(out, ref, RefAction{Kind: refActionIgnore})
 	if len(out.IgnoredReferences) != 1 {
 		t.Errorf("ignore not idempotent: %#v", out.IgnoredReferences)
 	}
@@ -51,13 +51,13 @@ func TestApplyRefActionRegister(t *testing.T) {
 		{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}},
 	}}
 	ref := deploy.UnresolvedRef{GUID: "dev-guid"}
-	out := applyRefAction(c, ref, RefAction{Kind: "register", EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	out := applyRefAction(c, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
 	ws := out.Environments[0].Workspaces
 	if len(ws) != 2 || ws[1] != "DP - TEST - Data" {
 		t.Fatalf("register didn't add workspace: %#v", ws)
 	}
 	// Idempotent: registering the same workspace twice doesn't duplicate.
-	out = applyRefAction(out, ref, RefAction{Kind: "register", EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	out = applyRefAction(out, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
 	if len(out.Environments[0].Workspaces) != 2 {
 		t.Errorf("register not idempotent: %#v", out.Environments[0].Workspaces)
 	}
@@ -67,13 +67,13 @@ func TestRefActionOptionsByReason(t *testing.T) {
 	// name-unknown: no "register" suggestion first (we don't know the name to
 	// search by) — override/ignore/skip only, and "register" still available.
 	nameUnknown := refActionOptions(deploy.UnresolvedRef{GUID: "g", Reason: deploy.ReasonNameUnknown})
-	if !containsValue(nameUnknown, "override") || !containsValue(nameUnknown, "ignore") || !containsValue(nameUnknown, "skip") {
+	if !containsValue(nameUnknown, refActionOverride) || !containsValue(nameUnknown, refActionIgnore) || !containsValue(nameUnknown, refActionSkip) {
 		t.Fatalf("name-unknown options missing core actions: %#v", nameUnknown)
 	}
 	// not-in-target: "register" should be offered (the item likely lives in an
 	// unregistered workspace) and listed first.
 	notInTarget := refActionOptions(deploy.UnresolvedRef{GUID: "g", Reason: deploy.ReasonNotInTarget})
-	if notInTarget[0].Value != "register" {
+	if notInTarget[0].Value != refActionRegister {
 		t.Errorf("not-in-target should lead with register, got %#v", notInTarget)
 	}
 }
@@ -89,7 +89,7 @@ func containsValue(opts []ui.MenuOption, v string) bool {
 
 func TestApplyRefActionSkipNoChange(t *testing.T) {
 	c := config.Customer{Environments: []config.Environment{{Alias: "TEST"}}}
-	out := applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: "skip"})
+	out := applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: refActionSkip})
 	if len(out.ReferenceOverrides) != 0 || len(out.IgnoredReferences) != 0 {
 		t.Error("skip should mutate nothing")
 	}
@@ -99,7 +99,7 @@ func TestApplyRefActionRegisterDoesNotMutateInput(t *testing.T) {
 	ws := make([]string, 1, 4) // spare capacity → append would mutate in place if aliased
 	ws[0] = "DP - TEST - Config"
 	c := config.Customer{Environments: []config.Environment{{Alias: "TEST", Workspaces: ws}}}
-	_ = applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: "register", EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	_ = applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
 	if len(c.Environments[0].Workspaces) != 1 || c.Environments[0].Workspaces[0] != "DP - TEST - Config" {
 		t.Errorf("applyRefAction register mutated the caller's customer: %#v", c.Environments[0].Workspaces)
 	}

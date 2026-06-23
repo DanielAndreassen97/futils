@@ -7,7 +7,6 @@ import (
 	"html"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -96,17 +95,14 @@ func cappedLineDiff(oldText, newText string) []DiffLine {
 // prettyForDiff pretty-prints content as 2-space-indented JSON when it parses
 // as JSON, so minified/awkward Fabric .json parts diff readably and pure
 // formatting differences collapse. Non-JSON content is returned unchanged.
-func prettyForDiff(content string) string {
+// The bool reports whether pretty-printing was applied (i.e. the input was
+// valid JSON) — callers use it instead of a separate isJSON check.
+func prettyForDiff(content string) (string, bool) {
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, []byte(content), "", "  "); err != nil {
-		return content
+		return content, false
 	}
-	return buf.String()
-}
-
-// isJSON reports whether content is valid JSON (drives the "prettified" badge).
-func isJSON(content string) bool {
-	return json.Valid([]byte(content))
+	return buf.String(), true
 }
 
 // deployReportStyle is the verbatim <style> block from the mockup, with two
@@ -347,10 +343,10 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 			b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
 			b.WriteString(`<span class="chev">▾</span></summary>`)
 			for _, p := range it.Parts {
-				oldPretty := prettyForDiff(p.Old)
-				newPretty := prettyForDiff(p.New)
+				oldPretty, oldIsJSON := prettyForDiff(p.Old)
+				newPretty, newIsJSON := prettyForDiff(p.New)
 				badge := ""
-				if isJSON(p.Old) || isJSON(p.New) {
+				if oldIsJSON || newIsJSON {
 					badge = ` <span class="badge">json · prettified</span>`
 				}
 				b.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
@@ -464,7 +460,7 @@ func showDiffsInBrowser(groups []deployGroup) error {
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
-	path := filepath.FromSlash(f.Name())
+	path := f.Name()
 	if _, err := f.WriteString(htmlDoc); err != nil {
 		f.Close()
 		return fmt.Errorf("write temp file: %w", err)

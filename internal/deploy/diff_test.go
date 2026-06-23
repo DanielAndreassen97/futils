@@ -36,26 +36,26 @@ func deployedDef(parts map[string]string) *fabric.Definition {
 	return d
 }
 
-func TestPartsChangedUnchanged(t *testing.T) {
+func TestDiffPartsUnchanged(t *testing.T) {
 	local := map[string][]byte{"f.json": []byte(`{"a":1,"b":2}`)}
 	deployed := deployedDef(map[string]string{"f.json": `{"b":2,"a":1}`}) // reordered, same
-	if PartsChanged(local, deployed) {
+	if len(DiffParts(local, deployed)) != 0 {
 		t.Error("reordered-but-equal JSON should be unchanged")
 	}
 }
 
-func TestPartsChangedContentDiff(t *testing.T) {
+func TestDiffPartsContentDiff(t *testing.T) {
 	local := map[string][]byte{"f.py": []byte("x=1")}
 	deployed := deployedDef(map[string]string{"f.py": "x=2"})
-	if !PartsChanged(local, deployed) {
+	if len(DiffParts(local, deployed)) == 0 {
 		t.Error("different content should be changed")
 	}
 }
 
-func TestPartsChangedDifferentPartSet(t *testing.T) {
+func TestDiffPartsDifferentPartSet(t *testing.T) {
 	local := map[string][]byte{"a.py": []byte("x")}
 	deployed := deployedDef(map[string]string{"a.py": "x", "b.py": "y"})
-	if !PartsChanged(local, deployed) {
+	if len(DiffParts(local, deployed)) == 0 {
 		t.Error("extra deployed part should be changed")
 	}
 }
@@ -63,13 +63,13 @@ func TestPartsChangedDifferentPartSet(t *testing.T) {
 // Fabric's getDefinition returns a .platform part, but DiscoverItems excludes
 // .platform from local parts — so a deployed-only .platform must NOT be read as
 // a content change, or every existing item is falsely flagged Changed.
-func TestPartsChangedIgnoresDeployedPlatform(t *testing.T) {
+func TestDiffPartsIgnoresDeployedPlatformFull(t *testing.T) {
 	local := map[string][]byte{"notebook-content.py": []byte("x=1")}
 	deployed := deployedDef(map[string]string{
 		"notebook-content.py": "x=1",
 		".platform":           `{"metadata":{"type":"Notebook","displayName":"NB","description":"d"}}`,
 	})
-	if PartsChanged(local, deployed) {
+	if len(DiffParts(local, deployed)) != 0 {
 		t.Error("deployed-only .platform must not count as a content change")
 	}
 }

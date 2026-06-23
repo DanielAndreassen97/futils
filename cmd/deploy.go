@@ -945,20 +945,30 @@ func buildDeployPickRows(groups []deployGroup) ([]ui.CheckItem, []pickEntry, str
 	return items, entries, title
 }
 
+// Pre-built per-class styles — package-level so render loops don't re-allocate
+// a lipgloss.Style on every row. Colors match the originals exactly.
+var (
+	classStyleNew       = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	classStyleChanged   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	classStyleUnchanged = lipgloss.NewStyle().Foreground(ui.DimColor)
+	classStyleOrphan    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	classStyleExists    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+)
+
 // classStyle colors a compare row by its classification: green=new,
 // yellow=changed, grey=unchanged, red=orphan, cyan=exists-but-unverified.
 func classStyle(c deploy.Class) lipgloss.Style {
 	switch c {
 	case deploy.ClassNew:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+		return classStyleNew
 	case deploy.ClassChanged:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+		return classStyleChanged
 	case deploy.ClassUnchanged:
-		return lipgloss.NewStyle().Foreground(ui.DimColor)
+		return classStyleUnchanged
 	case deploy.ClassOrphan:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+		return classStyleOrphan
 	default: // ClassExists (unverified)
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+		return classStyleExists
 	}
 }
 
@@ -1118,11 +1128,11 @@ func mapUnresolvedInteractive(client APIClient, token, configPath, customerName 
 		}
 		var action RefAction
 		switch choice {
-		case "skip":
+		case refActionSkip:
 			continue
-		case "ignore":
-			action = RefAction{Kind: "ignore"}
-		case "register":
+		case refActionIgnore:
+			action = RefAction{Kind: refActionIgnore}
+		case refActionRegister:
 			ws, env, perr := pickWorkspaceAndEnv(client, token, customer)
 			if perr != nil {
 				if errors.Is(perr, ui.ErrGoBack) {
@@ -1130,16 +1140,16 @@ func mapUnresolvedInteractive(client APIClient, token, configPath, customerName 
 				}
 				return perr
 			}
-			action = RefAction{Kind: "register", EnvAlias: env, Workspace: ws}
-		case "override":
-			itemType, itemName, perr := pickTargetItem(client, token, customer, ref.ItemType)
+			action = RefAction{Kind: refActionRegister, EnvAlias: env, Workspace: ws}
+		case refActionOverride:
+			itemType, itemName, perr := pickTargetItem(client, token, ref.ItemType)
 			if perr != nil {
 				if errors.Is(perr, ui.ErrGoBack) {
 					continue
 				}
 				return perr
 			}
-			action = RefAction{Kind: "override", ItemType: itemType, ItemName: itemName}
+			action = RefAction{Kind: refActionOverride, ItemType: itemType, ItemName: itemName}
 		}
 		customer = applyRefAction(customer, ref, action)
 		changed = true
@@ -1182,7 +1192,7 @@ func pickWorkspaceAndEnv(client APIClient, token string, customer config.Custome
 
 // pickTargetItem lets the user pick a target workspace then an item of the
 // given type in it, for the "override" action. Returns (itemType, itemName).
-func pickTargetItem(client APIClient, token string, customer config.Customer, itemType string) (string, string, error) {
+func pickTargetItem(client APIClient, token string, itemType string) (string, string, error) {
 	workspaces, err := client.ListWorkspaces(token)
 	if err != nil {
 		return "", "", fmt.Errorf("list workspaces: %w", err)

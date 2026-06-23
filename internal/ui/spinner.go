@@ -32,15 +32,6 @@ func NewSpinner(message string) *Spinner {
 	}
 }
 
-// SetMessage updates the text shown next to the spinner. Safe to call from
-// other goroutines while the spinner runs — used to show live progress
-// (e.g. "5/41") as concurrent work completes.
-func (s *Spinner) SetMessage(message string) {
-	s.mu.Lock()
-	s.message = message
-	s.mu.Unlock()
-}
-
 // SetMessageFunc installs a provider that the animation goroutine calls on
 // every frame to compute the live message. Use it instead of SetMessage when
 // the text must stay fresh even while the caller's own goroutines are stalled
@@ -53,7 +44,7 @@ func (s *Spinner) SetMessageFunc(fn func() string) {
 }
 
 // getMessage reads the current message under the lock so the animation
-// goroutine never races a concurrent SetMessage. A provider (SetMessageFunc),
+// goroutine never races a concurrent update. A provider (SetMessageFunc),
 // if set, wins; it's snapshotted under the lock and called outside it so an
 // arbitrary callback never runs while the mutex is held.
 func (s *Spinner) getMessage() string {

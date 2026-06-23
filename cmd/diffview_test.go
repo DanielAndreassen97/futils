@@ -52,7 +52,7 @@ func TestUnifiedLineDiffAddedAndRemoved(t *testing.T) {
 		got += string(l.Op) + l.Text + "\n"
 	}
 	// "keep" is common; "old" removed; "new" and "extra" added (order: removals before additions at a divergence is acceptable).
-	if !contains(got, " keep\n") || !contains(got, "-old\n") || !contains(got, "+new\n") || !contains(got, "+extra\n") {
+	if !strings.Contains(got, " keep\n") || !strings.Contains(got, "-old\n") || !strings.Contains(got, "+new\n") || !strings.Contains(got, "+extra\n") {
 		t.Fatalf("diff missing expected lines:\n%s", got)
 	}
 }
@@ -66,24 +66,24 @@ func TestRenderDeployDiffHTMLEscapesAndIncludesItems(t *testing.T) {
 		}},
 	}}
 	html := renderDeployDiffHTML(groups)
-	if !contains(html, "NB_Config") || !contains(html, "notebook-content.py") {
+	if !strings.Contains(html, "NB_Config") || !strings.Contains(html, "notebook-content.py") {
 		t.Errorf("HTML missing item/part name")
 	}
-	if !contains(html, "DEV") || !contains(html, "TEST") {
+	if !strings.Contains(html, "DEV") || !strings.Contains(html, "TEST") {
 		t.Errorf("HTML missing diff content")
 	}
 	// Raw content must be HTML-escaped (no live <script>).
-	if contains(html, "<script>") {
+	if strings.Contains(html, "<script>") {
 		t.Errorf("content not HTML-escaped — raw <script> present")
 	}
-	if !contains(html, "&lt;script&gt;") {
+	if !strings.Contains(html, "&lt;script&gt;") {
 		t.Errorf("expected escaped <script>")
 	}
 }
 
 func TestRenderDeployDiffHTMLEmpty(t *testing.T) {
 	html := renderDeployDiffHTML([]deployGroup{{}})
-	if !contains(html, "<html") {
+	if !strings.Contains(html, "<html") {
 		t.Errorf("expected a valid HTML doc even with no diffs")
 	}
 }
@@ -99,14 +99,14 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 	out := renderDeployDiffHTML(groups)
 	// Items must NOT be open by default — the new markup emits `<details class="item changed">`,
 	// so guard against the variant the code could wrongly produce.
-	if contains(out, `<details class="item changed" open`) {
+	if strings.Contains(out, `<details class="item changed" open`) {
 		t.Errorf("items should be collapsed by default (no open attribute)")
 	}
-	if !contains(out, "<details") {
+	if !strings.Contains(out, "<details") {
 		t.Errorf("expected <details> sections")
 	}
 	// A count header summarizing the number of changed items.
-	if !contains(out, "2") {
+	if !strings.Contains(out, "2") {
 		t.Errorf("expected a count of changed items in the header")
 	}
 }
@@ -158,29 +158,29 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 	}
 	out := renderDeployReport(groups, results)
 
-	if !contains(out, "<!doctype html>") {
+	if !strings.Contains(out, "<!doctype html>") {
 		t.Errorf("expected a doctype")
 	}
 	// Outcomes present and labelled.
-	if !contains(out, "NB_OK") || !contains(out, "NB_Warn") || !contains(out, "NB_Err") {
+	if !strings.Contains(out, "NB_OK") || !strings.Contains(out, "NB_Warn") || !strings.Contains(out, "NB_Err") {
 		t.Errorf("results section missing item names")
 	}
-	if !contains(out, "description not synced") {
+	if !strings.Contains(out, "description not synced") {
 		t.Errorf("warning text missing")
 	}
 	// Outcome markers and the action label must render (guards the results section).
-	if !contains(out, "✓") || !contains(out, "⚠") || !contains(out, "✗") {
+	if !strings.Contains(out, "✓") || !strings.Contains(out, "⚠") || !strings.Contains(out, "✗") {
 		t.Errorf("outcome markers (✓/⚠/✗) missing")
 	}
-	if !contains(out, results[0].Action.String()) {
+	if !strings.Contains(out, results[0].Action.String()) {
 		t.Errorf("action label %q missing for happy-path row", results[0].Action.String())
 	}
 	// Error text is HTML-escaped (no raw <x>).
-	if contains(out, "boom <x>") || !contains(out, "boom &lt;x&gt;") {
+	if strings.Contains(out, "boom <x>") || !strings.Contains(out, "boom &lt;x&gt;") {
 		t.Errorf("error text not HTML-escaped")
 	}
 	// Compare section still rendered.
-	if !contains(out, "NB_Config") {
+	if !strings.Contains(out, "NB_Config") {
 		t.Errorf("compare section missing")
 	}
 }
@@ -219,19 +219,25 @@ func TestRenderDeployReportDeleteOnlyHasNoContentDiffs(t *testing.T) {
 
 func TestPrettyForDiff(t *testing.T) {
 	min := `{"a":1,"b":{"c":2}}`
-	got := prettyForDiff(min)
+	got, wasJSON := prettyForDiff(min)
 	if !strings.Contains(got, "\n") || !strings.Contains(got, "  \"a\": 1") {
 		t.Errorf("minified JSON should be indented, got:\n%s", got)
 	}
-	if prettyForDiff("x=1\ny=2") != "x=1\ny=2" {
+	if !wasJSON {
+		t.Errorf("JSON input should report wasJSON=true")
+	}
+	verbatim, wasJSON2 := prettyForDiff("x=1\ny=2")
+	if verbatim != "x=1\ny=2" {
 		t.Errorf("non-JSON must be returned verbatim")
 	}
-	// Whitespace-only difference collapses to identical output (no diff noise).
-	if prettyForDiff(`{"a":1}`) != prettyForDiff(`{ "a" : 1 }`) {
-		t.Errorf("formatting-only JSON differences must normalize equal")
+	if wasJSON2 {
+		t.Errorf("non-JSON input should report wasJSON=false")
 	}
-	if !isJSON(`{"a":1}`) || isJSON("x=1") {
-		t.Errorf("isJSON misclassified")
+	// Whitespace-only difference collapses to identical output (no diff noise).
+	pretty1, _ := prettyForDiff(`{"a":1}`)
+	pretty2, _ := prettyForDiff(`{ "a" : 1 }`)
+	if pretty1 != pretty2 {
+		t.Errorf("formatting-only JSON differences must normalize equal")
 	}
 }
 
@@ -332,14 +338,4 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 	if strings.Contains(singleOut, `class="wsgroup"`) {
 		t.Error("single-group report must NOT include wsgroup element")
 	}
-}
-
-func contains(s, sub string) bool { return len(s) >= len(sub) && (stringIndex(s, sub) >= 0) }
-func stringIndex(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
