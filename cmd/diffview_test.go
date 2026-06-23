@@ -196,9 +196,10 @@ func TestRenderDeployReportHasCardsAndCollapse(t *testing.T) {
 	if strings.Contains(out, `<details class="item changed" open`) || strings.Contains(out, `<details class="item" open`) {
 		t.Error("diff items must be collapsed by default (no open attribute)")
 	}
-	// mockup uses inline onclick, not a <script> tag
-	if !strings.Contains(out, "Expand all") || !strings.Contains(out, "d.open=true") {
-		t.Error("expand/collapse-all control + inline onclick expected")
+	// mockup uses inline onclick, not a <script> tag; both expand AND collapse buttons required
+	if !strings.Contains(out, "Expand all") || !strings.Contains(out, "d.open=true") ||
+		!strings.Contains(out, "Collapse all") {
+		t.Error("expand/collapse-all controls + inline onclick expected (both Expand all and Collapse all must be present)")
 	}
 }
 
@@ -256,6 +257,59 @@ func TestRenderSummaryCardsClassification(t *testing.T) {
 	out := renderSummaryCards(groups, nil)
 	if !strings.Contains(out, "New") || !strings.Contains(out, "Changed") || !strings.Contains(out, "Orphan") {
 		t.Errorf("classification cards missing labels in:\n%s", out)
+	}
+}
+
+func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
+	// Multi-group case: two groups with distinct workspace names, each with one
+	// diff that is in the deployed set — must emit per-workspace headings.
+	groups := []deployGroup{
+		{
+			Target: fabric.Workspace{DisplayName: "WS Alpha"},
+			Diffs: []ItemDiff{{
+				Name: "NB_Alpha", Type: "Notebook",
+				Parts: []deploy.PartDiff{{Path: "p.py", Old: "a", New: "b"}},
+			}},
+		},
+		{
+			Target: fabric.Workspace{DisplayName: "WS Beta"},
+			Diffs: []ItemDiff{{
+				Name: "NB_Beta", Type: "Notebook",
+				Parts: []deploy.PartDiff{{Path: "p.py", Old: "c", New: "d"}},
+			}},
+		},
+	}
+	results := []deploy.Result{
+		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate},
+		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate},
+	}
+	out := renderDeployReport(groups, results)
+	if !strings.Contains(out, "WS Alpha") {
+		t.Error("multi-group report must include workspace heading for WS Alpha")
+	}
+	if !strings.Contains(out, "WS Beta") {
+		t.Error("multi-group report must include workspace heading for WS Beta")
+	}
+	if !strings.Contains(out, `class="wsgroup"`) {
+		t.Error("multi-group report must include the wsgroup class for workspace headings")
+	}
+
+	// Single-group case: exactly one group renders diffs — must NOT emit wsgroup heading.
+	singleGroups := []deployGroup{
+		{
+			Target: fabric.Workspace{DisplayName: "WS Sole"},
+			Diffs: []ItemDiff{{
+				Name: "NB_Sole", Type: "Notebook",
+				Parts: []deploy.PartDiff{{Path: "p.py", Old: "x", New: "y"}},
+			}},
+		},
+	}
+	singleResults := []deploy.Result{
+		{Name: "NB_Sole", Type: "Notebook", Action: deploy.ActionUpdate},
+	}
+	singleOut := renderDeployReport(singleGroups, singleResults)
+	if strings.Contains(singleOut, `class="wsgroup"`) {
+		t.Error("single-group report must NOT include wsgroup element")
 	}
 }
 

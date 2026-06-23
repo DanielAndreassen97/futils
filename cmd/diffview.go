@@ -212,6 +212,10 @@ const deployReportStyle = `<style>
   .empty{color:var(--muted);padding:1rem .95rem}
   .foot{color:#5d6b61;font-size:.74rem;margin-top:2.4rem;border-top:1px solid var(--panel-line);padding-top:.8rem}
   .foot code{color:#9ff0d6}
+  .wsgroup{font-size:.78rem;font-weight:600;color:var(--muted);letter-spacing:.04em;
+            margin:.9rem 0 .3rem;padding:.18rem .5rem;
+            border-left:2px solid var(--green-deep);
+            background:linear-gradient(90deg,rgba(34,197,94,.07),transparent)}
 </style>`
 
 // renderDeployReport builds a self-contained HTML deploy report. When results
@@ -279,13 +283,26 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 		}
 	}
 
-	// Count how many diffs will actually render (respecting the gate).
+	// itemRenderable reports whether a diff item passes the deployed-set gate.
+	// When deployedSet is nil (preview), all items render.
+	itemRenderable := func(name string) bool {
+		return deployedSet == nil || deployedSet[name]
+	}
+
+	// Count how many diffs will actually render (respecting the gate), and how
+	// many groups contribute at least one rendered diff (for per-workspace headings).
 	changed := 0
+	groupsWithDiffs := 0
 	for _, g := range groups {
+		groupCount := 0
 		for _, it := range g.Diffs {
-			if deployedSet == nil || deployedSet[it.Name] {
+			if itemRenderable(it.Name) {
 				changed++
+				groupCount++
 			}
+		}
+		if groupCount > 0 {
+			groupsWithDiffs++
 		}
 	}
 
@@ -302,9 +319,24 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 		if len(g.Diffs) == 0 {
 			continue
 		}
+		// Check whether this group contributes any rendered items before emitting
+		// the per-workspace heading (avoid orphan headings with no diffs below them).
+		hasRenderable := false
+		for _, it := range g.Diffs {
+			if itemRenderable(it.Name) {
+				hasRenderable = true
+				break
+			}
+		}
+		if !hasRenderable {
+			continue
+		}
+		if groupsWithDiffs > 1 {
+			b.WriteString(`<div class="wsgroup">` + html.EscapeString(g.Target.DisplayName) + `</div>`)
+		}
 		for _, it := range g.Diffs {
 			// Fix [6]: skip items not in the deployed set when results are present.
-			if deployedSet != nil && !deployedSet[it.Name] {
+			if !itemRenderable(it.Name) {
 				continue
 			}
 			b.WriteString(`<details class="item changed">`)
