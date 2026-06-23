@@ -109,7 +109,7 @@ func TestSubstitutePartsNilRebinderIsNoOp(t *testing.T) {
 		Parts:       []Part{{Path: "notebook-content.py", Content: []byte("print(1)\n")}},
 	}
 	resolver := newResolverFixture()
-	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, nil)
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, resolver, nil)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestSubstitutePartsAppliesRebindToNotebookPart(t *testing.T) {
 		Parts:       []Part{{Path: "notebook-content.py", Content: nb}},
 	}
 	resolver := newResolverFixture()
-	parts, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, resolver, rb)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestSubstitutePartsTagsUnresolvedWithItemName(t *testing.T) {
 	item := LocalItem{Type: "Notebook", DisplayName: "NB_Config",
 		Parts: []Part{{Path: "notebook-content.py", Content: nb}}}
 	resolver := newResolverFixture()
-	_, outcome, err := SubstituteParts(item, "TEST", Parameters{}, map[string]string{}, resolver, rb)
+	_, outcome, err := SubstituteParts(item, map[string]string{}, resolver, rb)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

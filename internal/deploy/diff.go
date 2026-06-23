@@ -3,28 +3,23 @@ package deploy
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"path"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
-// SubstituteParts applies logicalId + parameter.yml substitution, then (when rb
-// is non-nil) auto-rebind of notebook lakehouse references, to each of an item's
-// parts. Returns path -> substituted raw bytes (not base64), plus a RebindOutcome
-// with any changes applied and references the rebinder could not resolve (tagged
-// with the item name). Shared by the publish path (which base64-encodes the result)
+// SubstituteParts applies logicalId substitution, then (when rb is non-nil)
+// auto-rebind of notebook lakehouse references, to each of an item's parts.
+// Returns path -> substituted raw bytes (not base64), plus a RebindOutcome with
+// any changes applied and references the rebinder could not resolve (tagged with
+// the item name). Shared by the publish path (which base64-encodes the result)
 // and the content-diff. A nil rb skips rebinding entirely.
-func SubstituteParts(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver, rb *Rebinder) (map[string][]byte, RebindOutcome, error) {
+func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (map[string][]byte, RebindOutcome, error) {
 	out := make(map[string][]byte, len(item.Parts))
 	var outcome RebindOutcome
 	for _, part := range item.Parts {
-		content := ReplaceLogicalIds(part.Content, idMap)
-		substituted, err := params.ApplyFindReplace(env, item, part.Path, content, resolver.Resolve)
-		if err != nil {
-			return nil, RebindOutcome{}, fmt.Errorf("part %s: %w", part.Path, err)
-		}
+		substituted := ReplaceLogicalIds(part.Content, idMap)
 		if rb != nil {
 			subbed, subOutcome := rb.ApplyCustomSubstitutions(item, part.Path, substituted)
 			substituted = subbed

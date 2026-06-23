@@ -55,8 +55,8 @@ func semModelWithSQLSource() []byte {
 // BOTH lazy caches at once:
 //   - a semantic-model part whose SQL source forces baseEndpointLookup +
 //     targetEndpointFor (Rebinder caches), and
-//   - a find_replace whose replacement is a $items dynamic var forcing the
-//     Resolver's wsByName/itemsWS fill.
+//   - a custom substitution that uses the Rebinder's target-attribute lookup
+//     (sqlendpoint), forcing the Rebinder's targetEndpoint cache fill.
 //
 // Run under `go test -race`. Before the mutexes were added this reliably
 // tripped the race detector (concurrent map writes to the lazy caches); with
@@ -64,11 +64,12 @@ func semModelWithSQLSource() []byte {
 // so every worker hits the SAME workspace/endpoint lookups.
 func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 	resolver, rb := concurrencyFixture(t)
-
-	params := Parameters{FindReplace: []FindReplace{{
-		FindValue:    "__ENDPOINT__",
-		ReplaceValue: map[string]string{"TEST": "$items.Lakehouse.LH_Silver.$sqlendpoint"},
-	}}}
+	rb.SetSubstitutions([]Substitution{{
+		FindValue:  "__ENDPOINT__",
+		TargetType: "Lakehouse",
+		TargetName: "LH_Silver",
+		Attr:       "sqlendpoint",
+	}})
 
 	const workers = 32
 	var wg sync.WaitGroup
@@ -82,13 +83,13 @@ func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 				Type:        "SemanticModel",
 				DisplayName: "Model_Sales",
 				Parts: []Part{
-					// Part 1: SQL source -> Rebinder endpoint caches.
+					// Part 1: SQL source -> Rebinder SQL endpoint caches.
 					{Path: "definition/expressions.tmdl", Content: semModelWithSQLSource()},
-					// Part 2: $items dynamic var -> Resolver caches.
+					// Part 2: custom substitution -> Rebinder targetEndpoint cache.
 					{Path: "definition.pbism", Content: []byte("endpoint=__ENDPOINT__")},
 				},
 			}
-			parts, _, err := SubstituteParts(item, "TEST", params, map[string]string{}, resolver, rb)
+			parts, _, err := SubstituteParts(item, map[string]string{}, resolver, rb)
 			errs[w] = err
 			if err == nil {
 				hosts[w] = string(parts["definition.pbism"])
@@ -101,9 +102,9 @@ func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 		if errs[w] != nil {
 			t.Fatalf("worker %d: %v", w, errs[w])
 		}
-		// Resolver fill must have produced the TARGET endpoint host deterministically.
+		// Custom substitution must have resolved to the target lakehouse SQL endpoint host.
 		if want := "endpoint=test-silver.datawarehouse.fabric.microsoft.com"; hosts[w] != want {
-			t.Fatalf("worker %d: resolver gave %q, want %q", w, hosts[w], want)
+			t.Fatalf("worker %d: substitution gave %q, want %q", w, hosts[w], want)
 		}
 	}
 }

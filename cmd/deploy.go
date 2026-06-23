@@ -60,7 +60,6 @@ type deployGroup struct {
 	Target     fabric.Workspace
 	Rows       []deploy.CompareRow
 	Deployed   []fabric.Item
-	Params     deploy.Parameters
 	Unresolved []deploy.UnresolvedRef
 	Changes    []deploy.RebindChange
 	Diffs      []ItemDiff
@@ -204,7 +203,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(shown, ", ")))
 	}
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, env, rebinder, excluded)
+	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, rebinder, excluded)
 	if err != nil {
 		return err
 	}
@@ -256,7 +255,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return nil // declined: this was a dry-run
 	}
 
-	results, err := runDeploy(client, token, env, groups, rebinder, pickGroupedRows, ui.Confirm)
+	results, err := runDeploy(client, token, groups, rebinder, pickGroupedRows, ui.Confirm)
 	printDeployResults(results)
 	if err != nil {
 		return err
@@ -278,15 +277,13 @@ const diffConcurrency = 16
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, env string, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
 		if err != nil {
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
-
-		var params deploy.Parameters
 
 		items := filterExcludedTypes(deploy.ItemsInFolder(all, m.Folder), excluded)
 		deployed, err := client.ListItems(token, target.ID)
@@ -299,9 +296,8 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			Target:   target,
 			Rows:     rows,
 			Deployed: deployed,
-			Params:   params,
 		}
-		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, env, params, rows, rb)
+		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb)
 		groups = append(groups, g)
 	}
 	reconcileOrphans(groups)
@@ -382,7 +378,7 @@ func newItemSentinel(logicalID string) string {
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, env string, params deploy.Parameters, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
+func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists {
@@ -489,7 +485,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		go func(j, idx int) {
 			defer cwg.Done()
 			defer func() { <-csem }()
-			localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, env, params, compareIDs, resolver, rb)
+			localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, compareIDs, resolver, rb)
 			res := compareResult{
 				unresolved: outcome.Unresolved,
 				changes:    outcome.Changes,
@@ -610,7 +606,7 @@ func deleteCount(m map[int][]deploy.DeleteTarget) int {
 // error, so callers should print results before checking err.
 func runDeploy(
 	client deploy.FabricClient,
-	token, env string,
+	token string,
 	groups []deployGroup,
 	rb *deploy.Rebinder,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error),
@@ -665,7 +661,7 @@ func runDeploy(
 			plan := deploy.BuildPlan(items, g.Deployed)
 			sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
 			sp.Start()
-			results, groupPending, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb, modelsByWS)
+			results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS)
 			sp.Stop()
 			allResults = append(allResults, results...)
 			pending = append(pending, groupPending...)

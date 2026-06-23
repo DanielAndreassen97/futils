@@ -108,7 +108,7 @@ func TestDiffExistingRows_DescriptionDriftIsChanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
 
 	if rows[0].Class != deploy.ClassChanged {
 		t.Fatalf("description drift must make the row Changed, got %v", rows[0].Class)
@@ -139,7 +139,7 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
 
 	if rows[0].Class != deploy.ClassUnchanged {
 		t.Fatalf("matching content + description must be Unchanged (no phantom .platform diff), got %v", rows[0].Class)
@@ -202,7 +202,7 @@ func TestDiffExistingRows_ClassNewDepMakesRefChanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
 
 	// Find rows by display name for clear assertions.
 	rowByName := map[string]*deploy.CompareRow{}
@@ -305,7 +305,7 @@ func TestDiffExistingRows_MultiItemDeterministicOrder(t *testing.T) {
 		Attr:       "id",
 	}})
 
-	unresolved, changes, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, rb)
+	unresolved, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb)
 
 	// itemDiffs must be in existsIdx (== local) order: NB_1, NB_3, NB_4, NB_5.
 	wantDiffOrder := []string{"NB_1", "NB_3", "NB_4", "NB_5"}
@@ -388,7 +388,7 @@ func TestDiffExistingRows_RaceSharedCaches(t *testing.T) {
 		Attr:       "sqlendpoint",
 	}})
 
-	_, changes, diffs := diffExistingRows(fake, "tok", target, "TEST", deploy.Parameters{}, rows, rb)
+	_, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb)
 
 	if len(diffs) != n {
 		t.Fatalf("want %d changed items, got %d", n, len(diffs))
@@ -556,7 +556,7 @@ func TestRunDeployHappyPath(t *testing.T) {
 			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}
 	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestRunDeployDeclinedConfirmDoesNotExecute(t *testing.T) {
 	groups := []deployGroup{makeGroup("F", "ws1", "WS",
 		[]deploy.LocalItem{{Type: "Notebook", DisplayName: "NB", LogicalID: "lid"}}, nil)}
 
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return false, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return false, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 		makeGroup("Backend", "ws-config", "Config", backend, nil),
 		makeGroup("Frontend", "ws-semmod", "SemMod", frontend, nil),
 	}
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -623,7 +623,7 @@ func TestRunDeployCrossGroupRebind(t *testing.T) {
 		makeGroup("Frontend", "ws-shared", "Shared", report, nil),
 		makeGroup("Backend", "ws-shared", "Backend", model, nil),
 	}
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestRunDeployByConnectionWarning(t *testing.T) {
 		Parts: []deploy.Part{{Path: "definition.pbir",
 			Content: []byte(`{"datasetReference":{"byConnection":{"connectionType":"pbiServiceXmlaStyleLive"}}}`)}}}}
 	groups := []deployGroup{makeGroup("Frontend", "ws-1", "WS", report, nil)}
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 
 	// Deploy confirm yes, delete confirm NO → no delete runs.
 	calls := 0
-	res, err := runDeploy(newFake(), "tok", "", groups, nil, selectWithDelete,
+	res, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
 		func(string) (bool, error) { calls++; return calls == 1, nil }) // 1st (deploy) yes, 2nd (delete) no
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -870,7 +870,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 	}
 
 	// Both confirms yes → the delete runs.
-	res2, err := runDeploy(newFake(), "tok", "", groups, nil, selectWithDelete,
+	res2, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
 		func(string) (bool, error) { return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -891,7 +891,7 @@ func TestRunDeployDeleteOnly(t *testing.T) {
 			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
 	}
 	calls := 0
-	res, err := runDeploy(fake, "tok", "", groups, nil, selectDeleteOnly,
+	res, err := runDeploy(fake, "tok", groups, nil, selectDeleteOnly,
 		func(string) (bool, error) { calls++; return true, nil })
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -955,7 +955,7 @@ func TestRunDeployDeleteConfirmNamesWorkspace(t *testing.T) {
 			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
 	}
 	var deletePrompt string
-	_, err := runDeploy(fake, "tok", "TEST", groups, nil, selectDel, func(p string) (bool, error) {
+	_, err := runDeploy(fake, "tok", groups, nil, selectDel, func(p string) (bool, error) {
 		if strings.Contains(p, "DELETE") {
 			deletePrompt = p
 		}

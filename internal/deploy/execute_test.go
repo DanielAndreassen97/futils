@@ -66,33 +66,29 @@ func decodePart(t *testing.T, def fabric.Definition, suffix string) string {
 	return ""
 }
 
-func TestExecuteAppliesParametersAndEncodes(t *testing.T) {
+func TestExecuteEncodesPartsAsBase64(t *testing.T) {
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
 		itemsByWS:  map[string][]fabric.Item{},
 	}}
 	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
-	params := Parameters{FindReplace: []FindReplace{{
-		FindValue:    "DEV-GUID",
-		ReplaceValue: map[string]string{"_ALL_": "TEST-GUID"},
-	}}}
 	plan := []PlannedItem{{
 		Action: ActionCreate,
 		Item: LocalItem{
 			Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid-nb",
-			Parts: []Part{{Path: "notebook-content.py", Content: []byte("id=DEV-GUID")}},
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("id=SOME-GUID")}},
 		},
 	}}
 
-	res, _, err := Execute(rf, "tok", target, "TEST", plan, params, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(res) != 1 || res[0].Err != nil {
 		t.Fatalf("result: %+v", res)
 	}
-	if got := decodePart(t, rf.created[0], "notebook-content.py"); got != "id=TEST-GUID" {
-		t.Errorf("substitution not applied: %q", got)
+	if got := decodePart(t, rf.created[0], "notebook-content.py"); got != "id=SOME-GUID" {
+		t.Errorf("part content not preserved through encode/decode: %q", got)
 	}
 }
 
@@ -108,7 +104,7 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	res, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -138,7 +134,7 @@ func TestExecuteSetsDescriptionOnCreate(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 {
@@ -162,7 +158,7 @@ func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
 			Description: "Updated desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
@@ -185,7 +181,7 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	results, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil)
+	results, _, err := Execute(rf, "tok", target, plan, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -219,7 +215,7 @@ func byConnectionPBIR() []byte {
 // mirroring how runDeploy threads the two phases.
 func runRebindPass(t *testing.T, rf *recordingFabric, target fabric.Workspace, plan []PlannedItem, modelsByWS map[string]map[string]string) ([]Result, []ReportRebindOutcome) {
 	t.Helper()
-	res, pending, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, modelsByWS)
+	res, pending, err := Execute(rf, "tok", target, plan, nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -294,7 +290,7 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 		var pending []PendingReportRebind
 		for _, g := range groups {
 			plan := BuildPlan(g, nil)
-			_, p, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, modelsByWS)
+			_, p, err := Execute(rf, "tok", target, plan, nil, modelsByWS)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
@@ -336,11 +332,11 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	modelsByWS := map[string]map[string]string{}
 	var pending []PendingReportRebind
 	// Model deploys to W1; report deploys to W2.
-	_, _, err := Execute(rf, "tok", w1, "TEST", BuildPlan([]LocalItem{model}, nil), Parameters{}, nil, modelsByWS)
+	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil), nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute w1: %v", err)
 	}
-	_, p, err := Execute(rf, "tok", w2, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute w2: %v", err)
 	}
@@ -371,7 +367,7 @@ func TestRebindReportsByConnectionWarns(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -404,7 +400,7 @@ func TestRebindReportsModelMissingWarns(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MissingModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -438,7 +434,7 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{model, report}, nil), Parameters{}, nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

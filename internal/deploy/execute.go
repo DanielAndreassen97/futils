@@ -62,10 +62,9 @@ type ReportRebindOutcome struct {
 }
 
 // Execute publishes a plan against the target workspace. For each item, in
-// order, it applies logicalId substitution and parameter.yml find_replace to
-// every part; when rb is non-nil, it also auto-rebinds notebook lakehouse
-// references by name. It then encodes parts to base64 and creates or updates
-// the item.
+// order, it applies logicalId substitution to every part; when rb is non-nil,
+// it also auto-rebinds notebook lakehouse references by name. It then encodes
+// parts to base64 and creates or updates the item.
 //
 // modelsByWS is a caller-owned accumulator (targetWorkspaceID → model
 // displayName → deployed GUID): Execute records every published SemanticModel
@@ -76,7 +75,7 @@ type ReportRebindOutcome struct {
 //
 // A per-item error is captured in its Result (the run continues); Execute only
 // returns a top-level error for a setup failure that aborts everything.
-func Execute(client FabricClient, token string, target fabric.Workspace, env string, plan []PlannedItem, params Parameters, rb *Rebinder, modelsByWS map[string]map[string]string) ([]Result, []PendingReportRebind, error) {
+func Execute(client FabricClient, token string, target fabric.Workspace, plan []PlannedItem, rb *Rebinder, modelsByWS map[string]map[string]string) ([]Result, []PendingReportRebind, error) {
 	resolver := NewResolver(client, token, target)
 	idMap := map[string]string{} // logicalId -> deployed GUID
 	results := make([]Result, 0, len(plan))
@@ -85,7 +84,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, env str
 	for _, p := range plan {
 		res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
 
-		def, err := buildDefinition(p.Item, env, params, idMap, resolver, rb)
+		def, err := buildDefinition(p.Item, idMap, resolver, rb)
 		if err != nil {
 			res.Err = err
 			results = append(results, res)
@@ -185,12 +184,12 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 	return outcomes
 }
 
-// buildDefinition applies logicalId + parameter + rebind substitution to each
-// text part and base64-encodes them into a fabric.Definition. Unresolved
-// references are intentionally discarded here — the dry-run surfaces them; the
-// publish path leaves any unresolved (cosmetic) GUID as-is.
-func buildDefinition(item LocalItem, env string, params Parameters, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, error) {
-	parts, _, err := SubstituteParts(item, env, params, idMap, resolver, rb)
+// buildDefinition applies logicalId + rebind substitution to each text part and
+// base64-encodes them into a fabric.Definition. Unresolved references are
+// intentionally discarded here — the dry-run surfaces them; the publish path
+// leaves any unresolved (cosmetic) GUID as-is.
+func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, error) {
+	parts, _, err := SubstituteParts(item, idMap, resolver, rb)
 	if err != nil {
 		return nil, err
 	}
