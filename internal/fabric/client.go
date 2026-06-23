@@ -103,6 +103,15 @@ func logHTTP(method string, status int, dur time.Duration, rawURL string) {
 var (
 	throttleHits   int64
 	throttleActive int64
+
+	// throttleDeadlineNanos, throttleTotalMillis, and throttleAttemptCur expose
+	// live backoff state so a UI can show how long to wait and which retry we're
+	// on without polling sleeps. noteThrottle keeps the LATEST/LONGEST deadline
+	// via a CAS loop so concurrent goroutines never clobber a longer wait with a
+	// shorter one.
+	throttleDeadlineNanos int64 // unix nanos of when current backoff ends
+	throttleTotalMillis   int64 // duration of current/last backoff in ms
+	throttleAttemptCur    int64 // 1-based attempt number of current/last backoff
 )
 
 // ThrottleHits returns the running total of 429 backoffs. Callers typically
@@ -113,6 +122,45 @@ func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
 // backoff — non-zero means "actively rate-limited this moment", and it falls
 // back to zero once the throttling clears, so a UI signal won't get stuck on.
 func ActiveThrottles() int64 { return atomic.LoadInt64(&throttleActive) }
+
+// ThrottleRemaining returns the time until the current backoff expires.
+func ThrottleRemaining() time.Duration {
+	dl := atomic.LoadInt64(&throttleDeadlineNanos)
+	rem := dl - time.Now().UnixNano()
+	if rem <= 0 {
+		return 0
+	}
+	return time.Duration(rem)
+}
+
+// ThrottleTotal returns the total wait duration of the current/last backoff.
+func ThrottleTotal() time.Duration {
+	return time.Duration(atomic.LoadInt64(&throttleTotalMillis)) * time.Millisecond
+}
+
+// ThrottleAttempt returns the 1-based attempt number of the current/last backoff.
+func ThrottleAttempt() int {
+	return int(atomic.LoadInt64(&throttleAttemptCur))
+}
+
+// noteThrottle records the backoff deadline and metadata atomically. It uses a
+// CAS loop to keep the LATEST/LONGEST deadline so a faster goroutine never
+// overwrites a longer wait set by a slower one.
+func noteThrottle(d time.Duration, attempt int) {
+	deadline := time.Now().UnixNano() + d.Nanoseconds()
+	for {
+		old := atomic.LoadInt64(&throttleDeadlineNanos)
+		if deadline <= old {
+			// Another goroutine already holds a later deadline; leave it.
+			return
+		}
+		if atomic.CompareAndSwapInt64(&throttleDeadlineNanos, old, deadline) {
+			atomic.StoreInt64(&throttleTotalMillis, d.Milliseconds())
+			atomic.StoreInt64(&throttleAttemptCur, int64(attempt+1))
+			return
+		}
+	}
+}
 
 // firstThrottle captures the details of the first 429 seen since the last reset
 // so a UI can show WHY Fabric throttled — its own error body names the limit
@@ -157,19 +205,30 @@ func recordThrottle(method, rawURL, retryAfter string, body []byte) {
 	firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
 }
 
-// throttleDelay computes how long to wait before retrying a 429. It honors the
-// Retry-After header (delta-seconds form) when present and positive, capped at
-// maxThrottleWait; otherwise it falls back to capped exponential backoff
-// (1s, 2s, 4s, …) by attempt number.
+// throttleDelay computes how long to wait before retrying a 429.
+// Formula: min(retryAfterSecs, 10·2^attempt), clamped to maxThrottleWait (60s).
+// This matches fabric-cicd's approach: front-load short waits so we never sit
+// idle at 60s on the first 429, while still respecting Retry-After when the
+// server sends a shorter deadline. If Retry-After is absent, invalid, or ≤0,
+// it defaults to 60s (the hard ceiling), so backoff drives the wait.
+//
+// Example delays (maxThrottleWait=60s):
+//
+//	No header:       attempt 0→10s, 1→20s, 2→40s, 3→60s, 4→60s
+//	Retry-After=5:   always 5s (5 < 10·2^attempt for any attempt ≥ 0)
+//	Retry-After=120: 10s, 20s, 40s, 60s (80 clamped), 60s
 func throttleDelay(retryAfter string, attempt int) time.Duration {
+	raDefault := int(maxThrottleWait.Seconds()) // 60
+	raSecs := raDefault
 	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
-		d := time.Duration(secs) * time.Second
-		if d > maxThrottleWait {
-			return maxThrottleWait
-		}
-		return d
+		raSecs = secs
 	}
-	d := time.Duration(1<<uint(attempt)) * time.Second
+	backoffSecs := 10 << uint(attempt) // 10·2^attempt: 10, 20, 40, 80, …
+	delay := raSecs
+	if backoffSecs < delay {
+		delay = backoffSecs
+	}
+	d := time.Duration(delay) * time.Second
 	if d > maxThrottleWait {
 		return maxThrottleWait
 	}
@@ -657,7 +716,9 @@ func doGet(token, rawURL string) ([]byte, error) {
 			recordThrottle("GET", rawURL, retryAfter, body)
 			atomic.AddInt64(&throttleHits, 1)
 			atomic.AddInt64(&throttleActive, 1)
-			time.Sleep(throttleDelay(retryAfter, attempt))
+			d := throttleDelay(retryAfter, attempt)
+			noteThrottle(d, attempt)
+			time.Sleep(d)
 			atomic.AddInt64(&throttleActive, -1)
 			continue
 		}
@@ -754,10 +815,13 @@ func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, [
 			}
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxThrottleRetries {
-			recordThrottle(method, rawURL, resp.Header.Get("Retry-After"), body)
+			retryAfter := resp.Header.Get("Retry-After")
+			recordThrottle(method, rawURL, retryAfter, body)
 			atomic.AddInt64(&throttleHits, 1)
 			atomic.AddInt64(&throttleActive, 1)
-			time.Sleep(throttleDelay(resp.Header.Get("Retry-After"), attempt))
+			d := throttleDelay(retryAfter, attempt)
+			noteThrottle(d, attempt)
+			time.Sleep(d)
 			atomic.AddInt64(&throttleActive, -1)
 			continue
 		}

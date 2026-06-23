@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -31,14 +32,17 @@ func TestNextPollIntervalBacksOff(t *testing.T) {
 }
 
 func TestThrottleDelayCapsRetryAfter(t *testing.T) {
-	if got := throttleDelay("9999", 0); got != maxThrottleWait {
-		t.Errorf("got %v, want %v", got, maxThrottleWait)
+	// Retry-After=9999 is larger than the backoff at attempt 0 (10s),
+	// so min(9999, 10) = 10s — backoff wins, no clamping needed.
+	if got := throttleDelay("9999", 0); got != 10*time.Second {
+		t.Errorf("got %v, want 10s", got)
 	}
 }
 
 func TestThrottleDelayBackoffWithoutHeader(t *testing.T) {
-	if got := throttleDelay("", 2); got != 4*time.Second { // 1<<2
-		t.Errorf("got %v, want 4s", got)
+	// No header → default raSecs=60. min(60, 10*2^2=40) = 40s.
+	if got := throttleDelay("", 2); got != 40*time.Second {
+		t.Errorf("got %v, want 40s", got)
 	}
 }
 
@@ -147,5 +151,65 @@ func TestDoGetRefreshedTokenUsedAfterThrottle(t *testing.T) {
 	// Call 3: after throttle wait; must STILL carry the fresh token (the bug).
 	if transport.calls[2] != "Bearer fresh-token" {
 		t.Errorf("call 3 auth = %q, want Bearer fresh-token (was stale token reused after throttle?)", transport.calls[2])
+	}
+}
+
+func TestThrottleDelayFabricCICD(t *testing.T) {
+	cases := []struct {
+		name       string
+		retryAfter string
+		attempt    int
+		want       time.Duration
+	}{
+		// No header — defaults to 60s, min(60, 10*2^attempt)
+		{"no-header-attempt-0", "", 0, 10 * time.Second},
+		{"no-header-attempt-1", "", 1, 20 * time.Second},
+		{"no-header-attempt-2", "", 2, 40 * time.Second},
+		{"no-header-attempt-3", "", 3, 60 * time.Second}, // min(60,80)=80→clamp 60
+		{"no-header-attempt-4", "", 4, 60 * time.Second}, // min(60,160)=160→clamp 60
+		// Retry-After=5: always wins
+		{"retry-after-5-attempt-0", "5", 0, 5 * time.Second}, // min(5,10)=5
+		{"retry-after-5-attempt-2", "5", 2, 5 * time.Second}, // min(5,40)=5
+		// Retry-After=120: backoff wins early, clamp later
+		{"retry-after-120-attempt-0", "120", 0, 10 * time.Second}, // min(120,10)=10
+		{"retry-after-120-attempt-3", "120", 3, 60 * time.Second}, // min(120,80)=80→clamp 60
+		// Invalid/zero → default 60s path
+		{"invalid-header", "abc", 0, 10 * time.Second},
+		{"zero-header", "0", 0, 10 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := throttleDelay(c.retryAfter, c.attempt)
+			if got != c.want {
+				t.Errorf("throttleDelay(%q, %d) = %v, want %v", c.retryAfter, c.attempt, got, c.want)
+			}
+		})
+	}
+}
+
+func TestThrottleStateExposed(t *testing.T) {
+	// Reset state
+	atomic.StoreInt64(&throttleDeadlineNanos, 0)
+	atomic.StoreInt64(&throttleTotalMillis, 0)
+	atomic.StoreInt64(&throttleAttemptCur, 0)
+
+	noteThrottle(8*time.Second, 1)
+	if got := ThrottleAttempt(); got != 2 {
+		t.Errorf("ThrottleAttempt() = %d, want 2", got)
+	}
+	if got := ThrottleTotal(); got != 8*time.Second {
+		t.Errorf("ThrottleTotal() = %v, want 8s", got)
+	}
+	rem := ThrottleRemaining()
+	if rem <= 6*time.Second || rem > 8*time.Second {
+		t.Errorf("ThrottleRemaining() = %v, want in (6s, 8s]", rem)
+	}
+
+	// Call with shorter backoff — deadline must NOT move earlier
+	noteThrottle(2*time.Second, 0)
+	rem2 := ThrottleRemaining()
+	// The 8s deadline should still be in effect (well past 2s from now)
+	if rem2 < 5*time.Second {
+		t.Errorf("ThrottleRemaining() after short noteThrottle = %v, want still > 5s (CAS-max should preserve longer deadline)", rem2)
 	}
 }
