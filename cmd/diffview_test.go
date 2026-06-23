@@ -152,6 +152,8 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 		{Name: "NB_OK", Type: "Notebook", Action: deploy.ActionCreate},
 		{Name: "NB_Warn", Type: "Notebook", Action: deploy.ActionUpdate, Warning: "description not synced"},
 		{Name: "NB_Err", Type: "Report", Action: deploy.ActionCreate, Err: fmt.Errorf("boom <x>")},
+		// NB_Config must be a deployed result so its diff renders under the deployed-only [6] gate.
+		{Name: "NB_Config", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
 	out := renderDeployReport(groups, results)
 
@@ -179,6 +181,37 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 	// Compare section still rendered.
 	if !contains(out, "NB_Config") {
 		t.Errorf("compare section missing")
+	}
+}
+
+func TestRenderDeployReportHasCardsAndCollapse(t *testing.T) {
+	groups := []deployGroup{{Target: fabric.Workspace{DisplayName: "WS"}, Diffs: []ItemDiff{
+		{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
+	}}}
+	results := []deploy.Result{{Name: "NB_A", Type: "Notebook", Action: deploy.ActionUpdate}}
+	out := renderDeployReport(groups, results)
+	if !strings.Contains(out, `class="cards"`) {
+		t.Error("report must include the summary cards")
+	}
+	if strings.Contains(out, `<details class="item changed" open`) || strings.Contains(out, `<details class="item" open`) {
+		t.Error("diff items must be collapsed by default (no open attribute)")
+	}
+	// mockup uses inline onclick, not a <script> tag
+	if !strings.Contains(out, "Expand all") || !strings.Contains(out, "d.open=true") {
+		t.Error("expand/collapse-all control + inline onclick expected")
+	}
+}
+
+func TestRenderDeployReportDeleteOnlyHasNoContentDiffs(t *testing.T) {
+	// A delete-only run: results are all ActionDelete; the compare still has a
+	// Changed item's diff, but the report must NOT show it (fix [6]).
+	groups := []deployGroup{{Target: fabric.Workspace{DisplayName: "WS"}, Diffs: []ItemDiff{
+		{Name: "NB_Changed", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
+	}}}
+	results := []deploy.Result{{Name: "NB_Gone", Type: "Notebook", Action: deploy.ActionDelete}}
+	out := renderDeployReport(groups, results)
+	if strings.Contains(out, "NB_Changed") {
+		t.Error("delete-only run must not render content diffs for items that were not deployed")
 	}
 }
 

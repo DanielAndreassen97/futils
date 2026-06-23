@@ -109,6 +109,111 @@ func isJSON(content string) bool {
 	return json.Valid([]byte(content))
 }
 
+// deployReportStyle is the verbatim <style> block from the mockup, with two
+// extra card variants (.card.unchanged, .card.exists) for the preview view.
+const deployReportStyle = `<style>
+  :root{
+    --green:#4ade80; --green-bright:#86efac; --green-deep:#22c55e;
+    --changed:#fbbf24; --deleted:#f87171; --fail:#ef4444; --warn:#fbbf24; --exists:#2dd4bf; --unchanged:#8a978d;
+    --text:#dce7df; --muted:#7e8d82; --accent:#86efac;
+    --panel-line:rgba(120,200,150,.14);
+    --addfg:#86efac; --delfg:#fca5a5;
+  }
+  *{box-sizing:border-box}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    color:var(--text);margin:0;padding:1.8rem 2rem 3rem;line-height:1.45;
+    background:
+      radial-gradient(1100px 480px at 12% -8%, rgba(34,197,94,.16), transparent 60%),
+      radial-gradient(900px 520px at 100% 0%, rgba(45,212,191,.08), transparent 55%),
+      linear-gradient(165deg,#0c1611 0%,#0a0f0c 55%,#080b09 100%);
+    background-attachment:fixed;min-height:100vh;
+  }
+  code,pre,.mono{font-family:"SF Mono",Menlo,Consolas,monospace}
+
+  /* ── hero header ── */
+  .hero{margin-bottom:1.5rem}
+  h1{font-size:1.45rem;margin:0;font-weight:700;letter-spacing:-.01em;
+     background:linear-gradient(92deg,#86efac,#34d399 60%,#2dd4bf);
+     -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{color:var(--muted);font-size:.85rem;margin-top:.35rem}
+  .sub b{color:#bfe9cd;font-weight:600}
+  h2{font-size:.95rem;margin:1.9rem 0 .55rem;font-weight:600;letter-spacing:.01em;
+     color:#bff0cf;display:flex;align-items:center;gap:.5rem}
+  h2::before{content:"";width:.55rem;height:.55rem;border-radius:2px;
+     background:linear-gradient(135deg,var(--green-bright),var(--green-deep));box-shadow:0 0 10px rgba(74,222,128,.6)}
+  h2 .note{color:var(--muted);font-weight:400;font-size:.82rem}
+
+  /* ── summary cards ── */
+  .cards{display:flex;flex-wrap:wrap;gap:.85rem;margin:.5rem 0}
+  .card{flex:1 1 120px;min-width:120px;position:relative;border-radius:14px;padding:.95rem 1.05rem;
+        border:1px solid var(--panel-line);overflow:hidden;
+        background:linear-gradient(150deg,rgba(255,255,255,.05),rgba(255,255,255,.012));
+        box-shadow:0 6px 22px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04)}
+  .card::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;border-radius:14px 0 0 14px}
+  .card::after{content:"";position:absolute;top:-40%;right:-30%;width:140px;height:140px;border-radius:50%;
+        opacity:.16;filter:blur(26px)}
+  .card .n{font-size:1.9rem;font-weight:750;line-height:1;letter-spacing:-.02em}
+  .card .l{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-top:.45rem;font-weight:600}
+  .card.new::before{background:linear-gradient(var(--green-bright),var(--green-deep))} .card.new::after{background:var(--green)} .card.new .n{color:var(--green-bright)}
+  .card.changed::before{background:linear-gradient(#fde68a,#f59e0b)} .card.changed::after{background:var(--changed)} .card.changed .n{color:var(--changed)}
+  .card.deleted::before{background:linear-gradient(#fda4a4,#dc2626)} .card.deleted::after{background:var(--deleted)} .card.deleted .n{color:var(--deleted)}
+  .card.fail::before{background:linear-gradient(#fca5a5,#b91c1c)} .card.fail::after{background:var(--fail)} .card.fail .n{color:var(--fail)}
+  .card.warn::before{background:linear-gradient(#fde68a,#d97706)} .card.warn::after{background:var(--warn)} .card.warn .n{color:var(--warn)}
+  .card.unchanged::before{background:linear-gradient(#b0bab4,#6b7875)} .card.unchanged::after{background:var(--unchanged)} .card.unchanged .n{color:var(--unchanged)}
+  .card.exists::before{background:linear-gradient(#5eead4,#0d9488)} .card.exists::after{background:var(--exists)} .card.exists .n{color:var(--exists)}
+
+  /* ── results tables ── */
+  .panel{border:1px solid var(--panel-line);border-radius:12px;overflow:hidden;
+         background:linear-gradient(160deg,rgba(255,255,255,.028),rgba(255,255,255,.006))}
+  table{border-collapse:collapse;width:100%;font-size:.88rem}
+  td{padding:.42rem .9rem;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  td.mark{width:1.6rem;text-align:center;font-weight:700}
+  td.name{font-family:"SF Mono",Menlo,monospace}
+  .type{color:var(--muted);font-size:.78rem}
+  .ok{color:var(--green-bright)} .upd{color:var(--changed)} .del{color:var(--deleted)}
+  .efail{color:var(--fail)} .ewarn{color:var(--warn)}
+  .detail{color:var(--muted);font-size:.82rem}
+  .detail.efail{color:var(--fail)} .detail.ewarn{color:var(--warn)}
+
+  /* ── diff items ── */
+  .item{border:1px solid var(--panel-line);border-radius:12px;margin:.6rem 0;overflow:hidden;position:relative;
+        background:linear-gradient(160deg,rgba(255,255,255,.03),rgba(255,255,255,.007));
+        box-shadow:0 4px 16px rgba(0,0,0,.28)}
+  .item::before{content:"";position:absolute;top:0;bottom:0;left:0;width:3px}
+  .item.changed::before{background:linear-gradient(#fde68a,#f59e0b)}
+  .item.new::before{background:linear-gradient(var(--green-bright),var(--green-deep))}
+  .item summary{cursor:pointer;padding:.6rem .95rem;font-weight:600;list-style:none;display:flex;align-items:center;gap:.6rem}
+  .item summary::-webkit-details-marker{display:none}
+  .dot{width:.55rem;height:.55rem;border-radius:50%;flex:0 0 auto}
+  .dot.changed{background:var(--changed);box-shadow:0 0 8px rgba(251,191,36,.55)}
+  .dot.new{background:var(--green);box-shadow:0 0 8px rgba(74,222,128,.55)}
+  .item summary .t{color:var(--muted);font-size:.78rem;font-weight:500}
+  .item summary .chev{margin-left:auto;color:var(--muted);font-size:.78rem}
+  .part{border-top:1px solid var(--panel-line)}
+  .part .path{color:#d8b3ea;padding:.4rem .95rem;font-size:.8rem;display:flex;align-items:center;gap:.55rem;
+              background:linear-gradient(90deg,rgba(255,255,255,.03),transparent)}
+  .badge{font-size:.64rem;background:linear-gradient(135deg,rgba(45,212,191,.25),rgba(34,197,94,.18));
+         color:#9ff0d6;border:1px solid rgba(45,212,191,.25);border-radius:5px;padding:.08rem .45rem;
+         text-transform:uppercase;letter-spacing:.04em}
+  .badge.cap{background:linear-gradient(135deg,rgba(251,191,36,.22),rgba(217,119,6,.15));color:#fcd66b;border-color:rgba(251,191,36,.3)}
+  .difftools{display:flex;gap:.45rem;margin-left:auto}
+  .btn{font:inherit;font-size:.74rem;color:#bff0cf;background:linear-gradient(150deg,rgba(74,222,128,.14),rgba(74,222,128,.04));
+       border:1px solid rgba(74,222,128,.25);border-radius:7px;padding:.25rem .6rem;cursor:pointer;transition:.15s}
+  .btn:hover{background:linear-gradient(150deg,rgba(74,222,128,.24),rgba(74,222,128,.08))}
+  .h2row{display:flex;align-items:center;gap:.5rem;margin:1.9rem 0 .55rem}
+  .h2row h2{margin:0}
+  pre{margin:0;padding:.5rem 0;overflow-x:auto;font-size:.82rem;line-height:1.45}
+  pre .ln{display:block;padding:0 .95rem;white-space:pre}
+  pre .ctx{color:#8fa096}
+  pre .add{color:var(--addfg);background:linear-gradient(90deg,rgba(34,197,94,.16),rgba(34,197,94,.04))}
+  pre .rem{color:var(--delfg);background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.03))}
+  .empty{color:var(--muted);padding:1rem .95rem}
+  .foot{color:#5d6b61;font-size:.74rem;margin-top:2.4rem;border-top:1px solid var(--panel-line);padding-top:.8rem}
+  .foot code{color:#9ff0d6}
+</style>`
+
 // renderDeployReport builds a self-contained HTML deploy report. When results
 // is non-nil it leads with a per-item outcome section (✓ deployed / ⚠ warning /
 // ✗ error); it always follows with every Changed item's per-part content diff
@@ -116,20 +221,15 @@ func isJSON(content string) bool {
 // is the compare-only viewer the browser preview shows.
 func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><title>futils deploy report</title><style>
-body{font-family:-apple-system,Menlo,monospace;background:#1e1e1e;color:#ddd;margin:0;padding:1.5rem}
-h1{font-size:1.1rem;color:#9cdcfe}h2{font-size:1rem;color:#4ec9b0;margin:1.4rem 0 .3rem}
-h3{font-size:.95rem;color:#4ec9b0;margin:1rem 0 .3rem}
-.item{border:1px solid #333;border-radius:6px;margin:.6rem 0;background:#252526}
-summary{cursor:pointer;padding:.5rem .8rem;font-weight:600}
-.path{color:#c586c0;padding:.2rem .8rem;font-size:.85rem}
-pre{margin:0;padding:.4rem .8rem;overflow-x:auto;font-size:.82rem;line-height:1.35}
-.ctx{color:#888}.del{color:#f48771;background:#3a1d1d}.add{color:#89d185;background:#1d3a23}
-.empty{color:#888;padding:1rem .8rem}
-table{border-collapse:collapse;margin:.4rem 0}td{padding:.15rem .8rem;vertical-align:top}
-.ok{color:#89d185}.warn{color:#e2c08d}.err{color:#f48771}
-</style></head><body>`)
-	b.WriteString("<h1>futils deploy report</h1>")
+	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>futils deploy report</title>`)
+	b.WriteString(deployReportStyle)
+	b.WriteString(`</head><body>`)
+
+	// Hero header.
+	b.WriteString(`<div class="hero"><h1>futils deploy report</h1></div>`)
+
+	// Summary cards.
+	b.WriteString(renderSummaryCards(groups, results))
 
 	if results != nil {
 		var deployed, deleted []deploy.Result
@@ -144,64 +244,101 @@ table{border-collapse:collapse;margin:.4rem 0}td{padding:.15rem .8rem;vertical-a
 			if len(rs) == 0 {
 				return
 			}
-			b.WriteString("<h2>" + heading + "</h2><table>")
+			b.WriteString(`<h2>` + heading + `</h2><div class="panel"><table>`)
 			for _, r := range rs {
-				cls, mark, detail := "ok", "✓", r.Action.String()
+				markCls, mark, detailCls, detail := "ok", "✓", "detail", r.Action.String()
 				switch {
 				case r.Err != nil:
-					cls, mark, detail = "err", "✗", r.Err.Error()
+					markCls, mark, detailCls, detail = "efail", "✗", "detail efail", r.Err.Error()
 				case r.Warning != "":
-					cls, mark, detail = "warn", "⚠", r.Warning
+					markCls, mark, detailCls, detail = "ewarn", "⚠", "detail ewarn", r.Warning
+				case r.Action == deploy.ActionUpdate:
+					markCls = "upd"
+				case r.Action == deploy.ActionDelete:
+					markCls = "del"
 				}
-				b.WriteString(`<tr><td class="` + cls + `">` + mark + `</td><td>` +
-					html.EscapeString(r.Type+"  "+r.Name) + `</td><td class="` + cls + `">` +
-					html.EscapeString(detail) + `</td></tr>`)
+				b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
+				b.WriteString(`<td class="name">` + html.EscapeString(r.Name) + ` <span class="type">` + html.EscapeString(r.Type) + `</span></td>`)
+				b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
 			}
-			b.WriteString("</table>")
+			b.WriteString(`</table></div>`)
 		}
 		renderRows("Deployed items", deployed)
 		renderRows("Deleted items", deleted)
 	}
 
-	b.WriteString("<h2>Content diffs (deployed → local)</h2>")
+	// Build the deployed-items gate for fix [6]: when results != nil, only render
+	// diffs for items that were actually deployed (i.e. not deleted).
+	var deployedSet map[string]bool
+	if results != nil {
+		deployedSet = make(map[string]bool, len(results))
+		for _, r := range results {
+			if r.Action != deploy.ActionDelete {
+				deployedSet[r.Name] = true
+			}
+		}
+	}
+
+	// Count how many diffs will actually render (respecting the gate).
 	changed := 0
 	for _, g := range groups {
-		changed += len(g.Diffs)
+		for _, it := range g.Diffs {
+			if deployedSet == nil || deployedSet[it.Name] {
+				changed++
+			}
+		}
 	}
-	b.WriteString(fmt.Sprintf(`<p style="color:#9cdcfe">%d changed item(s) — click to expand</p>`, changed))
+
+	// Content diffs heading with inline expand/collapse controls.
+	// mockup uses inline onclick, not a <script> tag.
+	b.WriteString(`<div class="h2row">`)
+	b.WriteString(fmt.Sprintf(`<h2>Content diffs <span class="note">— deployed → local · %d changed item(s)</span></h2>`, changed))
+	b.WriteString(`<div class="difftools">`)
+	b.WriteString(`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=true)">Expand all</button>`)
+	b.WriteString(`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>`)
+	b.WriteString(`</div></div>`)
+
 	for _, g := range groups {
 		if len(g.Diffs) == 0 {
 			continue
 		}
-		b.WriteString("<h3>" + html.EscapeString(g.Target.DisplayName) + "</h3>")
 		for _, it := range g.Diffs {
-			b.WriteString(`<details class="item"><summary>` +
-				html.EscapeString(it.Type+"  "+it.Name) + "</summary>")
+			// Fix [6]: skip items not in the deployed set when results are present.
+			if deployedSet != nil && !deployedSet[it.Name] {
+				continue
+			}
+			b.WriteString(`<details class="item changed">`)
+			b.WriteString(`<summary><span class="dot changed"></span>`)
+			b.WriteString(html.EscapeString(it.Name))
+			b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
+			b.WriteString(`<span class="chev">▾</span></summary>`)
 			for _, p := range it.Parts {
+				oldPretty := prettyForDiff(p.Old)
+				newPretty := prettyForDiff(p.New)
 				badge := ""
 				if isJSON(p.Old) || isJSON(p.New) {
 					badge = ` <span class="badge">json · prettified</span>`
 				}
-				b.WriteString(`<div class="path">` + html.EscapeString(p.Path) + badge + "</div><pre>")
-				for _, ln := range cappedLineDiff(prettyForDiff(p.Old), prettyForDiff(p.New)) {
+				b.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
+				for _, ln := range cappedLineDiff(oldPretty, newPretty) {
 					cls, prefix := "ctx", " "
 					switch ln.Op {
 					case '-':
-						cls, prefix = "del", "-"
+						cls, prefix = "rem", "-"
 					case '+':
 						cls, prefix = "add", "+"
 					}
-					b.WriteString(`<span class="` + cls + `">` + prefix + " " + html.EscapeString(ln.Text) + "</span>\n")
+					b.WriteString(`<span class="ln ` + cls + `">` + prefix + " " + html.EscapeString(ln.Text) + "</span>")
 				}
-				b.WriteString("</pre>")
+				b.WriteString(`</pre></div>`)
 			}
-			b.WriteString("</details>")
+			b.WriteString(`</details>`)
 		}
 	}
 	if changed == 0 {
 		b.WriteString(`<div class="empty">No changed items to diff.</div>`)
 	}
-	b.WriteString("</body></html>")
+	b.WriteString(`</body></html>`)
 	return b.String()
 }
 
