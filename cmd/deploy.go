@@ -81,6 +81,13 @@ func Deploy(configPath string) error { return DeployWithAPI(configPath, DefaultA
 // environment → resolve its folder→workspace mappings → compare per group →
 // dry-run or cherry-pick+publish.
 func DeployWithAPI(configPath string, client APIClient) error {
+	// Wrap the client in a per-run memo so every ListItems(workspaceID) call
+	// (buildDeployGroups, BuildNameIndex, Resolver.findItem, pickTargetItem)
+	// hits the Fabric API at most once per workspace. All callers are in the
+	// compare/index phase — before Execute or DeleteItems mutate anything —
+	// so the cached list is never stale.
+	client = newMemoClient(client)
+
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
