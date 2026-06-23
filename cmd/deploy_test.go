@@ -37,6 +37,7 @@ type deployFakeAPI struct {
 	created    []string                      // displayNames created
 	createdWS  map[string]string             // displayName -> workspaceID
 	defByID    map[string]*fabric.Definition // itemID -> deployed definition (compare tests)
+	rebinds    [][3]string                   // {workspaceID, reportID, datasetID}
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -73,7 +74,10 @@ func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.D
 }
 func (f *deployFakeAPI) UpdateItem(token, ws, id, displayName, description string) error { return nil }
 func (f *deployFakeAPI) DeleteItem(token, ws, id string) error                           { return nil }
-func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error        { return nil }
+func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error {
+	f.rebinds = append(f.rebinds, [3]string{ws, reportID, datasetID})
+	return nil
+}
 func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	return "", "", nil
 }
@@ -337,6 +341,66 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 	}
 	if fake.createdWS["NB_A"] != "ws-config" || fake.createdWS["R_A"] != "ws-semmod" {
 		t.Errorf("wrong target workspaces: %v", fake.createdWS)
+	}
+}
+
+// TestRunDeployCrossGroupRebind proves the runDeploy wiring of fix #2: a model
+// in one folder/group and its report in a SEPARATE group both mapping to the
+// SAME workspace must end with the report rebound to the model's new GUID, even
+// though they were two separate Execute calls.
+func TestRunDeployCrossGroupRebind(t *testing.T) {
+	fake := &deployFakeAPI{}
+	model := []deploy.LocalItem{{Type: "SemanticModel", DisplayName: "MyModel", LogicalID: "lid-m",
+		Parts: []deploy.Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}}
+	report := []deploy.LocalItem{{Type: "Report", DisplayName: "MyReport", LogicalID: "lid-r",
+		Parts: []deploy.Part{{Path: "definition.pbir",
+			Content: []byte(`{"datasetReference":{"byPath":{"path":"../MyModel.SemanticModel"}}}`)}}}}
+	// Report group listed FIRST — order must not matter.
+	groups := []deployGroup{
+		makeGroup("Frontend", "ws-shared", "Shared", report, nil),
+		makeGroup("Backend", "ws-shared", "Backend", model, nil),
+	}
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("want 2 results, got %d", len(res))
+	}
+	if len(fake.rebinds) != 1 {
+		t.Fatalf("want exactly 1 rebind, got %d: %v", len(fake.rebinds), fake.rebinds)
+	}
+	if fake.rebinds[0][0] != "ws-shared" || fake.rebinds[0][2] != "MyModel-id" {
+		t.Errorf("rebind = %v, want {ws-shared, MyReport-id, MyModel-id}", fake.rebinds[0])
+	}
+	// The report's Result must carry no error/warning (it rebound cleanly).
+	for _, r := range res {
+		if r.Name == "MyReport" && (r.Err != nil || r.Warning != "") {
+			t.Errorf("report result should be clean, got err=%v warning=%q", r.Err, r.Warning)
+		}
+	}
+}
+
+// TestRunDeployByConnectionWarning proves the runDeploy wiring of fix #3: a
+// byConnection report produces NO rebind and its Result carries a warning.
+func TestRunDeployByConnectionWarning(t *testing.T) {
+	fake := &deployFakeAPI{}
+	report := []deploy.LocalItem{{Type: "Report", DisplayName: "ConnReport", LogicalID: "lid-r",
+		Parts: []deploy.Part{{Path: "definition.pbir",
+			Content: []byte(`{"datasetReference":{"byConnection":{"connectionType":"pbiServiceXmlaStyleLive"}}}`)}}}}
+	groups := []deployGroup{makeGroup("Frontend", "ws-1", "WS", report, nil)}
+	res, err := runDeploy(fake, "tok", "", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if len(fake.rebinds) != 0 {
+		t.Fatalf("byConnection report must not rebind, got %v", fake.rebinds)
+	}
+	if len(res) != 1 {
+		t.Fatalf("want 1 result, got %d", len(res))
+	}
+	if res[0].Warning == "" || !strings.Contains(res[0].Warning, "byConnection") {
+		t.Errorf("byConnection report must carry a byConnection warning, got %q", res[0].Warning)
 	}
 }
 

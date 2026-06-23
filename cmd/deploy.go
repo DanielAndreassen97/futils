@@ -573,6 +573,13 @@ func runDeploy(
 			fmt.Println("Cancelled.")
 			return allResults, nil
 		}
+		// modelsByWS accumulates every published SemanticModel across ALL groups,
+		// keyed by target workspace, so report rebinds (deferred to the pass below)
+		// see models regardless of which group deployed them — and never bind a
+		// model from a different workspace. pending collects the report rebinds to
+		// run once everything is published.
+		modelsByWS := map[string]map[string]string{}
+		var pending []deploy.PendingReportRebind
 		for i, g := range groups {
 			items := selected[i]
 			if len(items) == 0 {
@@ -581,14 +588,45 @@ func runDeploy(
 			plan := deploy.BuildPlan(items, g.Deployed)
 			sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
 			sp.Start()
-			results, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb)
+			results, groupPending, execErr := deploy.Execute(client, token, g.Target, env, plan, g.Params, rb, modelsByWS)
 			sp.Stop()
 			allResults = append(allResults, results...)
+			pending = append(pending, groupPending...)
 			if execErr != nil {
 				if nDel > 0 {
 					fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy failed — the %d selected delete(s) were NOT run.", nDel)))
 				}
 				return allResults, execErr
+			}
+		}
+
+		// Post-deploy rebind pass: now that every group is published, repoint each
+		// report at its model and fold the outcome into the report's Result (matched
+		// by deployed GUID). Runs BEFORE the delete pass.
+		if outcomes := deploy.RebindReports(client, token, modelsByWS, pending); len(outcomes) > 0 {
+			byID := map[string]*deploy.Result{}
+			for i := range allResults {
+				if allResults[i].ID != "" {
+					byID[allResults[i].ID] = &allResults[i]
+				}
+			}
+			for _, o := range outcomes {
+				r, ok := byID[o.ReportID]
+				if !ok {
+					continue
+				}
+				if o.Err != nil {
+					r.Err = o.Err
+				}
+				if o.Warning != "" {
+					// Don't clobber a pre-existing Warning (e.g. description-sync) —
+					// combine both so neither is lost.
+					if r.Warning == "" {
+						r.Warning = o.Warning
+					} else {
+						r.Warning = r.Warning + "; " + o.Warning
+					}
+				}
 			}
 		}
 	}

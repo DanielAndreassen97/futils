@@ -16,7 +16,8 @@ type recordingFabric struct {
 	created       []fabric.Definition
 	createdNames  []string
 	updates       map[string]fabric.Definition // existingID -> def
-	rebinds       [][2]string                  // {reportID, datasetID}
+	rebinds       [][3]string                  // {workspaceID, reportID, datasetID}
+	rebindErr     error                        // when set, RebindReport returns it
 	metaUpdates   []metaUpdate                 // UpdateItem (PATCH) calls
 	deletes       []string                     // DeleteItem(id) calls
 	updateItemErr error                        // when set, UpdateItem returns it (description-sync failure)
@@ -42,8 +43,8 @@ func (r *recordingFabric) UpdateItemDefinition(token, ws, id string, def *fabric
 	return nil
 }
 func (r *recordingFabric) RebindReport(token, ws, reportID, datasetID string) error {
-	r.rebinds = append(r.rebinds, [2]string{reportID, datasetID})
-	return nil
+	r.rebinds = append(r.rebinds, [3]string{ws, reportID, datasetID})
+	return r.rebindErr
 }
 func (r *recordingFabric) DeleteItem(token, ws, id string) error {
 	r.deletes = append(r.deletes, id)
@@ -83,7 +84,7 @@ func TestExecuteAppliesParametersAndEncodes(t *testing.T) {
 		},
 	}}
 
-	res, err := Execute(rf, "tok", target, "TEST", plan, params, nil)
+	res, _, err := Execute(rf, "tok", target, "TEST", plan, params, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
+	res, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestExecuteSetsDescriptionOnCreate(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 {
@@ -161,7 +162,7 @@ func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
 			Description: "Updated desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
@@ -184,7 +185,7 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	results, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
+	results, _, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -204,6 +205,33 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+// byPathPBIR / byConnectionPBIR build the two PBIR dataset-reference shapes.
+func byPathPBIR(modelName string) []byte {
+	return []byte(`{"datasetReference":{"byPath":{"path":"../` + modelName + `.SemanticModel"}}}`)
+}
+
+func byConnectionPBIR() []byte {
+	return []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=...","pbiServiceModelId":null,"pbiModelVirtualServerName":"sobe_wowvirtualserver","pbiModelDatabaseName":"abc-123","name":"EntityDataSource","connectionType":"pbiServiceXmlaStyleLive"}}}`)
+}
+
+// runRebindPass is a helper that runs Execute over a plan accumulating into a
+// shared modelsByWS map, then resolves the pending rebinds via RebindReports —
+// mirroring how runDeploy threads the two phases.
+func runRebindPass(t *testing.T, rf *recordingFabric, target fabric.Workspace, plan []PlannedItem, modelsByWS map[string]map[string]string) ([]Result, []ReportRebindOutcome) {
+	t.Helper()
+	res, pending, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatalf("item %s failed: %v", r.Name, r.Err)
+		}
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	return res, outcomes
+}
+
 func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
@@ -213,25 +241,230 @@ func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 
 	model := LocalItem{Type: "SemanticModel", DisplayName: "MyModel", LogicalID: "lid-m",
 		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
-	pbir := `{"datasetReference":{"byPath":{"path":"../MyModel.SemanticModel"}}}`
 	report := LocalItem{Type: "Report", DisplayName: "MyReport", LogicalID: "lid-r",
-		Parts: []Part{{Path: "definition.pbir", Content: []byte(pbir)}}}
+		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
 	plan := BuildPlan([]LocalItem{report, model}, nil) // ordered: model then report
-	res, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	for _, r := range res {
-		if r.Err != nil {
-			t.Fatalf("item %s failed: %v", r.Name, r.Err)
-		}
-	}
+	modelsByWS := map[string]map[string]string{}
+	runRebindPass(t, rf, target, plan, modelsByWS)
+
 	if len(rf.rebinds) != 1 {
 		t.Fatalf("want 1 rebind, got %d", len(rf.rebinds))
 	}
-	if rf.rebinds[0][1] != "MyModel-newid" {
-		t.Errorf("rebind dataset = %q, want MyModel-newid", rf.rebinds[0][1])
+	if rf.rebinds[0][0] != "ws-test" {
+		t.Errorf("rebind workspace = %q, want ws-test", rf.rebinds[0][0])
+	}
+	if rf.rebinds[0][2] != "MyModel-newid" {
+		t.Errorf("rebind dataset = %q, want MyModel-newid", rf.rebinds[0][2])
+	}
+}
+
+// findRebind reports whether a RebindReport(ws, report, dataset) call was made.
+func findRebind(rf *recordingFabric, ws, reportID, datasetID string) bool {
+	for _, rb := range rf.rebinds {
+		if rb[0] == ws && rb[1] == reportID && rb[2] == datasetID {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRebindReportsCrossGroupSameWorkspace proves fix #2: a model deployed in
+// one group and a report in a SEPARATE group, both targeting the same
+// workspace, still rebind correctly — regardless of which group deploys first,
+// because modelsByWS is accumulated across every Execute call.
+func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	model := LocalItem{Type: "SemanticModel", DisplayName: "MyModel", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "MyReport", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
+
+	// modelGroupFirst controls the order the two single-item groups are executed.
+	run := func(t *testing.T, modelGroupFirst bool) {
+		rf := &recordingFabric{fakeFabric: fakeFabric{
+			workspaces: []fabric.Workspace{target},
+			itemsByWS:  map[string][]fabric.Item{},
+		}}
+		groups := [][]LocalItem{{report}, {model}}
+		if modelGroupFirst {
+			groups = [][]LocalItem{{model}, {report}}
+		}
+		modelsByWS := map[string]map[string]string{}
+		var pending []PendingReportRebind
+		for _, g := range groups {
+			plan := BuildPlan(g, nil)
+			_, p, err := Execute(rf, "tok", target, "TEST", plan, Parameters{}, nil, modelsByWS)
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			pending = append(pending, p...)
+		}
+		// No rebind happens inline during a per-group Execute anymore.
+		if len(rf.rebinds) != 0 {
+			t.Fatalf("rebind must not happen inline during Execute, got %d", len(rf.rebinds))
+		}
+		outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+		for _, o := range outcomes {
+			if o.Err != nil {
+				t.Fatalf("rebind outcome error: %v", o.Err)
+			}
+		}
+		if !findRebind(rf, "ws-test", "MyReport-newid", "MyModel-newid") {
+			t.Errorf("report not rebound to its model GUID; rebinds=%v", rf.rebinds)
+		}
+	}
+
+	t.Run("report group first", func(t *testing.T) { run(t, false) })
+	t.Run("model group first", func(t *testing.T) { run(t, true) })
+}
+
+// TestRebindReportsWorkspaceIsolation proves a model named "X" in workspace W1
+// must NOT bind a report that references "X" but lives in workspace W2.
+func TestRebindReportsWorkspaceIsolation(t *testing.T) {
+	w1 := fabric.Workspace{ID: "ws-1", DisplayName: "W1"}
+	w2 := fabric.Workspace{ID: "ws-2", DisplayName: "W2"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{w1, w2},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	model := LocalItem{Type: "SemanticModel", DisplayName: "X", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "Rep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("X")}}}
+
+	modelsByWS := map[string]map[string]string{}
+	var pending []PendingReportRebind
+	// Model deploys to W1; report deploys to W2.
+	_, _, err := Execute(rf, "tok", w1, "TEST", BuildPlan([]LocalItem{model}, nil), Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute w1: %v", err)
+	}
+	_, p, err := Execute(rf, "tok", w2, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute w2: %v", err)
+	}
+	pending = append(pending, p...)
+
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	if len(rf.rebinds) != 0 {
+		t.Fatalf("model in W1 must not bind a report in W2, got rebinds=%v", rf.rebinds)
+	}
+	// The report should carry a "not found in target workspace" warning, not be silent.
+	if len(outcomes) != 1 || outcomes[0].Warning == "" {
+		t.Fatalf("want 1 outcome with a warning, got %+v", outcomes)
+	}
+	if !strings.Contains(outcomes[0].Warning, "not found in target workspace") {
+		t.Errorf("warning should explain the model is missing in the target ws, got %q", outcomes[0].Warning)
+	}
+}
+
+// TestRebindReportsByConnectionWarns proves fix #3: a report using a
+// byConnection dataset reference is NOT silently skipped — it gets a Warning.
+func TestRebindReportsByConnectionWarns(t *testing.T) {
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{target},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	report := LocalItem{Type: "Report", DisplayName: "ConnRep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+
+	if len(rf.rebinds) != 0 {
+		t.Fatalf("byConnection report must NOT trigger a RebindReport, got %v", rf.rebinds)
+	}
+	if len(outcomes) != 1 || outcomes[0].Warning == "" {
+		t.Fatalf("byConnection report must produce a warning outcome, got %+v", outcomes)
+	}
+	if !strings.Contains(outcomes[0].Warning, "byConnection") {
+		t.Errorf("warning should name the byConnection reference, got %q", outcomes[0].Warning)
+	}
+	if outcomes[0].ReportID != "ConnRep-newid" {
+		t.Errorf("outcome must carry the report's deployed GUID, got %q", outcomes[0].ReportID)
+	}
+}
+
+// TestRebindReportsModelMissingWarns: byPath reference whose model name is not
+// in the target workspace's map → Warning, no rebind (e.g. the model wasn't
+// part of this deploy selection).
+func TestRebindReportsModelMissingWarns(t *testing.T) {
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{target},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	report := LocalItem{Type: "Report", DisplayName: "Orphan", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MissingModel")}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{report}, nil), Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+
+	if len(rf.rebinds) != 0 {
+		t.Fatalf("missing model must not rebind, got %v", rf.rebinds)
+	}
+	if len(outcomes) != 1 || outcomes[0].Warning == "" {
+		t.Fatalf("missing model must warn, got %+v", outcomes)
+	}
+	if !strings.Contains(outcomes[0].Warning, `"MissingModel"`) {
+		t.Errorf("warning should name the missing model, got %q", outcomes[0].Warning)
+	}
+}
+
+// TestRebindReportsErrorSetsErr: a RebindReport API failure must surface as an
+// Err outcome (so runDeploy folds it into Result.Err), not a warning.
+func TestRebindReportsErrorSetsErr(t *testing.T) {
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{
+		fakeFabric: fakeFabric{
+			workspaces: []fabric.Workspace{target},
+			itemsByWS:  map[string][]fabric.Item{},
+		},
+		rebindErr: fmt.Errorf("403 forbidden"),
+	}
+	model := LocalItem{Type: "SemanticModel", DisplayName: "MyModel", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "MyReport", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, "TEST", BuildPlan([]LocalItem{model, report}, nil), Parameters{}, nil, modelsByWS)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	if len(outcomes) != 1 || outcomes[0].Err == nil {
+		t.Fatalf("rebind failure must produce an Err outcome, got %+v", outcomes)
+	}
+}
+
+// TestReportDatasetRefKinds documents the three-way parse of definition.pbir.
+func TestReportDatasetRefKinds(t *testing.T) {
+	byPath := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
+	if ref := reportDatasetRef(byPath); ref.Kind != refByPath || ref.ModelName != "MyModel" {
+		t.Errorf("byPath = %+v, want {refByPath MyModel}", ref)
+	}
+	byConn := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
+	if ref := reportDatasetRef(byConn); ref.Kind != refByConnection {
+		t.Errorf("byConnection = %+v, want refByConnection", ref)
+	}
+	none := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: []byte(`{}`)}}}
+	if ref := reportDatasetRef(none); ref.Kind != refNone {
+		t.Errorf("empty pbir = %+v, want refNone", ref)
+	}
+	noPbir := LocalItem{Type: "Report", Parts: []Part{{Path: "report.json", Content: []byte(`{}`)}}}
+	if ref := reportDatasetRef(noPbir); ref.Kind != refNone {
+		t.Errorf("no pbir = %+v, want refNone", ref)
 	}
 }
 
