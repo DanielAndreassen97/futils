@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"sync/atomic"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -75,67 +76,84 @@ type ReportRebindOutcome struct {
 //
 // A per-item error is captured in its Result (the run continues); Execute only
 // returns a top-level error for a setup failure that aborts everything.
-func Execute(client FabricClient, token string, target fabric.Workspace, plan []PlannedItem, rb *Rebinder, modelsByWS map[string]map[string]string) ([]Result, []PendingReportRebind, error) {
+//
+// done, when non-nil, is incremented atomically once per plan item processed
+// (success or failure) so a spinner can show live "Publishing X/Y" progress.
+// The counter advances even for items that error out, matching the publish
+// loop's "we're done with this item, on to the next" semantics.
+func Execute(client FabricClient, token string, target fabric.Workspace, plan []PlannedItem, rb *Rebinder, modelsByWS map[string]map[string]string, done *int64) ([]Result, []PendingReportRebind, error) {
 	resolver := NewResolver(client, token, target)
 	idMap := map[string]string{} // logicalId -> deployed GUID
 	results := make([]Result, 0, len(plan))
 	var pending []PendingReportRebind
 
+	// markDone bumps the live progress counter once per item; deferred inside the
+	// per-item closure so it fires on every exit path (build error, publish error,
+	// or success) without repeating it at each `continue`.
+	markDone := func() {
+		if done != nil {
+			atomic.AddInt64(done, 1)
+		}
+	}
+
 	for _, p := range plan {
-		res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
+		func() {
+			defer markDone()
+			res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
 
-		def, err := buildDefinition(p.Item, idMap, resolver, rb)
-		if err != nil {
-			res.Err = err
-			results = append(results, res)
-			continue
-		}
-
-		var deployedID string
-		switch p.Action {
-		case ActionUpdate:
-			err = client.UpdateItemDefinition(token, target.ID, p.ExistingID, def)
-			deployedID = p.ExistingID
-		default:
-			var created fabric.Item
-			created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def)
-			deployedID = created.ID
-		}
-		if err != nil {
-			res.Err = fmt.Errorf("%s %s: %w", p.Action, p.Item.Type, err)
-			results = append(results, res)
-			continue
-		}
-		res.ID = deployedID
-
-		// Item metadata (description) lives in .platform, which is never part of
-		// the published definition — set it explicitly so git stays the source of
-		// truth for descriptions, mirroring fabric-cicd. A failure here is
-		// non-fatal: the definition is already published, so it's recorded as a
-		// Warning (not Err) — the item still counts as deployed, and a real
-		// failure later (e.g. a report rebind) can still set Err.
-		if err := client.UpdateItem(token, target.ID, deployedID, p.Item.DisplayName, p.Item.Description); err != nil {
-			res.Warning = fmt.Sprintf("description not synced: %v", err)
-		}
-
-		if p.Item.LogicalID != "" {
-			idMap[p.Item.LogicalID] = deployedID
-		}
-		if p.Item.Type == "SemanticModel" && modelsByWS != nil {
-			if modelsByWS[target.ID] == nil {
-				modelsByWS[target.ID] = map[string]string{}
+			def, err := buildDefinition(p.Item, idMap, resolver, rb)
+			if err != nil {
+				res.Err = err
+				results = append(results, res)
+				return
 			}
-			modelsByWS[target.ID][p.Item.DisplayName] = deployedID
-		}
-		if p.Item.Type == "Report" {
-			pending = append(pending, PendingReportRebind{
-				WorkspaceID: target.ID,
-				ReportID:    deployedID,
-				ReportName:  p.Item.DisplayName,
-				Ref:         reportDatasetRef(p.Item),
-			})
-		}
-		results = append(results, res)
+
+			var deployedID string
+			switch p.Action {
+			case ActionUpdate:
+				err = client.UpdateItemDefinition(token, target.ID, p.ExistingID, def)
+				deployedID = p.ExistingID
+			default:
+				var created fabric.Item
+				created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def)
+				deployedID = created.ID
+			}
+			if err != nil {
+				res.Err = fmt.Errorf("%s %s: %w", p.Action, p.Item.Type, err)
+				results = append(results, res)
+				return
+			}
+			res.ID = deployedID
+
+			// Item metadata (description) lives in .platform, which is never part of
+			// the published definition — set it explicitly so git stays the source of
+			// truth for descriptions, mirroring fabric-cicd. A failure here is
+			// non-fatal: the definition is already published, so it's recorded as a
+			// Warning (not Err) — the item still counts as deployed, and a real
+			// failure later (e.g. a report rebind) can still set Err.
+			if err := client.UpdateItem(token, target.ID, deployedID, p.Item.DisplayName, p.Item.Description); err != nil {
+				res.Warning = fmt.Sprintf("description not synced: %v", err)
+			}
+
+			if p.Item.LogicalID != "" {
+				idMap[p.Item.LogicalID] = deployedID
+			}
+			if p.Item.Type == "SemanticModel" && modelsByWS != nil {
+				if modelsByWS[target.ID] == nil {
+					modelsByWS[target.ID] = map[string]string{}
+				}
+				modelsByWS[target.ID][p.Item.DisplayName] = deployedID
+			}
+			if p.Item.Type == "Report" {
+				pending = append(pending, PendingReportRebind{
+					WorkspaceID: target.ID,
+					ReportID:    deployedID,
+					ReportName:  p.Item.DisplayName,
+					Ref:         reportDatasetRef(p.Item),
+				})
+			}
+			results = append(results, res)
+		}()
 	}
 	return results, pending, nil
 }

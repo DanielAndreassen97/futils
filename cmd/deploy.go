@@ -395,14 +395,15 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	fabric.ResetThrottleFirst() // scope the "first 429" detail to this group's compare
 	render := func() string {
 		msg := fmt.Sprintf("Comparing %d/%d item(s) in %s", atomic.LoadInt64(&done), total, target.DisplayName)
-		if active := fabric.ActiveThrottles(); active > 0 {
-			msg += fmt.Sprintf(" — rate-limited, %d waiting", active)
+		if status := throttleStatus(int(fabric.ActiveThrottles()), fabric.ThrottleRemaining(), fabric.ThrottleTotal(), fabric.ThrottleAttempt(), fabric.MaxThrottleRetries()); status != "" {
+			return msg + status
 		}
 		return msg + "..."
 	}
-	// The spinner repaints render() on every frame, so the "rate-limited, N
-	// waiting" gauge stays fresh even during a 429 stall — when every worker is
-	// sleeping and the done counter is frozen, the repaint still reflects it.
+	// The spinner repaints render() on every frame, so the throttle suffix (green
+	// countdown bar + retry + waiting count) stays fresh even during a 429 stall —
+	// when every worker is sleeping and the done counter is frozen, the repaint
+	// still animates the bar toward the retry deadline.
 	sp := ui.NewSpinner(render())
 	sp.SetMessageFunc(render)
 	sp.Start()
@@ -659,9 +660,21 @@ func runDeploy(
 				continue
 			}
 			plan := deploy.BuildPlan(items, g.Deployed)
-			sp := ui.NewSpinner(fmt.Sprintf("Publishing to %s...", g.Target.DisplayName))
+			// done advances once per published item (Execute increments it); the
+			// render func reads it concurrently every frame, so the spinner shows
+			// "Publishing X/Y" live and — when a 429 stalls the workers — the green
+			// countdown bar instead of a frozen line.
+			var done int64
+			total := len(plan)
+			ws := g.Target.DisplayName
+			renderPublish := func() string {
+				return fmt.Sprintf("Publishing %d/%d to %s", atomic.LoadInt64(&done), total, ws) +
+					throttleStatus(int(fabric.ActiveThrottles()), fabric.ThrottleRemaining(), fabric.ThrottleTotal(), fabric.ThrottleAttempt(), fabric.MaxThrottleRetries())
+			}
+			sp := ui.NewSpinner(renderPublish())
+			sp.SetMessageFunc(renderPublish)
 			sp.Start()
-			results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS)
+			results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS, &done)
 			sp.Stop()
 			allResults = append(allResults, results...)
 			pending = append(pending, groupPending...)

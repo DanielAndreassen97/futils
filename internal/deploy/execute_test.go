@@ -21,6 +21,7 @@ type recordingFabric struct {
 	metaUpdates   []metaUpdate                 // UpdateItem (PATCH) calls
 	deletes       []string                     // DeleteItem(id) calls
 	updateItemErr error                        // when set, UpdateItem returns it (description-sync failure)
+	createErr     error                        // when set, CreateItem returns it (publish failure)
 }
 
 type metaUpdate struct{ id, displayName, description string }
@@ -31,6 +32,9 @@ func (r *recordingFabric) UpdateItem(token, ws, id, displayName, description str
 }
 
 func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
+	if r.createErr != nil {
+		return fabric.Item{}, r.createErr
+	}
 	r.created = append(r.created, *def)
 	r.createdNames = append(r.createdNames, name)
 	return fabric.Item{ID: name + "-newid", DisplayName: name, Type: typ, WorkspaceID: ws}, nil
@@ -80,7 +84,7 @@ func TestExecuteEncodesPartsAsBase64(t *testing.T) {
 		},
 	}}
 
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -104,7 +108,7 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -134,7 +138,7 @@ func TestExecuteSetsDescriptionOnCreate(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, plan, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 {
@@ -158,7 +162,7 @@ func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
 			Description: "Updated desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, plan, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
@@ -181,7 +185,7 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	results, _, err := Execute(rf, "tok", target, plan, nil, nil)
+	results, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -201,6 +205,72 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestExecuteDoneCounterIncrements drives a multi-item plan (one of which fails
+// to publish) and asserts the done counter lands at len(plan): it must advance
+// once per item, on the failure path as well as success, so the spinner's
+// "Publishing X/Y" can reach Y even when some items error.
+func TestExecuteDoneCounterIncrements(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "a",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}},
+		// No Parts → buildDefinition path still produces a definition, but give it a
+		// part so it publishes cleanly; the counter must advance regardless.
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB_B", LogicalID: "b",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("y=2")}}}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB_C", LogicalID: "c",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("z=3")}}}},
+	}
+
+	var done int64
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, &done)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res) != len(plan) {
+		t.Fatalf("want %d results, got %d", len(plan), len(res))
+	}
+	if done != int64(len(plan)) {
+		t.Errorf("done counter = %d, want %d (one per item)", done, len(plan))
+	}
+}
+
+// TestExecuteDoneCounterAdvancesOnFailure confirms the counter advances even
+// when an item's publish errors out (the early-return path inside the loop).
+func TestExecuteDoneCounterAdvancesOnFailure(t *testing.T) {
+	rf := &recordingFabric{
+		fakeFabric: fakeFabric{
+			workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+			itemsByWS:  map[string][]fabric.Item{},
+		},
+		createErr: fmt.Errorf("publish boom"),
+	}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	// CreateItem errors, exercising the error-`return` path inside the per-item
+	// closure — the counter must still advance.
+	plan := []PlannedItem{{
+		Action: ActionCreate,
+		Item: LocalItem{Type: "Notebook", DisplayName: "NB_X", LogicalID: "x",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
+	}}
+
+	var done int64
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, &done)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res) != 1 || res[0].Err == nil {
+		t.Fatalf("expected one failed result, got %+v", res)
+	}
+	if done != 1 {
+		t.Errorf("done counter = %d, want 1 (must advance on failure path too)", done)
+	}
+}
+
 // byPathPBIR / byConnectionPBIR build the two PBIR dataset-reference shapes.
 func byPathPBIR(modelName string) []byte {
 	return []byte(`{"datasetReference":{"byPath":{"path":"../` + modelName + `.SemanticModel"}}}`)
@@ -215,7 +285,7 @@ func byConnectionPBIR() []byte {
 // mirroring how runDeploy threads the two phases.
 func runRebindPass(t *testing.T, rf *recordingFabric, target fabric.Workspace, plan []PlannedItem, modelsByWS map[string]map[string]string) ([]Result, []ReportRebindOutcome) {
 	t.Helper()
-	res, pending, err := Execute(rf, "tok", target, plan, nil, modelsByWS)
+	res, pending, err := Execute(rf, "tok", target, plan, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -290,7 +360,7 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 		var pending []PendingReportRebind
 		for _, g := range groups {
 			plan := BuildPlan(g, nil)
-			_, p, err := Execute(rf, "tok", target, plan, nil, modelsByWS)
+			_, p, err := Execute(rf, "tok", target, plan, nil, modelsByWS, nil)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
@@ -332,11 +402,11 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	modelsByWS := map[string]map[string]string{}
 	var pending []PendingReportRebind
 	// Model deploys to W1; report deploys to W2.
-	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil), nil, modelsByWS)
+	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w1: %v", err)
 	}
-	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
+	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w2: %v", err)
 	}
@@ -367,7 +437,7 @@ func TestRebindReportsByConnectionWarns(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -400,7 +470,7 @@ func TestRebindReportsModelMissingWarns(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MissingModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -434,7 +504,7 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

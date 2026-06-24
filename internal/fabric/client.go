@@ -143,6 +143,10 @@ func ThrottleAttempt() int {
 	return int(atomic.LoadInt64(&throttleAttemptCur))
 }
 
+// MaxThrottleRetries returns the cap on 429 retries so a UI can show "retry N/M"
+// without hardcoding the constant.
+func MaxThrottleRetries() int { return maxThrottleRetries }
+
 // noteThrottle records the backoff deadline and metadata atomically. It uses a
 // CAS loop to keep the LATEST/LONGEST deadline so a faster goroutine never
 // overwrites a longer wait set by a slower one.
