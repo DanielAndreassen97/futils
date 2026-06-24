@@ -9,9 +9,9 @@ import (
 
 // DEV-baseline GUIDs baked into the git notebook.
 const (
-	devConfigLH   = "11111111-1111-1111-1111-111111111111"
-	devConfigWS   = "22222222-2222-2222-2222-222222222222"
-	devSilverLH   = "33333333-3333-3333-3333-333333333333"
+	devConfigLH = "11111111-1111-1111-1111-111111111111"
+	devConfigWS = "22222222-2222-2222-2222-222222222222"
+	devSilverLH = "33333333-3333-3333-3333-333333333333"
 )
 
 func rebindNotebook(defaultLH, defaultWS, defaultName, knownID string) []byte {
@@ -46,8 +46,8 @@ func newRebindFixture(t *testing.T, overrides map[string]Override) *Rebinder {
 			{ID: "test-data", DisplayName: "DP - TEST - Data"},
 		},
 		itemsByWS: map[string][]fabric.Item{
-			"dev-config": {{ID: devConfigLH, DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
-			"dev-data":   {{ID: devSilverLH, DisplayName: "LH_Silver", Type: "Lakehouse"}},
+			"dev-config":  {{ID: devConfigLH, DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+			"dev-data":    {{ID: devSilverLH, DisplayName: "LH_Silver", Type: "Lakehouse"}},
 			"test-config": {{ID: "test-config-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 			"test-data":   {{ID: "test-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}},
 		},
