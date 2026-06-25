@@ -426,17 +426,9 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		}(j, idx)
 	}
 	wg.Wait()
-	sp.Stop()
-
-	// One-line, after-the-fact note when Fabric rate-limited us during the
-	// compare — explains why it was slow without spamming a line per 429.
-	if throttled := fabric.ThrottleHits() - baseThrottle; throttled > 0 {
-		msg := fmt.Sprintf("Fabric rate-limited the compare %d time(s) — that's the slowness, not a hang.", throttled)
-		if info := fabric.FirstThrottle(); info != "" {
-			msg += "\n  first 429: " + info
-		}
-		fmt.Println(warningStyle.Render(msg))
-	}
+	// sp.Stop() is NOT called here — the spinner stays live through the compare
+	// loop below so any 429 that hits SubstituteParts (which makes live API calls)
+	// still shows the throttle countdown instead of looking like a silent hang.
 
 	// Map each source logicalId to its deployed GUID so cross-item references in
 	// the local definition match what's live in the workspace.
@@ -460,6 +452,10 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	// Done serially it freezes the spinner on a big workspace, so fold it into
 	// the same bounded pool the fetch used. The shared resolver and rb have
 	// lazy caches (guarded by their own mutexes), so concurrent use is safe.
+	//
+	// SubstituteParts makes live API calls (e.g. name-based rebind lookups), so
+	// the spinner remains active through this loop: a 429 here shows the throttle
+	// countdown rather than looking like a hang.
 	//
 	// Each worker writes ONLY its own pre-sized slot — no shared appends, no
 	// shared map/field writes — then a serial merge pass folds the slots in
@@ -522,6 +518,18 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		}(j, idx)
 	}
 	cwg.Wait()
+	sp.Stop()
+
+	// One-line, after-the-fact note when Fabric rate-limited us during the
+	// compare — explains why it was slow without spamming a line per 429.
+	// Printed after sp.Stop() so it doesn't write over a live spinner frame.
+	if throttled := fabric.ThrottleHits() - baseThrottle; throttled > 0 {
+		msg := fmt.Sprintf("Fabric rate-limited the compare %d time(s) — that's the slowness, not a hang.", throttled)
+		if info := fabric.FirstThrottle(); info != "" {
+			msg += "\n  first 429: " + info
+		}
+		fmt.Println(warningStyle.Render(msg))
+	}
 
 	// Serial merge in existsIdx order: preserves the exact accumulation order
 	// the old loop produced. SubstituteParts always returns its outcome

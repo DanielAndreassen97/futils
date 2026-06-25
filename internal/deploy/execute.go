@@ -163,13 +163,15 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 // the union of models published across every group, keyed by target workspace,
 // so a model and its report can sit in different folders/groups and still bind —
 // while a model named "X" in one workspace can never bind a report in another
-// (the workspace key isolates them). Nothing is silent:
+// (the workspace key isolates them).
 //   - byPath, model found in the report's workspace → RebindReport; an API
 //     failure becomes an Err outcome.
-//   - byPath, model NOT in that workspace → a Warning (report left on its source
-//     dataset), never a silent skip.
+//   - byPath, model NOT in modelsByWS → silent skip. The most common case is an
+//     incremental deploy where only the report changed and its SemanticModel was
+//     Unchanged (never published this run); the model is already live and the
+//     report is already correctly bound — emitting a Warning here is a false alarm.
 //   - byConnection → a Warning (cross-environment rebind unsupported), so the
-//     user knows to verify the binding manually (fix #3).
+//     user knows to verify the binding manually.
 //   - no dataset reference → no outcome (nothing to rebind).
 func RebindReports(client FabricClient, token string, modelsByWS map[string]map[string]string, pending []PendingReportRebind) []ReportRebindOutcome {
 	var outcomes []ReportRebindOutcome
@@ -178,10 +180,8 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 		case refByPath:
 			datasetID, ok := modelsByWS[pr.WorkspaceID][pr.Ref.ModelName]
 			if !ok {
-				outcomes = append(outcomes, ReportRebindOutcome{
-					ReportID: pr.ReportID,
-					Warning:  fmt.Sprintf("dataset model %q not found in target workspace — report left bound to its source dataset", pr.Ref.ModelName),
-				})
+				// Model was not published in this run (e.g. Unchanged) — the report
+				// is already correctly bound in the target; skip silently.
 				continue
 			}
 			if err := client.RebindReport(token, pr.WorkspaceID, pr.ReportID, datasetID); err != nil {

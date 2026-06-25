@@ -387,6 +387,9 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 
 // TestRebindReportsWorkspaceIsolation proves a model named "X" in workspace W1
 // must NOT bind a report that references "X" but lives in workspace W2.
+// The report is silently skipped (no Warning, no RebindReport call) because the
+// model is absent from modelsByWS for W2 — the same silent-skip rule as an
+// incremental deploy where the model was Unchanged.
 func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	w1 := fabric.Workspace{ID: "ws-1", DisplayName: "W1"}
 	w2 := fabric.Workspace{ID: "ws-2", DisplayName: "W2"}
@@ -416,12 +419,9 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("model in W1 must not bind a report in W2, got rebinds=%v", rf.rebinds)
 	}
-	// The report should carry a "not found in target workspace" warning, not be silent.
-	if len(outcomes) != 1 || outcomes[0].Warning == "" {
-		t.Fatalf("want 1 outcome with a warning, got %+v", outcomes)
-	}
-	if !strings.Contains(outcomes[0].Warning, "not found in target workspace") {
-		t.Errorf("warning should explain the model is missing in the target ws, got %q", outcomes[0].Warning)
+	// Silent skip: model is not in W2's modelsByWS entry, so no outcome is produced.
+	if len(outcomes) != 0 {
+		t.Fatalf("cross-workspace model-missing must produce no outcome (silent skip), got %+v", outcomes)
 	}
 }
 
@@ -457,10 +457,13 @@ func TestRebindReportsByConnectionWarns(t *testing.T) {
 	}
 }
 
-// TestRebindReportsModelMissingWarns: byPath reference whose model name is not
-// in the target workspace's map → Warning, no rebind (e.g. the model wasn't
-// part of this deploy selection).
-func TestRebindReportsModelMissingWarns(t *testing.T) {
+// TestRebindReportsModelMissingSkipsSilently: a byPath report whose model is
+// NOT in modelsByWS (e.g. only the report was in the deploy selection, the
+// SemanticModel was Unchanged and never published this run) must be silently
+// skipped — no Warning outcome, no RebindReport call. The report is already
+// correctly bound in the target workspace; emitting a warning every time is a
+// false alarm.
+func TestRebindReportsModelMissingSkipsSilently(t *testing.T) {
 	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{target},
@@ -479,11 +482,9 @@ func TestRebindReportsModelMissingWarns(t *testing.T) {
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("missing model must not rebind, got %v", rf.rebinds)
 	}
-	if len(outcomes) != 1 || outcomes[0].Warning == "" {
-		t.Fatalf("missing model must warn, got %+v", outcomes)
-	}
-	if !strings.Contains(outcomes[0].Warning, `"MissingModel"`) {
-		t.Errorf("warning should name the missing model, got %q", outcomes[0].Warning)
+	// Silent skip: no outcome at all when model is absent from modelsByWS.
+	if len(outcomes) != 0 {
+		t.Fatalf("byPath model-missing must produce no outcome (silent skip), got %+v", outcomes)
 	}
 }
 
