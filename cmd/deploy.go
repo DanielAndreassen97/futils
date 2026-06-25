@@ -395,7 +395,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	fabric.ResetThrottleFirst() // scope the "first 429" detail to this group's compare
 	render := func() string {
 		msg := fmt.Sprintf("Comparing %d/%d item(s) in %s", atomic.LoadInt64(&done), total, target.DisplayName)
-		if status := throttleStatus(int(fabric.ActiveThrottles()), fabric.ThrottleRemaining(), fabric.ThrottleTotal(), fabric.ThrottleAttempt(), fabric.MaxThrottleRetries()); status != "" {
+		if status := liveThrottleStatus(); status != "" {
 			return msg + status
 		}
 		return msg + "..."
@@ -677,7 +677,7 @@ func runDeploy(
 			ws := g.Target.DisplayName
 			renderPublish := func() string {
 				return fmt.Sprintf("Publishing %d/%d to %s", atomic.LoadInt64(&done), total, ws) +
-					throttleStatus(int(fabric.ActiveThrottles()), fabric.ThrottleRemaining(), fabric.ThrottleTotal(), fabric.ThrottleAttempt(), fabric.MaxThrottleRetries())
+					liveThrottleStatus()
 			}
 			sp := ui.NewSpinner(renderPublish())
 			sp.SetMessageFunc(renderPublish)

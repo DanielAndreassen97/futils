@@ -39,7 +39,11 @@ const (
 	// payloads are base64, so this is generous.
 	maxResponseSize = 10 << 20
 
-	maxThrottleRetries = 5
+	// maxThrottleRetries caps 429 retries per request. The throttle backoff is
+	// min(Retry-After-or-60, 10·2^attempt) (front-loaded 10/20/40s) and 8 retries
+	// gives ≈7 min total under sustained throttling, close to fabric-cicd's 300s+
+	// budget, so a transiently-throttled deploy doesn't abort early.
+	maxThrottleRetries = 8
 	maxThrottleWait    = 60 * time.Second
 )
 
@@ -103,15 +107,19 @@ func logHTTP(method string, status int, dur time.Duration, rawURL string) {
 var (
 	throttleHits   int64
 	throttleActive int64
+)
 
-	// throttleDeadlineNanos, throttleTotalMillis, and throttleAttemptCur expose
-	// live backoff state so a UI can show how long to wait and which retry we're
-	// on without polling sleeps. noteThrottle keeps the LATEST/LONGEST deadline
-	// via a CAS loop so concurrent goroutines never clobber a longer wait with a
-	// shorter one.
-	throttleDeadlineNanos int64 // unix nanos of when current backoff ends
-	throttleTotalMillis   int64 // duration of current/last backoff in ms
-	throttleAttemptCur    int64 // 1-based attempt number of current/last backoff
+// throttleSt is the mutex-guarded live backoff state. A single lock acquisition
+// across all three fields makes every snapshot torn-free: no reader can see
+// remaining > total even if a 429 lands between two separate reads.
+//
+// thrDeadline stores a Go time.Time so time.Until uses the monotonic clock,
+// immunising the countdown from wall-clock adjustments (NTP steps, DST changes).
+var (
+	throttleStMu sync.Mutex
+	thrDeadline  time.Time     // monotonic; zero when no backoff is active
+	thrTotal     time.Duration // duration of the current/longest backoff
+	thrAttempt   int           // 1-based attempt number of current/longest backoff
 )
 
 // ThrottleHits returns the running total of 429 backoffs. Callers typically
@@ -123,47 +131,76 @@ func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
 // back to zero once the throttling clears, so a UI signal won't get stuck on.
 func ActiveThrottles() int64 { return atomic.LoadInt64(&throttleActive) }
 
-// ThrottleRemaining returns the time until the current backoff expires.
-func ThrottleRemaining() time.Duration {
-	dl := atomic.LoadInt64(&throttleDeadlineNanos)
-	rem := dl - time.Now().UnixNano()
-	if rem <= 0 {
-		return 0
+// ThrottleSnapshot returns a torn-free view of the live throttle state: active
+// (from the atomic gauge), remaining (time.Until the current deadline, ≥0),
+// total (the duration of the current/longest backoff), and attempt (1-based).
+// All three duration/attempt fields are read under a single lock acquisition so
+// the caller can never observe remaining > total.
+func ThrottleSnapshot() (active int, remaining, total time.Duration, attempt int) {
+	active = int(atomic.LoadInt64(&throttleActive))
+	throttleStMu.Lock()
+	if thrDeadline.IsZero() {
+		throttleStMu.Unlock()
+		return active, 0, 0, 0
 	}
-	return time.Duration(rem)
+	rem := time.Until(thrDeadline)
+	if rem < 0 {
+		rem = 0
+	}
+	total = thrTotal
+	attempt = thrAttempt
+	throttleStMu.Unlock()
+	return active, rem, total, attempt
+}
+
+// ThrottleRemaining returns the time until the current backoff expires.
+// Reads the shared state under the lock for consistency. Use ThrottleSnapshot
+// when you also need total/attempt in the same frame.
+func ThrottleRemaining() time.Duration {
+	_, rem, _, _ := ThrottleSnapshot()
+	return rem
 }
 
 // ThrottleTotal returns the total wait duration of the current/last backoff.
 func ThrottleTotal() time.Duration {
-	return time.Duration(atomic.LoadInt64(&throttleTotalMillis)) * time.Millisecond
+	_, _, tot, _ := ThrottleSnapshot()
+	return tot
 }
 
 // ThrottleAttempt returns the 1-based attempt number of the current/last backoff.
 func ThrottleAttempt() int {
-	return int(atomic.LoadInt64(&throttleAttemptCur))
+	_, _, _, a := ThrottleSnapshot()
+	return a
 }
 
 // MaxThrottleRetries returns the cap on 429 retries so a UI can show "retry N/M"
 // without hardcoding the constant.
 func MaxThrottleRetries() int { return maxThrottleRetries }
 
-// noteThrottle records the backoff deadline and metadata atomically. It uses a
-// CAS loop to keep the LATEST/LONGEST deadline so a faster goroutine never
-// overwrites a longer wait set by a slower one.
+// noteThrottle records the backoff deadline and metadata under the lock. It
+// keeps the LONGEST active deadline so a concurrent goroutine with a shorter
+// wait never clobbers a longer one already in flight.
 func noteThrottle(d time.Duration, attempt int) {
-	deadline := time.Now().UnixNano() + d.Nanoseconds()
-	for {
-		old := atomic.LoadInt64(&throttleDeadlineNanos)
-		if deadline <= old {
-			// Another goroutine already holds a later deadline; leave it.
-			return
-		}
-		if atomic.CompareAndSwapInt64(&throttleDeadlineNanos, old, deadline) {
-			atomic.StoreInt64(&throttleTotalMillis, d.Milliseconds())
-			atomic.StoreInt64(&throttleAttemptCur, int64(attempt+1))
-			return
-		}
+	deadline := time.Now().Add(d)
+	throttleStMu.Lock()
+	if deadline.After(thrDeadline) {
+		thrDeadline = deadline
+		thrTotal = d
+		thrAttempt = attempt + 1
 	}
+	throttleStMu.Unlock()
+}
+
+// clearThrottleState zeros the shared backoff snapshot. Called when the last
+// active waiter finishes (throttleActive drops to 0) so the next 429 in a
+// later deploy group starts from a clean slate rather than inheriting an
+// already-expired deadline.
+func clearThrottleState() {
+	throttleStMu.Lock()
+	thrDeadline = time.Time{}
+	thrTotal = 0
+	thrAttempt = 0
+	throttleStMu.Unlock()
 }
 
 // firstThrottle captures the details of the first 429 seen since the last reset
@@ -723,7 +760,9 @@ func doGet(token, rawURL string) ([]byte, error) {
 			d := throttleDelay(retryAfter, attempt)
 			noteThrottle(d, attempt)
 			time.Sleep(d)
-			atomic.AddInt64(&throttleActive, -1)
+			if atomic.AddInt64(&throttleActive, -1) == 0 {
+				clearThrottleState()
+			}
 			continue
 		}
 		if status >= 400 {
@@ -826,7 +865,9 @@ func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, [
 			d := throttleDelay(retryAfter, attempt)
 			noteThrottle(d, attempt)
 			time.Sleep(d)
-			atomic.AddInt64(&throttleActive, -1)
+			if atomic.AddInt64(&throttleActive, -1) == 0 {
+				clearThrottleState()
+			}
 			continue
 		}
 		return resp, body, nil

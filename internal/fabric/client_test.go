@@ -4,7 +4,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -167,6 +166,10 @@ func TestThrottleDelayFabricCICD(t *testing.T) {
 		{"no-header-attempt-2", "", 2, 40 * time.Second},
 		{"no-header-attempt-3", "", 3, 60 * time.Second}, // min(60,80)=80→clamp 60
 		{"no-header-attempt-4", "", 4, 60 * time.Second}, // min(60,160)=160→clamp 60
+		// Attempts 5, 6, 7 — no header → 60s (10·2^a saturated, clamp to 60)
+		{"no-header-attempt-5", "", 5, 60 * time.Second},
+		{"no-header-attempt-6", "", 6, 60 * time.Second},
+		{"no-header-attempt-7", "", 7, 60 * time.Second},
 		// Retry-After=5: always wins
 		{"retry-after-5-attempt-0", "5", 0, 5 * time.Second}, // min(5,10)=5
 		{"retry-after-5-attempt-2", "5", 2, 5 * time.Second}, // min(5,40)=5
@@ -188,10 +191,8 @@ func TestThrottleDelayFabricCICD(t *testing.T) {
 }
 
 func TestThrottleStateExposed(t *testing.T) {
-	// Reset state
-	atomic.StoreInt64(&throttleDeadlineNanos, 0)
-	atomic.StoreInt64(&throttleTotalMillis, 0)
-	atomic.StoreInt64(&throttleAttemptCur, 0)
+	t.Cleanup(clearThrottleState)
+	clearThrottleState()
 
 	noteThrottle(8*time.Second, 1)
 	if got := ThrottleAttempt(); got != 2 {
@@ -210,6 +211,55 @@ func TestThrottleStateExposed(t *testing.T) {
 	rem2 := ThrottleRemaining()
 	// The 8s deadline should still be in effect (well past 2s from now)
 	if rem2 < 5*time.Second {
-		t.Errorf("ThrottleRemaining() after short noteThrottle = %v, want still > 5s (CAS-max should preserve longer deadline)", rem2)
+		t.Errorf("ThrottleRemaining() after short noteThrottle = %v, want still > 5s (longest-wins should preserve longer deadline)", rem2)
+	}
+}
+
+// TestThrottleSnapshot verifies the torn-free view: a single lock acquisition
+// ensures remaining never exceeds total, the longest-deadline-wins rule, and
+// clearThrottleState zeroes all fields correctly.
+func TestThrottleSnapshot(t *testing.T) {
+	t.Cleanup(clearThrottleState)
+	clearThrottleState()
+
+	// After an 8s backoff at attempt 1: attempt field should be 2, total 8s, remaining ∈ (6s,8s].
+	noteThrottle(8*time.Second, 1)
+	_, rem, tot, attempt := ThrottleSnapshot()
+	if attempt != 2 {
+		t.Errorf("attempt = %d, want 2", attempt)
+	}
+	if tot != 8*time.Second {
+		t.Errorf("total = %v, want 8s", tot)
+	}
+	if rem <= 6*time.Second || rem > 8*time.Second {
+		t.Errorf("remaining = %v, want in (6s, 8s]", rem)
+	}
+	// Core invariant: remaining must never exceed total (no torn reads).
+	if rem > tot {
+		t.Errorf("remaining %v > total %v — torn read", rem, tot)
+	}
+
+	// Shorter backoff must NOT replace the longer deadline.
+	noteThrottle(2*time.Second, 0)
+	_, rem2, tot2, _ := ThrottleSnapshot()
+	if rem2 < 5*time.Second {
+		t.Errorf("remaining after shorter noteThrottle = %v, want > 5s (longest wins)", rem2)
+	}
+	if rem2 > tot2 {
+		t.Errorf("remaining %v > total %v after shorter noteThrottle — torn read", rem2, tot2)
+	}
+
+	// clearThrottleState must zero everything.
+	clearThrottleState()
+	_, remZ, totZ, attemptZ := ThrottleSnapshot()
+	if remZ != 0 || totZ != 0 || attemptZ != 0 {
+		t.Errorf("after clear: remaining=%v total=%v attempt=%d, want all zero", remZ, totZ, attemptZ)
+	}
+}
+
+// TestMaxThrottleRetries verifies the retry cap was raised to 8.
+func TestMaxThrottleRetries(t *testing.T) {
+	if got := MaxThrottleRetries(); got != 8 {
+		t.Errorf("MaxThrottleRetries() = %d, want 8", got)
 	}
 }

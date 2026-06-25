@@ -5,8 +5,18 @@ import (
 	"math"
 	"time"
 
+	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
 )
+
+// liveThrottleStatus reads the live 429-backoff state via a single torn-free
+// ThrottleSnapshot call and formats it for a spinner suffix. Both render
+// closures (compare and publish) use this so the consistent-snapshot path is
+// never bypassed.
+func liveThrottleStatus() string {
+	a, r, t, n := fabric.ThrottleSnapshot()
+	return throttleStatus(a, r, t, n, fabric.MaxThrottleRetries())
+}
 
 // throttleStatus formats the live 429-backoff suffix appended onto a spinner's
 // base message during a rate-limit stall. It's pure (no fabric globals) so the
