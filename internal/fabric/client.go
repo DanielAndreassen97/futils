@@ -126,11 +126,6 @@ var (
 // snapshot it before a batch and report the delta.
 func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
 
-// ActiveThrottles returns how many requests are currently waiting out a 429
-// backoff — non-zero means "actively rate-limited this moment", and it falls
-// back to zero once the throttling clears, so a UI signal won't get stuck on.
-func ActiveThrottles() int64 { return atomic.LoadInt64(&throttleActive) }
-
 // ThrottleSnapshot returns a torn-free view of the live throttle state: active
 // (from the atomic gauge), remaining (time.Until the current deadline, ≥0),
 // total (the duration of the current/longest backoff), and attempt (1-based).
@@ -151,26 +146,6 @@ func ThrottleSnapshot() (active int, remaining, total time.Duration, attempt int
 	attempt = thrAttempt
 	throttleStMu.Unlock()
 	return active, rem, total, attempt
-}
-
-// ThrottleRemaining returns the time until the current backoff expires.
-// Reads the shared state under the lock for consistency. Use ThrottleSnapshot
-// when you also need total/attempt in the same frame.
-func ThrottleRemaining() time.Duration {
-	_, rem, _, _ := ThrottleSnapshot()
-	return rem
-}
-
-// ThrottleTotal returns the total wait duration of the current/last backoff.
-func ThrottleTotal() time.Duration {
-	_, _, tot, _ := ThrottleSnapshot()
-	return tot
-}
-
-// ThrottleAttempt returns the 1-based attempt number of the current/last backoff.
-func ThrottleAttempt() int {
-	_, _, _, a := ThrottleSnapshot()
-	return a
 }
 
 // MaxThrottleRetries returns the cap on 429 retries so a UI can show "retry N/M"
@@ -195,11 +170,20 @@ func noteThrottle(d time.Duration, attempt int) {
 // active waiter finishes (throttleActive drops to 0) so the next 429 in a
 // later deploy group starts from a clean slate rather than inheriting an
 // already-expired deadline.
+//
+// The re-check of throttleActive under throttleStMu is intentional: between
+// the atomic.AddInt64 reaching 0 and this lock acquisition, a concurrent
+// worker may have started a new backoff (incrementing active and calling
+// noteThrottle, which also takes throttleStMu). By re-reading active while
+// holding the lock — serialized against noteThrottle — we avoid wiping a
+// freshly-set deadline.
 func clearThrottleState() {
 	throttleStMu.Lock()
-	thrDeadline = time.Time{}
-	thrTotal = 0
-	thrAttempt = 0
+	if atomic.LoadInt64(&throttleActive) == 0 {
+		thrDeadline = time.Time{}
+		thrTotal = 0
+		thrAttempt = 0
+	}
 	throttleStMu.Unlock()
 }
 

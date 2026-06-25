@@ -289,13 +289,12 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 		} else {
 			repl = sub.Literal
 		}
-		var next string
 		if sub.IsRegex {
 			re := sub.compiled
 			if re == nil {
 				continue // pattern failed to compile at SetSubstitutions time; skip
 			}
-			next = re.ReplaceAllString(s, repl)
+			next := re.ReplaceAllString(s, repl)
 			if next != s {
 				// Record one RebindChange per distinct concrete matched value so
 				// the summary shows what was actually replaced, not the raw pattern.
@@ -313,7 +312,7 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 				s = next
 			}
 		} else {
-			next = strings.ReplaceAll(s, sub.FindValue, repl)
+			next := strings.ReplaceAll(s, sub.FindValue, repl)
 			if next != s {
 				out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl})
 				s = next

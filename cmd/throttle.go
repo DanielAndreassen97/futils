@@ -20,8 +20,8 @@ func liveThrottleStatus() string {
 
 // throttleStatus formats the live 429-backoff suffix appended onto a spinner's
 // base message during a rate-limit stall. It's pure (no fabric globals) so the
-// formatting is unit-testable; the wiring reads fabric.ActiveThrottles() etc.
-// per frame and feeds them in.
+// formatting is unit-testable; the wiring calls fabric.ThrottleSnapshot() once
+// per frame and feeds the result in.
 //
 // active<=0 → "" (no throttling right now, append nothing). Otherwise it returns
 // a leading-space-separated suffix: a green progress bar filling toward retry, a

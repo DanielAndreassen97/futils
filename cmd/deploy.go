@@ -698,30 +698,7 @@ func runDeploy(
 		// report at its model and fold the outcome into the report's Result (matched
 		// by deployed GUID). Runs BEFORE the delete pass.
 		if outcomes := deploy.RebindReports(client, token, modelsByWS, pending); len(outcomes) > 0 {
-			byID := map[string]*deploy.Result{}
-			for i := range allResults {
-				if allResults[i].ID != "" {
-					byID[allResults[i].ID] = &allResults[i]
-				}
-			}
-			for _, o := range outcomes {
-				r, ok := byID[o.ReportID]
-				if !ok {
-					continue
-				}
-				if o.Err != nil {
-					r.Err = o.Err
-				}
-				if o.Warning != "" {
-					// Don't clobber a pre-existing Warning (e.g. description-sync) —
-					// combine both so neither is lost.
-					if r.Warning == "" {
-						r.Warning = o.Warning
-					} else {
-						r.Warning = r.Warning + "; " + o.Warning
-					}
-				}
-			}
+			allResults = foldRebindOutcomes(allResults, outcomes)
 		}
 	}
 
@@ -1248,6 +1225,43 @@ func pickTargetItem(client APIClient, token string, itemType string) (string, st
 	}
 	parts := strings.SplitN(chosen, "\x00", 2)
 	return parts[1], parts[0], nil // itemType, itemName
+}
+
+// appendWarning appends addition to existing warning, joining with "; " when
+// existing is non-empty. Prevents clobbering a pre-existing Warning (e.g. a
+// description-sync warning) when a later rebind step adds its own.
+func appendWarning(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	return existing + "; " + addition
+}
+
+// foldRebindOutcomes merges the post-deploy report-rebind outcomes back into
+// allResults, matched by deployed GUID. Each outcome either sets an error on
+// the corresponding Result or appends a warning (preserving any pre-existing
+// warning from the deploy pass). Items whose GUID isn't in allResults are
+// silently skipped (they were not in this run's cherry-pick set).
+func foldRebindOutcomes(results []deploy.Result, outcomes []deploy.ReportRebindOutcome) []deploy.Result {
+	byID := map[string]*deploy.Result{}
+	for i := range results {
+		if results[i].ID != "" {
+			byID[results[i].ID] = &results[i]
+		}
+	}
+	for _, o := range outcomes {
+		r, ok := byID[o.ReportID]
+		if !ok {
+			continue
+		}
+		if o.Err != nil {
+			r.Err = o.Err
+		}
+		if o.Warning != "" {
+			r.Warning = appendWarning(r.Warning, o.Warning)
+		}
+	}
+	return results
 }
 
 func printDeployResults(results []deploy.Result) {

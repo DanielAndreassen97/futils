@@ -33,10 +33,10 @@ func NewSpinner(message string) *Spinner {
 }
 
 // SetMessageFunc installs a provider that the animation goroutine calls on
-// every frame to compute the live message. Use it instead of SetMessage when
-// the text must stay fresh even while the caller's own goroutines are stalled
-// (e.g. all workers sleeping on a 429) — the spinner's repaint drives it, so no
-// external timer is needed. A nil provider falls back to the static message.
+// every frame to compute the live message. Use it when the text must stay fresh
+// even while the caller's own goroutines are stalled (e.g. all workers sleeping
+// on a 429) — the spinner's repaint drives it, so no external timer is needed.
+// A nil provider falls back to the static message set by NewSpinner.
 func (s *Spinner) SetMessageFunc(fn func() string) {
 	s.mu.Lock()
 	s.messageFn = fn

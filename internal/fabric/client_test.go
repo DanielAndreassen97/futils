@@ -195,20 +195,20 @@ func TestThrottleStateExposed(t *testing.T) {
 	clearThrottleState()
 
 	noteThrottle(8*time.Second, 1)
-	if got := ThrottleAttempt(); got != 2 {
-		t.Errorf("ThrottleAttempt() = %d, want 2", got)
+	_, rem, tot, attempt := ThrottleSnapshot()
+	if attempt != 2 {
+		t.Errorf("ThrottleAttempt() = %d, want 2", attempt)
 	}
-	if got := ThrottleTotal(); got != 8*time.Second {
-		t.Errorf("ThrottleTotal() = %v, want 8s", got)
+	if tot != 8*time.Second {
+		t.Errorf("ThrottleTotal() = %v, want 8s", tot)
 	}
-	rem := ThrottleRemaining()
 	if rem <= 6*time.Second || rem > 8*time.Second {
 		t.Errorf("ThrottleRemaining() = %v, want in (6s, 8s]", rem)
 	}
 
 	// Call with shorter backoff — deadline must NOT move earlier
 	noteThrottle(2*time.Second, 0)
-	rem2 := ThrottleRemaining()
+	_, rem2, _, _ := ThrottleSnapshot()
 	// The 8s deadline should still be in effect (well past 2s from now)
 	if rem2 < 5*time.Second {
 		t.Errorf("ThrottleRemaining() after short noteThrottle = %v, want still > 5s (longest-wins should preserve longer deadline)", rem2)

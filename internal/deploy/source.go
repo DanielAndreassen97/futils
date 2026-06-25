@@ -55,7 +55,7 @@ type Source struct {
 	repo     string
 	ref      string // e.g. "origin/main"
 	git      gitRunner
-	gitBatch gitBatchRunner // nil falls back to git cat-file via s.git
+	gitBatch gitBatchRunner
 }
 
 // NewSource validates the repo and resolves the deploy ref to origin/<default>.
@@ -250,28 +250,12 @@ func (s *Source) batchReadBlobs(specs []string) (map[string][]byte, error) {
 
 	stdin := []byte(strings.Join(specs, "\n") + "\n")
 
-	var raw []byte
-	var runErr error
-	if s.gitBatch != nil {
-		raw, runErr = s.gitBatch(stdin, "cat-file", "--batch")
-	} else {
-		// Fallback: use the real git runner directly (integration test path
-		// where gitBatch is nil). The integration test uses realGitRunner which
-		// doesn't support stdin, but the integration test exercises real git
-		// via NewSource which sets gitBatch.
-		raw, runErr = s.realBatchFallback(stdin)
-	}
+	raw, runErr := s.gitBatch(stdin, "cat-file", "--batch")
 	if runErr != nil {
 		return nil, fmt.Errorf("git cat-file --batch: %w", runErr)
 	}
 
 	return parseCatFileBatchOrdered(raw, specs)
-}
-
-// realBatchFallback is used when gitBatch is nil (should not happen in
-// production since NewSource always sets it, but kept as a safety net).
-func (s *Source) realBatchFallback(stdin []byte) ([]byte, error) {
-	return realGitBatchRunner(s.repo)(stdin, "cat-file", "--batch")
 }
 
 // parseCatFileBatchOrdered parses git cat-file --batch output, matching

@@ -47,7 +47,7 @@ func TestDiscoverItemsRealGit(t *testing.T) {
 	}
 
 	// Read from the main branch directly (no origin in this local repo).
-	s := &Source{repo: repo, ref: "main", git: realGitRunner(repo)}
+	s := &Source{repo: repo, ref: "main", git: realGitRunner(repo), gitBatch: realGitBatchRunner(repo)}
 	items, err := s.DiscoverItems()
 	if err != nil {
 		t.Fatalf("discover: %v", err)
