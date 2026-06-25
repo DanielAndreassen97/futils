@@ -64,6 +64,8 @@ type RebindOutcome struct {
 // Substitution is a futils-native find→replace rule, the engine-side mirror of
 // config.Substitution (kept config-free). Replacement is a literal (Literal) or
 // the resolved attribute of a target item looked up by name in the target env.
+// For IsRegex rules, compiled holds the pre-compiled *regexp.Regexp set by
+// SetSubstitutions so the pattern is compiled once instead of once per part.
 type Substitution struct {
 	FindValue  string
 	IsRegex    bool
@@ -74,6 +76,7 @@ type Substitution struct {
 	TargetName string
 	Attr       string
 	Literal    string
+	compiled   *regexp.Regexp // non-nil for valid IsRegex rules after SetSubstitutions
 }
 
 // Rebinder translates baseline-environment GUIDs to a target env by item name.
@@ -233,8 +236,21 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 }
 
 // SetSubstitutions installs the customer's custom find→replace rules. Called by
-// the cmd layer after NewRebinder (config→engine conversion lives there).
-func (rb *Rebinder) SetSubstitutions(subs []Substitution) { rb.substitutions = subs }
+// the cmd layer after NewRebinder (config→engine conversion lives there). Each
+// IsRegex rule has its pattern compiled once here; a rule whose pattern is
+// invalid is stored with a nil compiled field and silently skipped at apply time.
+func (rb *Rebinder) SetSubstitutions(subs []Substitution) {
+	for i := range subs {
+		if subs[i].IsRegex && subs[i].FindValue != "" {
+			re, err := regexp.Compile(subs[i].FindValue)
+			if err == nil {
+				subs[i].compiled = re
+			}
+			// Invalid pattern: compiled stays nil; rule is skipped in ApplyCustomSubstitutions.
+		}
+	}
+	rb.substitutions = subs
+}
 
 // ApplyCustomSubstitutions runs the customer's find→replace rules over one part.
 // Each rule whose optional item/file filters match is applied: the replacement
@@ -275,19 +291,23 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 		}
 		var next string
 		if sub.IsRegex {
-			re, err := regexp.Compile(sub.FindValue)
-			if err != nil {
-				continue // skip an invalid regex rather than abort the deploy
+			re := sub.compiled
+			if re == nil {
+				continue // pattern failed to compile at SetSubstitutions time; skip
 			}
 			next = re.ReplaceAllString(s, repl)
 			if next != s {
 				// Record one RebindChange per distinct concrete matched value so
 				// the summary shows what was actually replaced, not the raw pattern.
+				// New is the EXPANDED replacement for that specific match (not the
+				// raw template), so capture-group references like $1 resolve to the
+				// concrete text that was written.
 				seen := map[string]bool{}
 				for _, m := range re.FindAllString(s, -1) {
 					if !seen[m] {
 						seen[m] = true
-						out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: m, New: repl})
+						expanded := re.ReplaceAllString(m, repl)
+						out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: m, New: expanded})
 					}
 				}
 				s = next

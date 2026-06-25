@@ -106,9 +106,11 @@ func (r *Resolver) resolveItemIn(wsID, value string) (string, error) {
 }
 
 func (r *Resolver) workspaceID(name string) (string, error) {
-	// Lock spans the check-and-fill so two workers can't both populate the
-	// cache; the memoClient already dedups the underlying ListWorkspaces, so
-	// holding the lock across the call is cheap and avoids a double-fill race.
+	// Lock spans the check-and-fill so two workers can't both call
+	// ListWorkspaces. The wsByName nil-check ensures ListWorkspaces runs at most
+	// once per Resolver, so holding the lock across that single first call is
+	// acceptable — subsequent calls return immediately on the already-populated
+	// cache.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.wsByName == nil {

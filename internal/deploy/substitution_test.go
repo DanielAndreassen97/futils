@@ -92,6 +92,62 @@ func TestApplyCustomSubstitutionsRegexRecordsConcreteOld(t *testing.T) {
 	}
 }
 
+// TestSetSubstitutionsCompilesRegex asserts that SetSubstitutions pre-compiles
+// regex rules and stores the result so ApplyCustomSubstitutions can reuse it.
+func TestSetSubstitutionsCompilesRegex(t *testing.T) {
+	rb := newSemmodSQLRebinder(t)
+	subs := []Substitution{
+		{FindValue: `(\d+)-dev`, Literal: "$1-prod", IsRegex: true},
+		{FindValue: "literal-find", Literal: "literal-repl", IsRegex: false},
+	}
+	rb.SetSubstitutions(subs)
+	// The regex rule must have a compiled regexp stored; the literal rule must not.
+	if rb.substitutions[0].compiled == nil {
+		t.Error("regex rule: compiled must be non-nil after SetSubstitutions")
+	}
+	if rb.substitutions[1].compiled != nil {
+		t.Error("literal rule: compiled should remain nil")
+	}
+}
+
+// TestApplyCustomSubstitutionsRegexExpandedNew asserts that the RebindChange.New
+// for a regex rule records the EXPANDED replacement (the concrete text written),
+// not the raw template string.
+//
+// Rule: find=`(\d+)-dev`  repl=`$1-prod`
+// Content: "conn-42-dev"  → matched "42-dev", written "42-prod"
+// Before fix: New == "$1-prod"  (raw template — RED)
+// After fix:  New == "42-prod" (expanded — GREEN)
+func TestApplyCustomSubstitutionsRegexExpandedNew(t *testing.T) {
+	rb := newSemmodSQLRebinder(t)
+	rb.SetSubstitutions([]Substitution{
+		{FindValue: `(\d+)-dev`, Literal: "$1-prod", IsRegex: true},
+	})
+	item := LocalItem{Type: "Notebook", DisplayName: "NB"}
+	content := []byte("conn-42-dev")
+	out, outcome := rb.ApplyCustomSubstitutions(item, "notebook-content.py", content)
+
+	// Content must be correctly replaced.
+	if string(out) != "conn-42-prod" {
+		t.Errorf("content: got %q, want %q", string(out), "conn-42-prod")
+	}
+	if len(outcome.Changes) != 1 {
+		t.Fatalf("expected 1 change, got %d: %#v", len(outcome.Changes), outcome.Changes)
+	}
+	ch := outcome.Changes[0]
+	// Old must be the concrete matched substring.
+	if ch.Old != "42-dev" {
+		t.Errorf("RebindChange.Old = %q, want %q", ch.Old, "42-dev")
+	}
+	// New must be the expanded replacement, not the raw template.
+	if ch.New == "$1-prod" {
+		t.Errorf("RebindChange.New = raw template %q — must be the concrete expanded value", ch.New)
+	}
+	if ch.New != "42-prod" {
+		t.Errorf("RebindChange.New = %q, want %q", ch.New, "42-prod")
+	}
+}
+
 func TestApplyCustomSubstitutionsItemFilter(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	rb.SetSubstitutions([]Substitution{{FindValue: "X", Literal: "Y", ItemType: "DataPipeline"}})
