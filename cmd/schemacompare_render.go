@@ -31,8 +31,10 @@ func renderSchemaCompareTerminal(srcLabel, tgtLabel string, diffs []schemacompar
 	fmt.Fprintf(&b, "\n  %s  %s %s %s\n",
 		scTitleStyle.Render("Schema compare"),
 		scDimStyle.Render(srcLabel), scDimStyle.Render("→"), scDimStyle.Render(tgtLabel))
-	fmt.Fprintf(&b, "  %s\n", scDimStyle.Render(fmt.Sprintf(
-		"+ only in %s    - only in %s    ~ type changed", srcLabel, tgtLabel)))
+	fmt.Fprintf(&b, "  %s    %s    %s\n",
+		scAddStyle.Render("+ only in "+srcLabel),
+		scRemStyle.Render("- only in "+tgtLabel),
+		scChgStyle.Render("~ type changed"))
 
 	for _, lh := range diffs {
 		schemas := scDimStyle.Render(strings.Join(lh.Schemas, ", "))
