@@ -220,6 +220,7 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			Description: meta.Description,
 			LogicalID:   meta.LogicalID,
 			FolderPath:  folder,
+			Platform:    platRaw,
 		}
 		for _, p := range filesByFolder[folder] {
 			rel := strings.TrimPrefix(p, folder+"/")

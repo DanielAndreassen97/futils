@@ -27,6 +27,7 @@ type LocalItem struct {
 	Description string
 	FolderPath  string
 	Parts       []Part
+	Platform    []byte // raw .platform bytes; retained for the bulk backend (not a Part)
 }
 
 // platformMeta is the subset of .platform we consume.

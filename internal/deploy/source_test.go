@@ -49,6 +49,13 @@ func TestDiscoverItems(t *testing.T) {
 	if foo.Type != "Notebook" || foo.LogicalID != "aaa" || foo.FolderPath != "NB_Foo.Notebook" {
 		t.Errorf("foo = %+v", foo)
 	}
+	// Raw .platform bytes are retained on the item (for the bulk backend).
+	if len(foo.Platform) == 0 {
+		t.Fatal("foo.Platform not retained")
+	}
+	if !strings.Contains(string(foo.Platform), `"logicalId":"aaa"`) {
+		t.Errorf("foo.Platform should be raw .platform bytes, got: %s", foo.Platform)
+	}
 	// .platform is excluded from parts; the single content file remains.
 	if len(foo.Parts) != 1 || foo.Parts[0].Path != "notebook-content.py" {
 		t.Errorf("foo parts = %+v", foo.Parts)
