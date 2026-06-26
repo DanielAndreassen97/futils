@@ -121,6 +121,9 @@ func (f *fakeMoveAPI) WaitForRefresh(string, string, string, string) (fabric.Ref
 func (f *fakeMoveAPI) GetLakehouseSqlEndpoint(string, string, string) (string, string, error) {
 	return "", "", errors.New("GetLakehouseSqlEndpoint not used by move tests")
 }
+func (f *fakeMoveAPI) BulkImportDefinitions(token, ws string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
+	return &fabric.BulkImportResult{}, nil
+}
 
 // withMovePickers installs deterministic pickers for the duration
 // of a single test. The filter picker picks the option whose Label

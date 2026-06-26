@@ -15,5 +15,6 @@ type FabricClient interface {
 	UpdateItem(token, workspaceID, itemID, displayName, description string) error
 	DeleteItem(token, workspaceID, itemID string) error
 	RebindReport(token, workspaceID, reportID, datasetID string) error
+	BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error)
 	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
 }

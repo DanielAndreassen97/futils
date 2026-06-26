@@ -42,6 +42,9 @@ func (f *fakeFabric) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, st
 	v := f.sqlByLH[lhID]
 	return v[0], v[1], nil
 }
+func (f *fakeFabric) BulkImportDefinitions(token, ws string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
+	return &fabric.BulkImportResult{}, nil
+}
 
 func newResolverFixture() *Resolver {
 	target := fabric.Workspace{ID: "ws-test", DisplayName: "DP - TEST - Config"}

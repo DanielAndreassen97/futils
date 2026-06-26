@@ -39,6 +39,10 @@ type deployFakeAPI struct {
 	defByID    map[string]*fabric.Definition // itemID -> deployed definition (compare tests)
 	rebinds    [][3]string                   // {workspaceID, reportID, datasetID}
 	sqlByLH    map[string][2]string          // lakehouseID -> {host, id} (endpoint tests)
+	bulkWS     []string                      // workspace IDs passed to BulkImportDefinitions
+	bulkParts  [][]fabric.DefinitionPart     // parts passed per bulk call
+	bulkOpts   []fabric.BulkImportOptions
+	bulkResult *fabric.BulkImportResult // returned from each bulk call (nil → empty)
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -82,6 +86,15 @@ func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) erro
 func (f *deployFakeAPI) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
 	v := f.sqlByLH[lhID]
 	return v[0], v[1], nil
+}
+func (f *deployFakeAPI) BulkImportDefinitions(token, ws string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
+	f.bulkWS = append(f.bulkWS, ws)
+	f.bulkParts = append(f.bulkParts, parts)
+	f.bulkOpts = append(f.bulkOpts, opts)
+	if f.bulkResult != nil {
+		return f.bulkResult, nil
+	}
+	return &fabric.BulkImportResult{}, nil
 }
 
 // platformDef builds a deployed definition for a notebook: a matching content
