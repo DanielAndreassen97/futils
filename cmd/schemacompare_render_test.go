@@ -23,14 +23,25 @@ func TestRenderSchemaCompareTerminal(t *testing.T) {
 	out := renderSchemaCompareTerminal("DEV", "TEST", diffs)
 
 	for _, want := range []string{
-		"LH_Silver", "DEV", "TEST",
-		"+ NEW TABLE", "Dim.NewOne",
-		"Dim.Ansatt", "+ Epost", "string",
-		"~ Alder", "int → bigint",
-		"= 41 matching",
+		"Schema compare", "LH_Silver", "DEV", "TEST",
+		"Dim.NewOne", "new table",
+		"Dim.Ansatt", "Epost", "string",
+		"Alder", "int → bigint",
+		"41 unchanged",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("terminal output missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestRenderSchemaCompareTerminalIdentical(t *testing.T) {
+	// A lakehouse with no differing tables shows a clear "no differences" line.
+	diffs := []schemacompare.LakehouseDiff{{
+		Lakehouse: "LH_Gold", Schemas: []string{"dbo"}, Matching: 12,
+	}}
+	out := renderSchemaCompareTerminal("DEV", "TEST", diffs)
+	if !strings.Contains(out, "LH_Gold") || !strings.Contains(out, "no differences") {
+		t.Errorf("expected a 'no differences' line for an identical lakehouse, got:\n%s", out)
 	}
 }
