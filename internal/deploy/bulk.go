@@ -53,7 +53,35 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 	if err != nil {
 		return nil, err
 	}
-	return bulkResultsToResults(res.Details), nil
+
+	out := bulkResultsToResults(res.Details)
+
+	// Fabric resolves byPath report→model references within the payload, but it
+	// cannot rebind a byConnection (cross-env live connection) reference — warn,
+	// matching the per-item backend's RebindReports behavior. Keyed by type+name.
+	byConn := map[string]bool{}
+	for _, item := range items {
+		if item.Type == "Report" && reportDatasetRef(item).Kind == refByConnection {
+			byConn[item.Type+"\x00"+item.DisplayName] = true
+		}
+	}
+	for i := range out {
+		if byConn[out[i].Type+"\x00"+out[i].Name] && out[i].Err == nil {
+			out[i].Warning = joinWarning(out[i].Warning, "report uses a byConnection dataset reference — cross-environment rebind is not supported; verify the binding in the target")
+		}
+	}
+	return out, nil
+}
+
+// joinWarning concatenates two non-empty warning fragments with "; ".
+func joinWarning(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	if addition == "" {
+		return existing
+	}
+	return existing + "; " + addition
 }
 
 // actionFromOpType maps the API's operationType to a deploy Action.

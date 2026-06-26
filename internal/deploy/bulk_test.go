@@ -132,3 +132,26 @@ func TestStripLogicalIDInvalidJSONIsNoop(t *testing.T) {
 		t.Error("invalid JSON should be returned unchanged")
 	}
 }
+
+func TestBulkImportFoldsByConnectionWarning(t *testing.T) {
+	report := LocalItem{
+		Type:        "Report",
+		DisplayName: "Sales",
+		FolderPath:  "reports/Sales.Report",
+		Platform:    []byte(`{"metadata":{"type":"Report","displayName":"Sales"},"config":{}}`),
+		Parts: []Part{{
+			Path:    "definition.pbir",
+			Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"x"}}}`),
+		}},
+	}
+	rec := &bulkRecorder{result: &fabric.BulkImportResult{Details: []fabric.BulkImportDetail{
+		{ItemID: "r-id", ItemDisplayName: "Sales", ItemType: "Report", OperationType: "Create", OperationStatus: "Succeeded"},
+	}}}
+	results, err := BulkImport(rec, "tok", fabric.Workspace{ID: "ws-1"}, []LocalItem{report}, nil)
+	if err != nil {
+		t.Fatalf("BulkImport: %v", err)
+	}
+	if len(results) != 1 || !strings.Contains(results[0].Warning, "byConnection") {
+		t.Errorf("expected a byConnection warning, got %+v", results[0])
+	}
+}
