@@ -133,6 +133,58 @@ func TestStripLogicalIDInvalidJSONIsNoop(t *testing.T) {
 	}
 }
 
+func TestBulkImportFlagsMissingReturnedItem(t *testing.T) {
+	model := LocalItem{
+		Type:        "SemanticModel",
+		DisplayName: "Sales",
+		FolderPath:  "models/Sales.SemanticModel",
+		Platform:    []byte(`{"metadata":{"type":"SemanticModel","displayName":"Sales"},"config":{}}`),
+		Parts:       []Part{{Path: "definition/model.tmdl", Content: []byte("model Sales")}},
+	}
+	report := LocalItem{
+		Type:        "Report",
+		DisplayName: "SalesReport",
+		FolderPath:  "reports/SalesReport.Report",
+		Platform:    []byte(`{"metadata":{"type":"Report","displayName":"SalesReport"},"config":{}}`),
+		Parts:       []Part{{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byPath":{"path":"../models/Sales.SemanticModel"}}}`)}},
+	}
+	// API returns only the SemanticModel detail — SalesReport is silently omitted.
+	rec := &bulkRecorder{result: &fabric.BulkImportResult{Details: []fabric.BulkImportDetail{
+		{ItemID: "m-id", ItemDisplayName: "Sales", ItemType: "SemanticModel", OperationType: "Create", OperationStatus: "Succeeded"},
+	}}}
+
+	results, err := BulkImport(rec, "tok", fabric.Workspace{ID: "ws-1"}, []LocalItem{model, report}, nil)
+	if err != nil {
+		t.Fatalf("BulkImport: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("want 2 results (one per sent item), got %d", len(results))
+	}
+
+	byName := map[string]Result{}
+	for _, r := range results {
+		byName[r.Name] = r
+	}
+
+	salesRes, ok := byName["Sales"]
+	if !ok {
+		t.Fatal("no result for Sales")
+	}
+	if salesRes.Err != nil {
+		t.Errorf("Sales should have no error, got %v", salesRes.Err)
+	}
+
+	repRes, ok := byName["SalesReport"]
+	if !ok {
+		t.Fatal("no result for SalesReport")
+	}
+	if repRes.Err == nil {
+		t.Error("SalesReport should have a non-nil Err (missing from API response)")
+	} else if !strings.Contains(repRes.Err.Error(), "no result") {
+		t.Errorf("SalesReport Err message should contain 'no result', got: %v", repRes.Err)
+	}
+}
+
 func TestBulkImportFoldsByConnectionWarning(t *testing.T) {
 	report := LocalItem{
 		Type:        "Report",

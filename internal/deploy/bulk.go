@@ -56,17 +56,35 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 
 	out := bulkResultsToResults(res.Details)
 
-	// Fabric resolves byPath report→model references within the payload, but it
-	// cannot rebind a byConnection (cross-env live connection) reference — warn,
-	// matching the per-item backend's RebindReports behavior. Keyed by type+name.
+	// The report is built from the API's returned details, so an item the beta API
+	// silently omits would vanish from the report/history. Flag any sent item with
+	// no matching returned result (by the same type+name identity the deploy uses)
+	// as an error rather than dropping it silently.
+	returned := make(map[string]bool, len(out))
+	for _, r := range out {
+		returned[key(r.Type, r.Name)] = true
+	}
+	for _, item := range items {
+		if !returned[key(item.Type, item.DisplayName)] {
+			out = append(out, Result{
+				Name: item.DisplayName,
+				Type: item.Type,
+				Err:  fmt.Errorf("bulk import returned no result for %s %q — verify it in the target workspace", item.Type, item.DisplayName),
+			})
+		}
+	}
+
+	// Fabric resolves byPath report→model references within the payload, but cannot
+	// rebind a byConnection (cross-env live connection) reference — warn, matching
+	// the per-item backend. Keyed by the same type+name identity.
 	byConn := map[string]bool{}
 	for _, item := range items {
 		if item.Type == "Report" && reportDatasetRef(item).Kind == refByConnection {
-			byConn[item.Type+"\x00"+item.DisplayName] = true
+			byConn[key(item.Type, item.DisplayName)] = true
 		}
 	}
 	for i := range out {
-		if byConn[out[i].Type+"\x00"+out[i].Name] && out[i].Err == nil {
+		if byConn[key(out[i].Type, out[i].Name)] && out[i].Err == nil {
 			out[i].Warning = joinWarning(out[i].Warning, "report uses a byConnection dataset reference — cross-environment rebind is not supported; verify the binding in the target")
 		}
 	}
