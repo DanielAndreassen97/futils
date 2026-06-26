@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -12,9 +13,13 @@ import (
 	"github.com/DanielAndreassen97/futils/internal/ui"
 )
 
-// schemaCompareConcurrency bounds parallel GetTable calls. Mirrors the deploy
-// compare's bounded pool; OneLake metadata calls are cheap but numerous.
-const schemaCompareConcurrency = 16
+// schemaCompareConcurrency caps total in-flight OneLake calls for a compare.
+// The source and target sides fetch concurrently through ONE shared budget of
+// this size, so it sets the real pipe width (the old per-side pool of 16 ran
+// the two sides sequentially, peaking at 16). 32 roughly doubles GetTable
+// throughput; the client's 429 backoff absorbs the extra load if OneLake
+// pushes back. Tune here if a live run shows throttling.
+const schemaCompareConcurrency = 32
 
 // browseAllWorkspaces is the sentinel menu value for the "list every workspace"
 // escape hatch in the source/target picker.
@@ -185,8 +190,19 @@ func SchemaCompare(configPath string) error {
 
 		sp := ui.NewSpinner(fmt.Sprintf("Comparing %s…", lhName))
 		sp.Start()
-		srcSchema, srcErr := schemacompare.FetchSchema(api, srcID, srcLhID, chosenSchemas, schemaCompareConcurrency)
-		tgtSchema, tgtErr := schemacompare.FetchSchema(api, tgtID, tgtLhID, chosenSchemas, schemaCompareConcurrency)
+		// Fetch both sides concurrently through one shared budget: the two
+		// halves are independent, so overlapping them fills the same pipe
+		// instead of waiting for source to finish before target starts.
+		fetcher := schemacompare.NewFetcher(api, schemaCompareConcurrency)
+		var (
+			srcSchema, tgtSchema map[string]schemacompare.TableSchema
+			srcErr, tgtErr       error
+			fwg                  sync.WaitGroup
+		)
+		fwg.Add(2)
+		go func() { defer fwg.Done(); srcSchema, srcErr = fetcher.Fetch(srcID, srcLhID, chosenSchemas) }()
+		go func() { defer fwg.Done(); tgtSchema, tgtErr = fetcher.Fetch(tgtID, tgtLhID, chosenSchemas) }()
+		fwg.Wait()
 		sp.Stop()
 		if srcErr != nil {
 			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: fetch source failed: %v", lhName, srcErr)))

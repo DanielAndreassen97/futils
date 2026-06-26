@@ -29,7 +29,17 @@ type Client struct {
 func NewClient(token string) *Client { return NewClientWithBase(token, defaultBaseURL) }
 
 func NewClientWithBase(token, baseURL string) *Client {
-	return &Client{token: token, baseURL: baseURL, http: &http.Client{Timeout: 60 * time.Second}}
+	// Tune the transport for the burst of concurrent GetTable calls a compare
+	// makes against a single host. Go's default MaxIdleConnsPerHost is 2, so
+	// without this only 2 of N concurrent connections get reused and the rest
+	// pay a fresh TLS handshake every call. Sizing the idle pool to the fetch
+	// concurrency keeps connections warm across the burst.
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 64
+	tr.MaxIdleConnsPerHost = 32
+	tr.MaxConnsPerHost = 32
+	tr.IdleConnTimeout = 90 * time.Second
+	return &Client{token: token, baseURL: baseURL, http: &http.Client{Timeout: 60 * time.Second, Transport: tr}}
 }
 
 // catalog is the Unity-Catalog catalog token for a lakehouse item.
