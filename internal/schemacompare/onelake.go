@@ -53,7 +53,10 @@ func (c *Client) get(rawURL string, out any) error {
 		if err != nil {
 			return err
 		}
-		body, _ := readAllClose(resp)
+		body, rerr := readAllClose(resp)
+		if rerr != nil {
+			return fmt.Errorf("read response from %s: %w", rawURL, rerr)
+		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < 5 {
 			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
 			continue
