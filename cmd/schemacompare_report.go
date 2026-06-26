@@ -46,11 +46,12 @@ func renderSchemaCompareReport(srcLabel, tgtLabel string, diffs []schemacompare.
 	b.WriteString(schemaCompareStyle)
 	b.WriteString(`</head><body>`)
 	b.WriteString(`<div class="hero"><h1>futils schema compare</h1>`)
+	es, et := html.EscapeString(srcLabel), html.EscapeString(tgtLabel)
 	fmt.Fprintf(&b, `<div class="sub"><b>%s</b> → <b>%s</b> · `+
-		`<span style="color:var(--addfg)">+ only in source</span> · `+
-		`<span style="color:var(--delfg)">− only in target</span> · `+
+		`<span style="color:var(--addfg)">+ only in %s</span> · `+
+		`<span style="color:var(--delfg)">− only in %s</span> · `+
 		`<span style="color:var(--changed)">~ type changed</span></div></div>`,
-		html.EscapeString(srcLabel), html.EscapeString(tgtLabel))
+		es, et, es, et)
 
 	for _, lh := range diffs {
 		b.WriteString(`<details class="item changed" open><summary><span class="dot changed"></span>`)

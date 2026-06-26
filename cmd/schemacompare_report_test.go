@@ -47,6 +47,10 @@ func TestRenderSchemaCompareReport(t *testing.T) {
 	if !strings.Contains(out, "Belop") || !strings.Contains(out, "int") || !strings.Contains(out, "bigint") {
 		t.Error("expected the type change to render both old and new types")
 	}
+	// Legend uses the actual workspace labels, matching the terminal output.
+	if !strings.Contains(out, "only in DEV") || !strings.Contains(out, "only in TEST") {
+		t.Error("expected the legend to name the actual source/target workspaces")
+	}
 }
 
 func TestRenderSchemaCompareReportIdentical(t *testing.T) {
