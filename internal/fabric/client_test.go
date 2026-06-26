@@ -1,6 +1,7 @@
 package fabric
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -76,6 +77,8 @@ func TestParseLakehouseSqlEndpointMissing(t *testing.T) {
 type seqTransport struct {
 	responses []seqResponse
 	calls     []string // Authorization header values recorded per call
+	urls      []string // full request URL per call
+	bodies    [][]byte // request body bytes per call (nil if no body)
 }
 
 type seqResponse struct {
@@ -86,6 +89,13 @@ type seqResponse struct {
 
 func (s *seqTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	s.calls = append(s.calls, req.Header.Get("Authorization"))
+	s.urls = append(s.urls, req.URL.String())
+	if req.Body != nil {
+		b, _ := io.ReadAll(req.Body)
+		s.bodies = append(s.bodies, b)
+	} else {
+		s.bodies = append(s.bodies, nil)
+	}
 	idx := len(s.calls) - 1
 	if idx >= len(s.responses) {
 		idx = len(s.responses) - 1
@@ -299,5 +309,27 @@ func TestBulkImportDefinitionsSyncSuccess(t *testing.T) {
 	// Exactly one HTTP call (synchronous 200, no polling).
 	if len(transport.calls) != 1 {
 		t.Fatalf("want 1 HTTP call, got %d", len(transport.calls))
+	}
+
+	// The bulk URL must include ?beta=true.
+	if !strings.Contains(transport.urls[0], "?beta=true") {
+		t.Errorf("bulk import URL missing ?beta=true: %q", transport.urls[0])
+	}
+
+	// The request body must contain definitionParts (len 1) and options.allowPairingByName=true.
+	var sentBody struct {
+		DefinitionParts []json.RawMessage `json:"definitionParts"`
+		Options         struct {
+			AllowPairingByName bool `json:"allowPairingByName"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(transport.bodies[0], &sentBody); err != nil {
+		t.Fatalf("could not unmarshal sent request body: %v", err)
+	}
+	if len(sentBody.DefinitionParts) != 1 {
+		t.Errorf("want 1 definitionPart in request body, got %d", len(sentBody.DefinitionParts))
+	}
+	if !sentBody.Options.AllowPairingByName {
+		t.Errorf("want options.allowPairingByName=true in request body, got false")
 	}
 }

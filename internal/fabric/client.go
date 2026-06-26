@@ -572,7 +572,7 @@ func BulkImportDefinitions(token, workspaceID string, parts []DefinitionPart, op
 		return nil, err
 	}
 	if len(resultBody) == 0 {
-		return nil, fmt.Errorf("bulk import returned empty body — operation may have completed but per-item results are unknown; check workspace %s manually", workspaceID)
+		return nil, fmt.Errorf("bulk import returned empty body - operation may have completed but per-item results are unknown; check workspace %s manually", workspaceID)
 	}
 
 	var out BulkImportResult
