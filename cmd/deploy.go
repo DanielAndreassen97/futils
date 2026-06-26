@@ -255,7 +255,15 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return nil // declined: this was a dry-run
 	}
 
-	results, err := runDeploy(client, token, groups, rebinder, pickGroupedRows, ui.Confirm)
+	useBulk, err := ui.Confirm("Use the bulk-import backend? (PREVIEW — default is the stable per-item backend)")
+	if err != nil {
+		return err
+	}
+	if useBulk {
+		fmt.Println(warningStyle.Render("Bulk-import is a PREVIEW backend on a Fabric beta API — verify the deployed items afterwards."))
+	}
+
+	results, err := runDeploy(client, token, groups, rebinder, pickGroupedRows, ui.Confirm, useBulk)
 	printDeployResults(results)
 	if err != nil {
 		return err
@@ -620,6 +628,7 @@ func runDeploy(
 	rb *deploy.Rebinder,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error),
 	confirm func(string) (bool, error),
+	bulk bool,
 ) ([]deploy.Result, error) {
 	selected, deletesByGroup, err := selectItems(groups)
 	if err != nil {
@@ -645,7 +654,11 @@ func runDeploy(
 				wsCount++
 			}
 		}
-		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s)?", total, wsCount))
+		modeLabel := "per-item"
+		if bulk {
+			modeLabel = "bulk-import (preview)"
+		}
+		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s) using the %s backend?", total, wsCount, modeLabel))
 		if err != nil {
 			return nil, err
 		}
@@ -655,50 +668,62 @@ func runDeploy(
 			fmt.Println("Cancelled.")
 			return allResults, nil
 		}
-		// modelsByWS accumulates every published SemanticModel across ALL groups,
-		// keyed by target workspace, so report rebinds (deferred to the pass below)
-		// see models regardless of which group deployed them — and never bind a
-		// model from a different workspace. pending collects the report rebinds to
-		// run once everything is published.
-		modelsByWS := map[string]map[string]string{}
-		var pending []deploy.PendingReportRebind
-		for i, g := range groups {
-			items := selected[i]
-			if len(items) == 0 {
-				continue
-			}
-			plan := deploy.BuildPlan(items, g.Deployed)
-			// done advances once per published item (Execute increments it); the
-			// render func reads it concurrently every frame, so the spinner shows
-			// "Publishing X/Y" live and — when a 429 stalls the workers — the green
-			// countdown bar instead of a frozen line.
-			var done int64
-			total := len(plan)
-			ws := g.Target.DisplayName
-			renderPublish := func() string {
-				return fmt.Sprintf("Publishing %d/%d to %s", atomic.LoadInt64(&done), total, ws) +
-					liveThrottleStatus()
-			}
-			sp := ui.NewSpinner(renderPublish())
-			sp.SetMessageFunc(renderPublish)
-			sp.Start()
-			results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS, &done)
-			sp.Stop()
-			allResults = append(allResults, results...)
-			pending = append(pending, groupPending...)
-			if execErr != nil {
+
+		if bulk {
+			bulkResults, berr := runBulkPublish(client, token, groups, selected, rb)
+			allResults = append(allResults, bulkResults...)
+			if berr != nil {
 				if nDel > 0 {
 					fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy failed — the %d selected delete(s) were NOT run.", nDel)))
 				}
-				return allResults, execErr
+				return allResults, berr
 			}
-		}
+		} else {
+			// modelsByWS accumulates every published SemanticModel across ALL groups,
+			// keyed by target workspace, so report rebinds (deferred to the pass below)
+			// see models regardless of which group deployed them — and never bind a
+			// model from a different workspace. pending collects the report rebinds to
+			// run once everything is published.
+			modelsByWS := map[string]map[string]string{}
+			var pending []deploy.PendingReportRebind
+			for i, g := range groups {
+				items := selected[i]
+				if len(items) == 0 {
+					continue
+				}
+				plan := deploy.BuildPlan(items, g.Deployed)
+				// done advances once per published item (Execute increments it); the
+				// render func reads it concurrently every frame, so the spinner shows
+				// "Publishing X/Y" live and — when a 429 stalls the workers — the green
+				// countdown bar instead of a frozen line.
+				var done int64
+				total := len(plan)
+				ws := g.Target.DisplayName
+				renderPublish := func() string {
+					return fmt.Sprintf("Publishing %d/%d to %s", atomic.LoadInt64(&done), total, ws) +
+						liveThrottleStatus()
+				}
+				sp := ui.NewSpinner(renderPublish())
+				sp.SetMessageFunc(renderPublish)
+				sp.Start()
+				results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS, &done)
+				sp.Stop()
+				allResults = append(allResults, results...)
+				pending = append(pending, groupPending...)
+				if execErr != nil {
+					if nDel > 0 {
+						fmt.Println(warningStyle.Render(fmt.Sprintf("Deploy failed — the %d selected delete(s) were NOT run.", nDel)))
+					}
+					return allResults, execErr
+				}
+			}
 
-		// Post-deploy rebind pass: now that every group is published, repoint each
-		// report at its model and fold the outcome into the report's Result (matched
-		// by deployed GUID). Runs BEFORE the delete pass.
-		if outcomes := deploy.RebindReports(client, token, modelsByWS, pending); len(outcomes) > 0 {
-			allResults = foldRebindOutcomes(allResults, outcomes)
+			// Post-deploy rebind pass: now that every group is published, repoint each
+			// report at its model and fold the outcome into the report's Result (matched
+			// by deployed GUID). Runs BEFORE the delete pass.
+			if outcomes := deploy.RebindReports(client, token, modelsByWS, pending); len(outcomes) > 0 {
+				allResults = foldRebindOutcomes(allResults, outcomes)
+			}
 		}
 	}
 
@@ -734,6 +759,52 @@ func runDeploy(
 		}
 	}
 	return allResults, nil
+}
+
+// runBulkPublish publishes selected items using the bulk-import backend. The
+// bulkImportDefinitions API is workspace-scoped, so items from groups that share
+// a target workspace are merged into ONE call per distinct workspace (this also
+// lets Fabric resolve cross-item byPath references within a single payload). One
+// LRO per workspace, so the spinner shows a count + the live throttle countdown
+// rather than per-item progress.
+func runBulkPublish(client deploy.FabricClient, token string, groups []deployGroup, selected map[int][]deploy.LocalItem, rb *deploy.Rebinder) ([]deploy.Result, error) {
+	type bucket struct {
+		target fabric.Workspace
+		items  []deploy.LocalItem
+	}
+	buckets := map[string]*bucket{}
+	var order []string
+	for i, g := range groups {
+		items := selected[i]
+		if len(items) == 0 {
+			continue
+		}
+		b := buckets[g.Target.ID]
+		if b == nil {
+			b = &bucket{target: g.Target}
+			buckets[g.Target.ID] = b
+			order = append(order, g.Target.ID)
+		}
+		b.items = append(b.items, items...)
+	}
+
+	var results []deploy.Result
+	for _, id := range order {
+		b := buckets[id]
+		render := func() string {
+			return fmt.Sprintf("Bulk importing %d item(s) to %s", len(b.items), b.target.DisplayName) + liveThrottleStatus()
+		}
+		sp := ui.NewSpinner(render())
+		sp.SetMessageFunc(render)
+		sp.Start()
+		r, err := deploy.BulkImport(client, token, b.target, b.items, rb)
+		sp.Stop()
+		results = append(results, r...)
+		if err != nil {
+			return results, fmt.Errorf("bulk import to %s: %w", b.target.DisplayName, err)
+		}
+	}
+	return results, nil
 }
 
 // targetsSummary lists the distinct target workspace names for the compare header.

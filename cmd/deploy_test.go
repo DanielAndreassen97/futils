@@ -569,7 +569,7 @@ func TestRunDeployHappyPath(t *testing.T) {
 			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}
 	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestRunDeployDeclinedConfirmDoesNotExecute(t *testing.T) {
 	groups := []deployGroup{makeGroup("F", "ws1", "WS",
 		[]deploy.LocalItem{{Type: "Notebook", DisplayName: "NB", LogicalID: "lid"}}, nil)}
 
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return false, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return false, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 		makeGroup("Backend", "ws-config", "Config", backend, nil),
 		makeGroup("Frontend", "ws-semmod", "SemMod", frontend, nil),
 	}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestRunDeployCrossGroupRebind(t *testing.T) {
 		makeGroup("Frontend", "ws-shared", "Shared", report, nil),
 		makeGroup("Backend", "ws-shared", "Backend", model, nil),
 	}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -665,7 +665,7 @@ func TestRunDeployByConnectionWarning(t *testing.T) {
 		Parts: []deploy.Part{{Path: "definition.pbir",
 			Content: []byte(`{"datasetReference":{"byConnection":{"connectionType":"pbiServiceXmlaStyleLive"}}}`)}}}}
 	groups := []deployGroup{makeGroup("Frontend", "ws-1", "WS", report, nil)}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil })
+	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -874,7 +874,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 	// Deploy confirm yes, delete confirm NO → no delete runs.
 	calls := 0
 	res, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
-		func(string) (bool, error) { calls++; return calls == 1, nil }) // 1st (deploy) yes, 2nd (delete) no
+		func(string) (bool, error) { calls++; return calls == 1, nil }, false) // 1st (deploy) yes, 2nd (delete) no
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -884,7 +884,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 
 	// Both confirms yes → the delete runs.
 	res2, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
-		func(string) (bool, error) { return true, nil })
+		func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestRunDeployDeleteOnly(t *testing.T) {
 	}
 	calls := 0
 	res, err := runDeploy(fake, "tok", groups, nil, selectDeleteOnly,
-		func(string) (bool, error) { calls++; return true, nil })
+		func(string) (bool, error) { calls++; return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -973,7 +973,7 @@ func TestRunDeployDeleteConfirmNamesWorkspace(t *testing.T) {
 			deletePrompt = p
 		}
 		return false, nil // decline — we only assert the prompt text
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -1062,5 +1062,39 @@ func TestBuildDeployPickRowsIncludesOrphans(t *testing.T) {
 	// The deploy row carries no delete target.
 	if entries[0].delete != nil {
 		t.Errorf("deploy row must not be a delete: %+v", entries[0])
+	}
+}
+
+func TestRunDeployBulkBackendCallsBulkImport(t *testing.T) {
+	api := &deployFakeAPI{
+		bulkResult: &fabric.BulkImportResult{Details: []fabric.BulkImportDetail{
+			{ItemID: "sales-id", ItemDisplayName: "Sales", ItemType: "SemanticModel", OperationType: "Create", OperationStatus: "Succeeded"},
+		}},
+	}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Prod"}
+	groups := []deployGroup{{Target: target, Folder: "models", Rows: nil, Deployed: nil}}
+	item := deploy.LocalItem{
+		Type: "SemanticModel", DisplayName: "Sales", FolderPath: "models/Sales.SemanticModel",
+		Platform: []byte(`{"metadata":{"type":"SemanticModel","displayName":"Sales"},"config":{"logicalId":"x"}}`),
+		Parts:    []deploy.Part{{Path: "definition/model.tmdl", Content: []byte("model Sales")}},
+	}
+	selectItems := func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
+		return map[int][]deploy.LocalItem{0: {item}}, nil, nil
+	}
+	confirm := func(string) (bool, error) { return true, nil }
+
+	results, err := runDeploy(api, "tok", groups, nil, selectItems, confirm, true)
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if len(api.bulkWS) != 1 || api.bulkWS[0] != "ws-1" {
+		t.Fatalf("expected one bulk call to ws-1, got %v", api.bulkWS)
+	}
+	if len(results) != 1 || results[0].ID != "sales-id" || results[0].Action != deploy.ActionCreate {
+		t.Errorf("results = %+v", results)
+	}
+	// The per-item CreateItem path must NOT have run.
+	if len(api.created) != 0 {
+		t.Errorf("per-item CreateItem should not run in bulk mode, got %v", api.created)
 	}
 }
