@@ -518,6 +518,70 @@ type DefinitionPart struct {
 	PayloadType string `json:"payloadType"`
 }
 
+// BulkImportOptions configures a bulkImportDefinitions request. AllowPairingByName
+// controls how an imported item WITHOUT a logicalId is matched against an existing
+// workspace item: true → pair by display name + type; false → name pairing is
+// disabled (a same-name/type item causes a duplication conflict). futils strips
+// logicalId from the .platform payload (see deploy.stripLogicalID) and sets this
+// true, so bulk pairs by name+type — matching the per-item backend's identity model.
+type BulkImportOptions struct {
+	AllowPairingByName bool `json:"allowPairingByName"`
+}
+
+// BulkImportDetail is one item's outcome in a bulk import result.
+type BulkImportDetail struct {
+	ItemID          string `json:"itemId"`
+	ItemDisplayName string `json:"itemDisplayName"`
+	ItemType        string `json:"itemType"`
+	ItemLogicalID   string `json:"itemLogicalId"`
+	OperationType   string `json:"operationType"`   // Create | Update
+	OperationStatus string `json:"operationStatus"` // Succeeded | Failed | SucceededDespiteFailures
+}
+
+// BulkImportResult is the bulkImportDefinitions response payload.
+type BulkImportResult struct {
+	Details []BulkImportDetail `json:"importItemDefinitionsDetails"`
+}
+
+// BulkImportDefinitions imports many item definitions into a workspace in one
+// request via the beta Bulk Import Item Definitions API. parts is the flat list
+// of ALL definition parts for ALL items (paths are workspace-absolute and
+// item-folder-scoped, e.g. "/Sales.Report/.platform"); Fabric resolves item
+// grouping and dependency order itself. The call is an LRO: doLRO returns the
+// result body on a synchronous 200 or after polling a 202 to completion, and
+// already applies the shared 429-throttle and 401-refresh handling.
+//
+// The ?beta=true query parameter is REQUIRED while the API is in beta; drop it
+// at GA.
+func BulkImportDefinitions(token, workspaceID string, parts []DefinitionPart, opts BulkImportOptions) (*BulkImportResult, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return nil, err
+	}
+	body := struct {
+		DefinitionParts []DefinitionPart  `json:"definitionParts"`
+		Options         BulkImportOptions `json:"options"`
+	}{DefinitionParts: parts, Options: opts}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal bulk import body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/bulkImportDefinitions?beta=true", baseURL, workspaceID)
+	resultBody, err := doLRO(token, url, bytes.NewReader(payload), 150)
+	if err != nil {
+		return nil, err
+	}
+	if len(resultBody) == 0 {
+		return nil, fmt.Errorf("bulk import returned empty body — operation may have completed but per-item results are unknown; check workspace %s manually", workspaceID)
+	}
+
+	var out BulkImportResult
+	if err := json.Unmarshal(resultBody, &out); err != nil {
+		return nil, fmt.Errorf("parse bulk import result: %w", err)
+	}
+	return &out, nil
+}
+
 // GetItemDefinition fetches the full definition of any Fabric item.
 // format is forwarded as ?format=… when non-empty (notebooks need
 // "ipynb"; reports and semantic models use "" for the default).

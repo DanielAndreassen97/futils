@@ -263,3 +263,41 @@ func TestMaxThrottleRetries(t *testing.T) {
 		t.Errorf("MaxThrottleRetries() = %d, want 8", got)
 	}
 }
+
+func TestBulkImportDefinitionsSyncSuccess(t *testing.T) {
+	respBody := `{"importItemDefinitionsDetails":[
+		{"itemId":"id-1","itemDisplayName":"MyReport","itemType":"Report","itemLogicalId":"lg-1","operationType":"Create","operationStatus":"Succeeded"},
+		{"itemId":"id-2","itemDisplayName":"MyModel","itemType":"SemanticModel","itemLogicalId":"lg-2","operationType":"Update","operationStatus":"SucceededDespiteFailures"}
+	]}`
+	transport := &seqTransport{responses: []seqResponse{{status: 200, body: respBody}}}
+
+	origClient := httpClient
+	origRetry := retryTokenFn
+	t.Cleanup(func() {
+		httpClient = origClient
+		retryTokenFn = origRetry
+	})
+	httpClient = &http.Client{Transport: transport}
+	retryTokenFn = func() (string, bool) { return "fresh-token", true }
+
+	parts := []DefinitionPart{
+		{Path: "/A.Report/.platform", Payload: "eyJhIjoxfQ==", PayloadType: "InlineBase64"},
+	}
+	res, err := BulkImportDefinitions("tok", "11111111-1111-1111-1111-111111111111", parts, BulkImportOptions{AllowPairingByName: true})
+	if err != nil {
+		t.Fatalf("BulkImportDefinitions returned error: %v", err)
+	}
+	if len(res.Details) != 2 {
+		t.Fatalf("want 2 details, got %d", len(res.Details))
+	}
+	if res.Details[0].OperationType != "Create" || res.Details[0].ItemID != "id-1" {
+		t.Errorf("detail[0] = %+v", res.Details[0])
+	}
+	if res.Details[1].OperationStatus != "SucceededDespiteFailures" {
+		t.Errorf("detail[1] status = %q, want SucceededDespiteFailures", res.Details[1].OperationStatus)
+	}
+	// Exactly one HTTP call (synchronous 200, no polling).
+	if len(transport.calls) != 1 {
+		t.Fatalf("want 1 HTTP call, got %d", len(transport.calls))
+	}
+}
