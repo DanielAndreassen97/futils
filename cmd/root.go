@@ -24,6 +24,7 @@ func MainMenu(configPath string) {
 			{Label: "Refresh tables", Value: "refresh"},
 			{Label: "Move item", Value: "move"},
 			{Label: "Deploy", Value: "deploy"},
+			{Label: "Schema compare", Value: "schemacompare"},
 
 			{Label: "Settings", IsHeader: true},
 			{Label: "Manage favourites", Value: "favorites"},
@@ -57,6 +58,8 @@ func MainMenu(configPath string) {
 			cmdErr = Move(configPath)
 		case "deploy":
 			cmdErr = Deploy(configPath)
+		case "schemacompare":
+			cmdErr = SchemaCompare(configPath)
 		case "favorites":
 			cmdErr = Favorites(configPath)
 		case "customers":
