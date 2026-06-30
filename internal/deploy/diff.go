@@ -36,6 +36,7 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 			}
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
 			outcome.Unresolved = append(outcome.Unresolved, partOutcome.Unresolved...)
+			outcome.ReportBindings = append(outcome.ReportBindings, partOutcome.ReportBindings...)
 		}
 		out[part.Path] = substituted
 	}
