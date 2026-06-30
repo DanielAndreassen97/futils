@@ -27,11 +27,13 @@ type refKind int
 const (
 	refNone         refKind = iota // no pbir, or pbir with no dataset reference — nothing to rebind
 	refByPath                      // datasetReference.byPath → a local model folder (rebindable by name)
-	refByConnection                // datasetReference.byConnection → a live connection (not rebindable here)
+	refByConnection                // datasetReference.byConnection → a live connection; rebound post-deploy when the model is co-deployed this run, otherwise bound by the in-payload rewrite
 )
 
 // datasetRef is the parsed result of a report's definition.pbir dataset
-// reference. ModelName is only meaningful when Kind == refByPath.
+// reference. ModelName is set for refByPath and for refByConnection (the flat
+// connectionString's model name when extractable); empty when the shape carries
+// no usable name.
 type datasetRef struct {
 	Kind      refKind
 	ModelName string
@@ -254,7 +256,9 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 // the old "" that conflated byConnection with no-reference and silently skipped
 // both):
 //   - byPath → refByPath with the model display name (e.g. "../MyModel.SemanticModel" → "MyModel").
-//   - byConnection present → refByConnection (no resolvable local model name).
+//   - byConnection present → refByConnection, with ModelName recovered from the
+//     flat connectionString's "initial catalog" when extractable (empty for the
+//     structured shape or a GUID-only catalog).
 //   - neither / no pbir / unparseable → refNone (nothing to rebind).
 func reportDatasetRef(report LocalItem) datasetRef {
 	for _, part := range report.Parts {

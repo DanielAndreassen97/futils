@@ -564,6 +564,42 @@ func TestRebindReportsByConnectionCoDeployedBinds(t *testing.T) {
 	}
 }
 
+// TestRebindReportsByConnectionCoDeployedBindsEndToEnd proves the full chain:
+// Execute parses a flat-connectionString byConnection report via reportDatasetRef
+// (recovering ModelName="HR" from "initial catalog"), publishes a same-run "HR"
+// SemanticModel into modelsByWS, and the post-deploy RebindReports binds the
+// report to that same-run model GUID. This exercises reportDatasetRef →
+// ModelName → co-deployed-bind that the hand-built pending test skips.
+func TestRebindReportsByConnectionCoDeployedBindsEndToEnd(t *testing.T) {
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{target},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	model := LocalItem{Type: "SemanticModel", DisplayName: "HR", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "ConnRep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}} // initial catalog=HR
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(pending) != 1 || pending[0].Ref.Kind != refByConnection || pending[0].Ref.ModelName != "HR" {
+		t.Fatalf("reportDatasetRef must recover ModelName=HR for a flat byConnection report, got %+v", pending)
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
+	if !findRebind(rf, "ws-test", "ConnRep-newid", "HR-newid") {
+		t.Fatalf("co-deployed byConnection report must rebind to the same-run HR GUID, got rebinds=%v", rf.rebinds)
+	}
+	for _, o := range outcomes {
+		if o.Err != nil || o.Warning != "" {
+			t.Errorf("clean co-deployed rebind must produce no outcome, got %+v", o)
+		}
+	}
+}
+
 // TestRebindReportsByConnectionNoRebinderWarns proves that when no rebinder is
 // configured (rebinderActive=false) and the model was not deployed this run,
 // a byConnection report emits a warning — the regression where the warning was
