@@ -249,7 +249,21 @@ func reportDatasetRef(report LocalItem) datasetRef {
 			return datasetRef{Kind: refByPath, ModelName: strings.TrimSuffix(base, ".SemanticModel")}
 		}
 		if len(pbir.DatasetReference.ByConnection) > 0 && string(pbir.DatasetReference.ByConnection) != "null" {
-			return datasetRef{Kind: refByConnection}
+			// Recover the model display name so the post-deploy pass can match a
+			// same-run-created model in modelsByWS (mirrors byPath). Only the flat
+			// connectionString shape carries a name; the structured shape yields "".
+			var bc struct {
+				ConnectionString string `json:"connectionString"`
+			}
+			_ = json.Unmarshal(pbir.DatasetReference.ByConnection, &bc)
+			name := ""
+			if bc.ConnectionString != "" {
+				name = parseConnString(bc.ConnectionString)["initial catalog"]
+				if reportConnGUID.MatchString(name) {
+					name = "" // a GUID is not a usable model name
+				}
+			}
+			return datasetRef{Kind: refByConnection, ModelName: name}
 		}
 		return datasetRef{Kind: refNone}
 	}

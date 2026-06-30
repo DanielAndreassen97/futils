@@ -337,9 +337,9 @@ func TestRebindReportConnectionFlatResolves(t *testing.T) {
 	if b.Report != "Daniel - Testing" || b.Model != "HR" || b.Workspace != "DP - TEST - SemMod" {
 		t.Errorf("ReportBinding = %+v", b)
 	}
-	// The GUID swap is recorded for the rebind summary.
-	if len(outcome.Changes) != 1 || outcome.Changes[0].Old != devHRModel || outcome.Changes[0].New != "test-hr-model" {
-		t.Errorf("Changes = %+v", outcome.Changes)
+	// Report rebinds must not appear in the generic rebind summary.
+	if len(outcome.Changes) != 0 {
+		t.Errorf("report rebind must not emit RebindChange, got %+v", outcome.Changes)
 	}
 	// The rewrite pins the canonical 1.0.0 definitionProperties schema.
 	if s := pbirSchema(t, out); !strings.HasSuffix(s, "definitionProperties/1.0.0/schema.json") {
@@ -357,9 +357,9 @@ func TestRebindReportConnectionStructuredResolves(t *testing.T) {
 	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
 		t.Errorf("ReportBindings = %+v", outcome.ReportBindings)
 	}
-	// The GUID swap is recorded for the rebind summary, same as the flat form.
-	if len(outcome.Changes) != 1 || outcome.Changes[0].Old != devHRModel || outcome.Changes[0].New != "test-hr-model" {
-		t.Errorf("Changes = %+v", outcome.Changes)
+	// Report rebinds must not appear in the generic rebind summary.
+	if len(outcome.Changes) != 0 {
+		t.Errorf("report rebind must not emit RebindChange, got %+v", outcome.Changes)
 	}
 }
 
@@ -378,7 +378,9 @@ func TestRebindReportConnectionOverrideWins(t *testing.T) {
 func TestRebindReportConnectionUnresolved(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "R"}
-	in := flatPBIR("DP - DEV - SemMod", "NoSuchModel", devHRModel)
+	// GUID not in baseline, catalog name not in target → not-in-target unresolved.
+	unknownGUID := "77777777-0000-0000-0000-000000000000"
+	in := flatPBIR("DP - DEV - SemMod", "NoSuchModel", unknownGUID)
 	out, outcome := rb.RebindReportConnection(item, in)
 	if string(out) != string(in) {
 		t.Errorf("unresolved binding must leave content unchanged")
@@ -441,5 +443,48 @@ func TestRebindPartIgnoresNonPbirReportPart(t *testing.T) {
 	out, outcome := rb.RebindPart(item, "report.json", in)
 	if string(out) != string(in) || len(outcome.ReportBindings) != 0 {
 		t.Errorf("non-pbir report part must pass through unchanged")
+	}
+}
+
+func TestRebindReportConnectionStaleCatalogUsesGUID(t *testing.T) {
+	// Connection string carries a STALE catalog name but the correct baseline GUID.
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	out, outcome := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "OldNameBeforeRename", devHRModel))
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Errorf("should resolve via semanticmodelid baseline GUID despite stale catalog, got %q", got)
+	}
+	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
+		t.Errorf("binding should resolve to HR via the GUID, got %+v", outcome.ReportBindings)
+	}
+}
+
+func TestRebindReportConnectionNoRebindChange(t *testing.T) {
+	// Report rebinds must NOT appear in the generic rebind summary (out.Changes);
+	// only in out.ReportBindings.
+	rb := newRebindFixture(t, nil)
+	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"},
+		flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Fatalf("expected rebind to target, got %q", got)
+	}
+	if len(outcome.Changes) != 0 {
+		t.Errorf("report rebind must not emit RebindChange (shown only in Report bindings), got %+v", outcome.Changes)
+	}
+	if len(outcome.ReportBindings) != 1 {
+		t.Errorf("expected one ReportBinding, got %d", len(outcome.ReportBindings))
+	}
+}
+
+func TestRebindReportConnectionCatalogGUIDNoBaselineMiss(t *testing.T) {
+	// Flat shape, no semanticmodelid, catalog is a GUID NOT in the baseline index.
+	rb := newRebindFixture(t, nil)
+	in := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=aaaaaaaa-0000-0000-0000-000000000000"}}}`)
+	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"}, in)
+	if string(out) != string(in) {
+		t.Errorf("unresolvable catalog-GUID must leave content unchanged")
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Reason != ReasonNameUnknown {
+		t.Fatalf("catalog-GUID miss must be ReasonNameUnknown (never pass the GUID as a name), got %+v", outcome.Unresolved)
 	}
 }

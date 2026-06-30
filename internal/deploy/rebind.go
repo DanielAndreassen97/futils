@@ -422,28 +422,34 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out // byPath / reference-less / unparseable
 	}
 
-	// Resolve the model NAME and the baseline GUID from whichever shape is present.
-	var modelName, baselineGUID string
+	// Extract the baseline model GUID and a name candidate from whichever
+	// byConnection shape is present.
+	var nameCandidate, baselineGUID string
 	if cs := ds.ByConnection.ConnectionString; cs != nil && *cs != "" {
 		kv := parseConnString(*cs)
 		baselineGUID = kv["semanticmodelid"]
-		modelName = kv["initial catalog"]
-		if reportConnGUID.MatchString(modelName) {
-			// catalog holds a GUID, not a name — resolve via the baseline index.
-			if base, ok := rb.baseline.ItemByGUID(modelName); ok {
-				modelName = base.Name
-			}
+		nameCandidate = kv["initial catalog"]
+		if reportConnGUID.MatchString(nameCandidate) {
+			// 'initial catalog' holds a GUID, not a name. Use it as the baseline
+			// GUID only when semanticmodelid was absent; a GUID is never a model
+			// name, so never let it flow into LookupName as one.
 			if baselineGUID == "" {
-				baselineGUID = kv["initial catalog"]
+				baselineGUID = nameCandidate
 			}
+			nameCandidate = ""
 		}
 	} else {
 		baselineGUID = ds.ByConnection.PbiModelDatabaseName
-		if base, ok := rb.baseline.ItemByGUID(baselineGUID); ok {
-			modelName = base.Name
-		}
 	}
 
+	// The baseline semanticmodelid GUID is authoritative: reconcile the name
+	// against the baseline index so a stale 'initial catalog' string can't break
+	// resolution. Fall back to the parsed name candidate (flat shape) only when
+	// the GUID isn't in the baseline index.
+	modelName := nameCandidate
+	if base, found := rb.baseline.ItemByGUID(baselineGUID); found {
+		modelName = base.Name
+	}
 	if ov, ok := rb.overrides[baselineGUID]; ok {
 		modelName = ov.ItemName
 	}
@@ -480,8 +486,6 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out
 	}
 
-	seen := map[string]bool{}
-	addChange(&out, seen, "SemanticModel", modelName, baselineGUID, it.GUID)
 	out.ReportBindings = append(out.ReportBindings, ReportBinding{
 		Report: item.DisplayName, Model: modelName, Workspace: rb.workspaceName(it.WorkspaceID),
 	})
