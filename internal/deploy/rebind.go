@@ -376,6 +376,24 @@ func parseConnString(cs string) map[string]string {
 	return out
 }
 
+// parseFlatConn extracts the semantic-model identifiers from a flat byConnection
+// connectionString. modelName is the "initial catalog" display name, or "" when
+// it is absent or holds a GUID (a GUID is never a usable model name). modelGUID
+// is "semanticmodelid", or the catalog GUID when that is the only GUID present
+// (catalog-GUID promotion). An empty connectionString yields ("", "").
+func parseFlatConn(cs string) (modelName, modelGUID string) {
+	kv := parseConnString(cs)
+	modelGUID = kv["semanticmodelid"]
+	modelName = kv["initial catalog"]
+	if reportConnGUID.MatchString(modelName) {
+		if modelGUID == "" {
+			modelGUID = modelName
+		}
+		modelName = ""
+	}
+	return modelName, modelGUID
+}
+
 // canonicalByConnection is the fabric-cicd canonical byConnection block. Field
 // ORDER is significant: a struct (not map[string]any) serializes in declaration
 // order, matching the on-disk fabric-cicd form, where map keys would sort
@@ -426,18 +444,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 	// byConnection shape is present.
 	var nameCandidate, baselineGUID string
 	if cs := ds.ByConnection.ConnectionString; cs != nil && *cs != "" {
-		kv := parseConnString(*cs)
-		baselineGUID = kv["semanticmodelid"]
-		nameCandidate = kv["initial catalog"]
-		if reportConnGUID.MatchString(nameCandidate) {
-			// 'initial catalog' holds a GUID, not a name. Use it as the baseline
-			// GUID only when semanticmodelid was absent; a GUID is never a model
-			// name, so never let it flow into LookupName as one.
-			if baselineGUID == "" {
-				baselineGUID = nameCandidate
-			}
-			nameCandidate = ""
-		}
+		nameCandidate, baselineGUID = parseFlatConn(*cs)
 	} else {
 		baselineGUID = ds.ByConnection.PbiModelDatabaseName
 	}

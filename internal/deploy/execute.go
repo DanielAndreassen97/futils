@@ -288,13 +288,7 @@ func reportDatasetRef(report LocalItem) datasetRef {
 				ConnectionString string `json:"connectionString"`
 			}
 			_ = json.Unmarshal(pbir.DatasetReference.ByConnection, &bc)
-			name := ""
-			if bc.ConnectionString != "" {
-				name = parseConnString(bc.ConnectionString)["initial catalog"]
-				if reportConnGUID.MatchString(name) {
-					name = "" // a GUID is not a usable model name
-				}
-			}
+			name, _ := parseFlatConn(bc.ConnectionString)
 			return datasetRef{Kind: refByConnection, ModelName: name}
 		}
 		return datasetRef{Kind: refNone}
