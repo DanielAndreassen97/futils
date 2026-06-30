@@ -681,6 +681,28 @@ func TestRunDeployByConnectionWarning(t *testing.T) {
 	}
 }
 
+func TestHistoryDirAbsoluteUsedAsIs(t *testing.T) {
+	// An absolute deploy-history path must NOT be joined onto the repo path
+	// (joining two absolute paths produced the doubled repo/repo/file path).
+	if got := historyDir("/repo/x", "/abs/elsewhere"); got != "/abs/elsewhere" {
+		t.Errorf("absolute history path must be used as-is, got %q", got)
+	}
+}
+
+func TestHistoryDirRelativeJoined(t *testing.T) {
+	if got := historyDir("/repo/x", "docs/deploy"); got != "/repo/x/docs/deploy" {
+		t.Errorf("relative history path must join onto repo, got %q", got)
+	}
+}
+
+func TestTerminalLinkWrapsOSC8(t *testing.T) {
+	got := terminalLink("file:///a/b.html", "/a/b.html")
+	want := "\x1b]8;;file:///a/b.html\x1b\\/a/b.html\x1b]8;;\x1b\\"
+	if got != want {
+		t.Errorf("OSC 8 hyperlink mismatch:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestPrintUnresolvedListsRefs(t *testing.T) {
 	groups := []deployGroup{{
 		Folder: "Backend",

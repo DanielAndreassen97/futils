@@ -871,14 +871,31 @@ func saveDeployHistory(customer config.Customer, groups []deployGroup, results [
 		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
 		return
 	}
-	dir := filepath.Join(customer.RepoPath, customer.DeployHistoryPath)
+	dir := historyDir(customer.RepoPath, customer.DeployHistoryPath)
 	htmlDoc := renderDeployReport(groups, results)
 	path, err := writeHistoryReport(dir, time.Now(), htmlDoc)
 	if err != nil {
 		fmt.Println(warningStyle.Render("Couldn't save deploy report: " + err.Error()))
 		return
 	}
-	fmt.Println(infoStyle.Render("Saved deploy report: " + path))
+	fmt.Println(infoStyle.Render("Saved deploy report: ") + terminalLink("file://"+path, path))
+}
+
+// historyDir resolves the deploy-history folder. A relative DeployHistoryPath is
+// joined onto the repo; an absolute one is used as-is (joining two absolute
+// paths previously produced a doubled repo/repo/file path).
+func historyDir(repoPath, histPath string) string {
+	if filepath.IsAbs(histPath) {
+		return histPath
+	}
+	return filepath.Join(repoPath, histPath)
+}
+
+// terminalLink wraps label in an OSC 8 hyperlink to url so terminals that
+// support it (ghostty/cmux, iTerm2, …) make the text clickable. Terminals that
+// don't render the escapes as a no-op and show the label plainly.
+func terminalLink(url, label string) string {
+	return "\x1b]8;;" + url + "\x1b\\" + label + "\x1b]8;;\x1b\\"
 }
 
 // pickEnvironment shows the customer's environment aliases as a numbered menu.
