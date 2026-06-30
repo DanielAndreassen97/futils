@@ -277,7 +277,16 @@ func byPathPBIR(modelName string) []byte {
 }
 
 func byConnectionPBIR() []byte {
-	return []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=...","pbiServiceModelId":null,"pbiModelVirtualServerName":"sobe_wowvirtualserver","pbiModelDatabaseName":"abc-123","name":"EntityDataSource","connectionType":"pbiServiceXmlaStyleLive"}}}`)
+	return []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR;integrated security=ClaimsToken;semanticmodelid=12995bce-ace2-401b-a5fb-6b8dd6a45ead"}}}`)
+}
+
+func TestReportDatasetRefFlatByConnection(t *testing.T) {
+	item := LocalItem{Type: "Report", Parts: []Part{
+		{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR;semanticmodelid=12995bce-ace2-401b-a5fb-6b8dd6a45ead"}}}`)},
+	}}
+	if got := reportDatasetRef(item); got.Kind != refByConnection {
+		t.Errorf("flat connectionString should classify as refByConnection, got %v", got.Kind)
+	}
 }
 
 // runRebindPass is a helper that runs Execute over a plan accumulating into a
