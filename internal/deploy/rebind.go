@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"path"
 	"regexp"
 	"strings"
@@ -57,8 +58,18 @@ type RebindChange struct {
 // the summary, deduped by Old within a pass) and the references it could not
 // resolve (surfaced to the user).
 type RebindOutcome struct {
-	Changes    []RebindChange
-	Unresolved []UnresolvedRef
+	Changes        []RebindChange
+	Unresolved     []UnresolvedRef
+	ReportBindings []ReportBinding
+}
+
+// ReportBinding is a resolved report→semantic-model binding, surfaced in the
+// compare step so the user sees which model a report will bind to (and in which
+// target workspace) before deploying.
+type ReportBinding struct {
+	Report    string // report display name
+	Model     string // resolved semantic-model name
+	Workspace string // target workspace the model lives in
 }
 
 // Substitution is a futils-native find→replace rule, the engine-side mirror of
@@ -341,4 +352,119 @@ func (rb *Rebinder) ResolveTargetAttr(itemType, itemName, attr string) (string, 
 		return id, ok
 	}
 	return "", false
+}
+
+// reportConnGUID matches a canonical GUID inside a pbir connection string value.
+var reportConnGUID = regexp.MustCompile("^" + guidPat + "$")
+
+// parseConnString pulls case-insensitive key=value pairs out of a pbir
+// byConnection connectionString (semicolon-delimited, values may be quoted).
+func parseConnString(cs string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(cs, ";") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(kv[0]))
+		v := strings.Trim(strings.TrimSpace(kv[1]), `"`)
+		out[k] = v
+	}
+	return out
+}
+
+// RebindReportConnection rewrites a report's definition.pbir byConnection
+// reference from baseline to target by NAME. It handles both on-disk shapes:
+// the Power BI Desktop flat connectionString (Data Source + initial catalog +
+// semanticmodelid) and the fabric-cicd structured form (pbiModelDatabaseName).
+// On success it replaces datasetReference with the canonical byConnection form
+// (connectionString null, pbiModelDatabaseName = target model GUID), so the
+// published payload binds the report to the target model in a single publish.
+// byPath and reference-less reports are returned unchanged.
+func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]byte, RebindOutcome) {
+	var out RebindOutcome
+	var pbir map[string]json.RawMessage
+	if err := json.Unmarshal(content, &pbir); err != nil {
+		return content, out
+	}
+	dsRaw, ok := pbir["datasetReference"]
+	if !ok {
+		return content, out
+	}
+	var ds struct {
+		ByConnection *struct {
+			ConnectionString     *string `json:"connectionString"`
+			PbiModelDatabaseName string  `json:"pbiModelDatabaseName"`
+		} `json:"byConnection"`
+	}
+	if err := json.Unmarshal(dsRaw, &ds); err != nil || ds.ByConnection == nil {
+		return content, out // byPath / reference-less / unparseable
+	}
+
+	// Resolve the model NAME and the baseline GUID from whichever shape is present.
+	var modelName, baselineGUID string
+	if cs := ds.ByConnection.ConnectionString; cs != nil && *cs != "" {
+		kv := parseConnString(*cs)
+		baselineGUID = kv["semanticmodelid"]
+		modelName = kv["initial catalog"]
+		if reportConnGUID.MatchString(modelName) {
+			// catalog holds a GUID, not a name — resolve via the baseline index.
+			if base, ok := rb.baseline.ItemByGUID(modelName); ok {
+				modelName = base.Name
+			}
+			if baselineGUID == "" {
+				baselineGUID = kv["initial catalog"]
+			}
+		}
+	} else {
+		baselineGUID = ds.ByConnection.PbiModelDatabaseName
+		if base, ok := rb.baseline.ItemByGUID(baselineGUID); ok {
+			modelName = base.Name
+		}
+	}
+
+	if ov, ok := rb.overrides[baselineGUID]; ok {
+		modelName = ov.ItemName
+	}
+	if modelName == "" {
+		out.Unresolved = append(out.Unresolved, UnresolvedRef{
+			GUID: baselineGUID, ItemType: "SemanticModel", Location: "report dataset binding", Reason: ReasonNameUnknown,
+		})
+		return content, out
+	}
+
+	it, st := rb.target.LookupName(modelName, "SemanticModel")
+	if st != LookupFound {
+		out.Unresolved = append(out.Unresolved, UnresolvedRef{
+			GUID: baselineGUID, ItemType: "SemanticModel", Location: "report dataset binding", Reason: reasonForStatus(st),
+		})
+		return content, out
+	}
+
+	canonical, err := json.Marshal(map[string]any{
+		"byConnection": map[string]any{
+			"connectionString":          nil,
+			"pbiServiceModelId":         nil,
+			"pbiModelVirtualServerName": "sobe_wowvirtualserver",
+			"pbiModelDatabaseName":      it.GUID,
+			"name":                      "EntityDataSource",
+			"connectionType":            "pbiServiceXmlaStyleLive",
+		},
+	})
+	if err != nil {
+		return content, out
+	}
+	pbir["$schema"] = json.RawMessage(`"https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/1.0.0/schema.json"`)
+	pbir["datasetReference"] = canonical
+	rewritten, err := json.MarshalIndent(pbir, "", "  ")
+	if err != nil {
+		return content, out
+	}
+
+	seen := map[string]bool{}
+	addChange(&out, seen, "SemanticModel", modelName, baselineGUID, it.GUID)
+	out.ReportBindings = append(out.ReportBindings, ReportBinding{
+		Report: item.DisplayName, Model: modelName, Workspace: rb.workspaceName(it.WorkspaceID),
+	})
+	return rewritten, out
 }

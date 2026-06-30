@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ const (
 	devConfigLH = "11111111-1111-1111-1111-111111111111"
 	devConfigWS = "22222222-2222-2222-2222-222222222222"
 	devSilverLH = "33333333-3333-3333-3333-333333333333"
+	devHRModel  = "12995bce-ace2-401b-a5fb-6b8dd6a45ead"
 )
 
 func rebindNotebook(defaultLH, defaultWS, defaultName, knownID string) []byte {
@@ -42,18 +44,22 @@ func newRebindFixture(t *testing.T, overrides map[string]Override) *Rebinder {
 		workspaces: []fabric.Workspace{
 			{ID: "dev-config", DisplayName: "DP - DEV - Config"},
 			{ID: "dev-data", DisplayName: "DP - DEV - Data"},
+			{ID: "dev-semmod", DisplayName: "DP - DEV - SemMod"},
 			{ID: "test-config", DisplayName: "DP - TEST - Config"},
 			{ID: "test-data", DisplayName: "DP - TEST - Data"},
+			{ID: "test-semmod", DisplayName: "DP - TEST - SemMod"},
 		},
 		itemsByWS: map[string][]fabric.Item{
 			"dev-config":  {{ID: devConfigLH, DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 			"dev-data":    {{ID: devSilverLH, DisplayName: "LH_Silver", Type: "Lakehouse"}},
+			"dev-semmod":  {{ID: devHRModel, DisplayName: "HR", Type: "SemanticModel"}},
 			"test-config": {{ID: "test-config-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 			"test-data":   {{ID: "test-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}},
+			"test-semmod": {{ID: "test-hr-model", DisplayName: "HR", Type: "SemanticModel"}},
 		},
 	}
-	baselineWS := []fabric.Workspace{f.workspaces[0], f.workspaces[1]}
-	targetWS := []fabric.Workspace{f.workspaces[2], f.workspaces[3]}
+	baselineWS := []fabric.Workspace{f.workspaces[0], f.workspaces[1], f.workspaces[2]}
+	targetWS := []fabric.Workspace{f.workspaces[3], f.workspaces[4], f.workspaces[5]}
 	rb, err := NewRebinder(f, "tok", baselineWS, targetWS, overrides)
 	if err != nil {
 		t.Fatalf("NewRebinder: %v", err)
@@ -249,5 +255,130 @@ func TestDefaultLakehouseNoNameUnknownGUIDReason(t *testing.T) {
 	}
 	if dl.Reason != ReasonNameUnknown {
 		t.Errorf("default_lakehouse Reason = %q, want %q", dl.Reason, ReasonNameUnknown)
+	}
+}
+
+// flatPBIR builds a byConnection report definition in the Power BI Desktop
+// flat-connection-string shape (the real on-disk form).
+func flatPBIR(ws, catalog, guid string) []byte {
+	return []byte(`{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
+  "version": "4.0",
+  "datasetReference": {
+    "byConnection": {
+      "connectionString": "Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/` + ws + `\";initial catalog=` + catalog + `;integrated security=ClaimsToken;semanticmodelid=` + guid + `"
+    }
+  }
+}`)
+}
+
+// structuredPBIR builds the fabric-cicd structured byConnection shape.
+func structuredPBIR(guid string) []byte {
+	return []byte(`{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/1.0.0/schema.json",
+  "version": "4.0",
+  "datasetReference": {
+    "byConnection": {
+      "connectionString": null,
+      "pbiModelDatabaseName": "` + guid + `",
+      "pbiModelVirtualServerName": "sobe_wowvirtualserver",
+      "name": "EntityDataSource",
+      "connectionType": "pbiServiceXmlaStyleLive"
+    }
+  }
+}`)
+}
+
+// pbirModelID parses a rewritten pbir and returns its byConnection
+// pbiModelDatabaseName (the bound model GUID).
+func pbirModelID(t *testing.T, content []byte) string {
+	t.Helper()
+	var p struct {
+		DatasetReference struct {
+			ByConnection struct {
+				PbiModelDatabaseName string  `json:"pbiModelDatabaseName"`
+				ConnectionString     *string `json:"connectionString"`
+			} `json:"byConnection"`
+		} `json:"datasetReference"`
+	}
+	if err := json.Unmarshal(content, &p); err != nil {
+		t.Fatalf("rewritten pbir not valid JSON: %v\n%s", err, content)
+	}
+	if p.DatasetReference.ByConnection.ConnectionString != nil {
+		t.Errorf("canonical form must null out connectionString, got %q", *p.DatasetReference.ByConnection.ConnectionString)
+	}
+	return p.DatasetReference.ByConnection.PbiModelDatabaseName
+}
+
+func TestRebindReportConnectionFlatResolves(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
+	out, outcome := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Errorf("bound model GUID = %q, want test-hr-model", got)
+	}
+	if len(outcome.ReportBindings) != 1 {
+		t.Fatalf("want 1 ReportBinding, got %d", len(outcome.ReportBindings))
+	}
+	b := outcome.ReportBindings[0]
+	if b.Report != "Daniel - Testing" || b.Model != "HR" || b.Workspace != "DP - TEST - SemMod" {
+		t.Errorf("ReportBinding = %+v", b)
+	}
+	// The GUID swap is recorded for the rebind summary.
+	if len(outcome.Changes) != 1 || outcome.Changes[0].Old != devHRModel || outcome.Changes[0].New != "test-hr-model" {
+		t.Errorf("Changes = %+v", outcome.Changes)
+	}
+}
+
+func TestRebindReportConnectionStructuredResolves(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	out, outcome := rb.RebindReportConnection(item, structuredPBIR(devHRModel))
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Errorf("bound model GUID = %q, want test-hr-model", got)
+	}
+	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
+		t.Errorf("ReportBindings = %+v", outcome.ReportBindings)
+	}
+}
+
+func TestRebindReportConnectionOverrideWins(t *testing.T) {
+	// Baseline GUID points at a model whose name isn't "HR"; an override maps it.
+	rb := newRebindFixture(t, map[string]Override{
+		"99999999-9999-9999-9999-999999999999": {ItemType: "SemanticModel", ItemName: "HR"},
+	})
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	out, _ := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "Unknown", "99999999-9999-9999-9999-999999999999"))
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Errorf("override should resolve to HR target GUID, got %q", got)
+	}
+}
+
+func TestRebindReportConnectionUnresolved(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	in := flatPBIR("DP - DEV - SemMod", "NoSuchModel", devHRModel)
+	out, outcome := rb.RebindReportConnection(item, in)
+	if string(out) != string(in) {
+		t.Errorf("unresolved binding must leave content unchanged")
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].ItemType != "SemanticModel" {
+		t.Fatalf("want 1 SemanticModel UnresolvedRef, got %+v", outcome.Unresolved)
+	}
+	if len(outcome.ReportBindings) != 0 {
+		t.Errorf("unresolved binding must not produce a ReportBinding")
+	}
+}
+
+func TestRebindReportConnectionByPathUntouched(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := []byte(`{"datasetReference":{"byPath":{"path":"../Drift.SemanticModel"}}}`)
+	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"}, in)
+	if string(out) != string(in) {
+		t.Errorf("byPath report must be left unchanged")
+	}
+	if len(outcome.Changes) != 0 || len(outcome.Unresolved) != 0 || len(outcome.ReportBindings) != 0 {
+		t.Errorf("byPath report must produce empty outcome, got %+v", outcome)
 	}
 }
