@@ -318,7 +318,11 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 					if path.Base(part.Path) != "definition.pbir" {
 						continue
 					}
-					_, outcome := rb.RebindReportConnection(it, part.Content)
+					// Match the publish pipeline: apply the customer's find→replace
+					// substitutions to the pbir before resolving the binding, so the
+					// previewed binding can't differ from what SubstituteParts publishes.
+					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
+					_, outcome := rb.RebindReportConnection(it, subbed)
 					g.ReportBindings = append(g.ReportBindings, outcome.ReportBindings...)
 					g.Changes = append(g.Changes, outcome.Changes...)
 					g.Unresolved = append(g.Unresolved, outcome.Unresolved...)
@@ -577,11 +581,13 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			continue
 		}
 		if rows[idx].ItemType() != "Report" {
-			// Report rebind outcomes (changes/unresolved/bindings) are owned by the
-			// dedicated report-binding pass in buildDeployGroups, which covers BOTH
-			// new and existing reports. The report parts are still rewritten above
-			// (so the content diff is accurate); we just don't double-collect their
-			// rebind outcomes here.
+			// Binding outcomes (ReportBindings / Unresolved / Changes) for Report
+			// items are owned exclusively by the dedicated pass in buildDeployGroups,
+			// which runs ApplyCustomSubstitutions before RebindReportConnection so the
+			// previewed binding matches what SubstituteParts publishes. Report content
+			// IS still rewritten above so the content diff remains accurate; only the
+			// binding outcome collection is intentionally skipped here to avoid
+			// double-counting across the two passes.
 			unresolved = append(unresolved, c.unresolved...)
 			changes = append(changes, c.changes...)
 		}
