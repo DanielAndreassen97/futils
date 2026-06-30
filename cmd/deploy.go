@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -56,13 +57,14 @@ func localTypeScope(items []deploy.LocalItem) map[string]bool {
 // discovered under that folder, the target workspace, the compare rows, and the
 // deployed item list (needed by BuildPlan).
 type deployGroup struct {
-	Folder     string
-	Target     fabric.Workspace
-	Rows       []deploy.CompareRow
-	Deployed   []fabric.Item
-	Unresolved []deploy.UnresolvedRef
-	Changes    []deploy.RebindChange
-	Diffs      []ItemDiff
+	Folder         string
+	Target         fabric.Workspace
+	Rows           []deploy.CompareRow
+	Deployed       []fabric.Item
+	Unresolved     []deploy.UnresolvedRef
+	Changes        []deploy.RebindChange
+	ReportBindings []deploy.ReportBinding
+	Diffs          []ItemDiff
 }
 
 // ItemDiff holds the per-part content diffs for one Changed item, for the HTML
@@ -214,6 +216,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Comparing %s → %s", env, targetsSummary(groups))))
 	printGroupedCompare(groups)
 	printRebindSummary(groups)
+	printReportBindings(groups)
 	printUnresolved(groups)
 
 	hasDiffs := false
@@ -306,6 +309,22 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			Deployed: deployed,
 		}
 		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb)
+		if rb != nil {
+			for _, it := range items {
+				if it.Type != "Report" {
+					continue
+				}
+				for _, part := range it.Parts {
+					if path.Base(part.Path) != "definition.pbir" {
+						continue
+					}
+					_, outcome := rb.RebindReportConnection(it, part.Content)
+					g.ReportBindings = append(g.ReportBindings, outcome.ReportBindings...)
+					g.Changes = append(g.Changes, outcome.Changes...)
+					g.Unresolved = append(g.Unresolved, outcome.Unresolved...)
+				}
+			}
+		}
 		groups = append(groups, g)
 	}
 	reconcileOrphans(groups)
@@ -557,8 +576,15 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			}
 			continue
 		}
-		unresolved = append(unresolved, c.unresolved...)
-		changes = append(changes, c.changes...)
+		if rows[idx].ItemType() != "Report" {
+			// Report rebind outcomes (changes/unresolved/bindings) are owned by the
+			// dedicated report-binding pass in buildDeployGroups, which covers BOTH
+			// new and existing reports. The report parts are still rewritten above
+			// (so the content diff is accurate); we just don't double-collect their
+			// rebind outcomes here.
+			unresolved = append(unresolved, c.unresolved...)
+			changes = append(changes, c.changes...)
+		}
 		if c.err != nil {
 			unverified++
 			if firstErr == nil {
@@ -1132,6 +1158,33 @@ func printRebindSummary(groups []deployGroup) {
 	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
 	for _, c := range ordered {
 		fmt.Printf("  %-12s %-24s %s → %s\n", c.Kind, c.Name, c.Old, c.New)
+	}
+	fmt.Println()
+}
+
+// printReportBindings lists each report→semantic-model binding the deploy will
+// apply, so the user sees which model a report binds to (and in which target
+// workspace) before the deploy gate. Silent when no report binds.
+func printReportBindings(groups []deployGroup) {
+	var all []deploy.ReportBinding
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, b := range g.ReportBindings {
+			k := b.Report + "\x00" + b.Model + "\x00" + b.Workspace
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			all = append(all, b)
+		}
+	}
+	if len(all) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println(infoStyle.Render("Report bindings:"))
+	for _, b := range all {
+		fmt.Printf("  %-24s →  %s  (%s)\n", b.Report, b.Model, b.Workspace)
 	}
 	fmt.Println()
 }

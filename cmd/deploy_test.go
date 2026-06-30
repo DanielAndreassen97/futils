@@ -1098,3 +1098,24 @@ func TestRunDeployBulkBackendCallsBulkImport(t *testing.T) {
 		t.Errorf("per-item CreateItem should not run in bulk mode, got %v", api.created)
 	}
 }
+
+func TestPrintReportBindingsRendersResolved(t *testing.T) {
+	groups := []deployGroup{{
+		ReportBindings: []deploy.ReportBinding{
+			{Report: "Daniel - Testing", Model: "HR", Workspace: "DP - TEST - SemMod"},
+		},
+	}}
+	out := captureStdout(t, func() { printReportBindings(groups) })
+	if !strings.Contains(out, "Daniel - Testing") ||
+		!strings.Contains(out, "HR") ||
+		!strings.Contains(out, "DP - TEST - SemMod") {
+		t.Errorf("report binding line missing detail:\n%s", out)
+	}
+}
+
+func TestPrintReportBindingsSilentWhenEmpty(t *testing.T) {
+	out := captureStdout(t, func() { printReportBindings(nil) })
+	if out != "" {
+		t.Errorf("expected no output for no bindings, got %q", out)
+	}
+}
