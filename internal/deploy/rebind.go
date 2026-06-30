@@ -373,6 +373,24 @@ func parseConnString(cs string) map[string]string {
 	return out
 }
 
+// canonicalByConnection is the fabric-cicd canonical byConnection block. Field
+// ORDER is significant: a struct (not map[string]any) serializes in declaration
+// order, matching the on-disk fabric-cicd form, where map keys would sort
+// alphabetically. ConnectionString and PbiServiceModelID are *string left nil
+// (no omitempty) so they emit JSON null rather than being dropped.
+type canonicalByConnection struct {
+	ByConnection canonicalByConnectionInner `json:"byConnection"`
+}
+
+type canonicalByConnectionInner struct {
+	ConnectionString          *string `json:"connectionString"`
+	PbiServiceModelID         *string `json:"pbiServiceModelId"`
+	PbiModelVirtualServerName string  `json:"pbiModelVirtualServerName"`
+	PbiModelDatabaseName      string  `json:"pbiModelDatabaseName"`
+	Name                      string  `json:"name"`
+	ConnectionType            string  `json:"connectionType"`
+}
+
 // RebindReportConnection rewrites a report's definition.pbir byConnection
 // reference from baseline to target by NAME. It handles both on-disk shapes:
 // the Power BI Desktop flat connectionString (Data Source + initial catalog +
@@ -441,14 +459,12 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out
 	}
 
-	canonical, err := json.Marshal(map[string]any{
-		"byConnection": map[string]any{
-			"connectionString":          nil,
-			"pbiServiceModelId":         nil,
-			"pbiModelVirtualServerName": "sobe_wowvirtualserver",
-			"pbiModelDatabaseName":      it.GUID,
-			"name":                      "EntityDataSource",
-			"connectionType":            "pbiServiceXmlaStyleLive",
+	canonical, err := json.Marshal(canonicalByConnection{
+		ByConnection: canonicalByConnectionInner{
+			PbiModelVirtualServerName: "sobe_wowvirtualserver",
+			PbiModelDatabaseName:      it.GUID,
+			Name:                      "EntityDataSource",
+			ConnectionType:            "pbiServiceXmlaStyleLive",
 		},
 	})
 	if err != nil {

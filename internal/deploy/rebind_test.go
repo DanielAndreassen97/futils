@@ -310,6 +310,18 @@ func pbirModelID(t *testing.T, content []byte) string {
 	return p.DatasetReference.ByConnection.PbiModelDatabaseName
 }
 
+// pbirSchema parses a rewritten pbir and returns its $schema field.
+func pbirSchema(t *testing.T, content []byte) string {
+	t.Helper()
+	var p struct {
+		Schema string `json:"$schema"`
+	}
+	if err := json.Unmarshal(content, &p); err != nil {
+		t.Fatalf("rewritten pbir not valid JSON: %v\n%s", err, content)
+	}
+	return p.Schema
+}
+
 func TestRebindReportConnectionFlatResolves(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
@@ -329,6 +341,10 @@ func TestRebindReportConnectionFlatResolves(t *testing.T) {
 	if len(outcome.Changes) != 1 || outcome.Changes[0].Old != devHRModel || outcome.Changes[0].New != "test-hr-model" {
 		t.Errorf("Changes = %+v", outcome.Changes)
 	}
+	// The rewrite pins the canonical 1.0.0 definitionProperties schema.
+	if s := pbirSchema(t, out); !strings.HasSuffix(s, "definitionProperties/1.0.0/schema.json") {
+		t.Errorf("$schema = %q, want suffix definitionProperties/1.0.0/schema.json", s)
+	}
 }
 
 func TestRebindReportConnectionStructuredResolves(t *testing.T) {
@@ -340,6 +356,10 @@ func TestRebindReportConnectionStructuredResolves(t *testing.T) {
 	}
 	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
 		t.Errorf("ReportBindings = %+v", outcome.ReportBindings)
+	}
+	// The GUID swap is recorded for the rebind summary, same as the flat form.
+	if len(outcome.Changes) != 1 || outcome.Changes[0].Old != devHRModel || outcome.Changes[0].New != "test-hr-model" {
+		t.Errorf("Changes = %+v", outcome.Changes)
 	}
 }
 
@@ -368,6 +388,25 @@ func TestRebindReportConnectionUnresolved(t *testing.T) {
 	}
 	if len(outcome.ReportBindings) != 0 {
 		t.Errorf("unresolved binding must not produce a ReportBinding")
+	}
+}
+
+func TestRebindReportConnectionNameUnknown(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	// Structured form whose GUID is in NEITHER the baseline index nor an override:
+	// no name to match by → name-unknown, content untouched.
+	unknown := "aaaaaaaa-0000-0000-0000-000000000000"
+	in := structuredPBIR(unknown)
+	out, outcome := rb.RebindReportConnection(item, in)
+	if string(out) != string(in) {
+		t.Errorf("name-unknown binding must leave content unchanged")
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].ItemType != "SemanticModel" || outcome.Unresolved[0].Reason != ReasonNameUnknown {
+		t.Fatalf("want 1 SemanticModel UnresolvedRef with ReasonNameUnknown, got %+v", outcome.Unresolved)
+	}
+	if len(outcome.ReportBindings) != 0 {
+		t.Errorf("name-unknown binding must not produce a ReportBinding")
 	}
 }
 
