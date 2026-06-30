@@ -421,3 +421,25 @@ func TestRebindReportConnectionByPathUntouched(t *testing.T) {
 		t.Errorf("byPath report must produce empty outcome, got %+v", outcome)
 	}
 }
+
+func TestRebindPartDispatchesReport(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
+	out, outcome := rb.RebindPart(item, "definition.pbir", flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+	if got := pbirModelID(t, out); got != "test-hr-model" {
+		t.Errorf("RebindPart did not rebind report binding, model GUID = %q", got)
+	}
+	if len(outcome.ReportBindings) != 1 {
+		t.Errorf("RebindPart should surface the ReportBinding, got %d", len(outcome.ReportBindings))
+	}
+}
+
+func TestRebindPartIgnoresNonPbirReportPart(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	item := LocalItem{Type: "Report", DisplayName: "R"}
+	in := []byte(`{"some":"report.json content"}`)
+	out, outcome := rb.RebindPart(item, "report.json", in)
+	if string(out) != string(in) || len(outcome.ReportBindings) != 0 {
+		t.Errorf("non-pbir report part must pass through unchanged")
+	}
+}

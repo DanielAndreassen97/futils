@@ -193,6 +193,9 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 	if item.Type == "SemanticModel" {
 		return rb.RebindSemanticModel(content)
 	}
+	if item.Type == "Report" && path.Base(partPath) == "definition.pbir" {
+		return rb.RebindReportConnection(item, content)
+	}
 	return content, RebindOutcome{}
 }
 
