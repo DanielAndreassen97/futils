@@ -84,6 +84,7 @@ type seqTransport struct {
 type seqResponse struct {
 	status     int
 	retryAfter string
+	location   string // sets the Location header (for 202 LRO responses)
 	body       string
 }
 
@@ -104,6 +105,9 @@ func (s *seqTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	hdr := http.Header{}
 	if r.retryAfter != "" {
 		hdr.Set("Retry-After", r.retryAfter)
+	}
+	if r.location != "" {
+		hdr.Set("Location", r.location)
 	}
 	return &http.Response{
 		StatusCode: r.status,
@@ -331,5 +335,47 @@ func TestBulkImportDefinitionsSyncSuccess(t *testing.T) {
 	}
 	if !sentBody.Options.AllowPairingByName {
 		t.Errorf("want options.allowPairingByName=true in request body, got false")
+	}
+}
+
+// TestUpdateItemDefinitionAsyncNoResult verifies that an UpdateItemDefinition
+// whose LRO goes async (202 → poll → Succeeded) succeeds even though the
+// operation produces no result. Fabric returns 400 OperationHasNoResult from
+// the /result endpoint for update operations (per the LRO contract, "not all
+// long running operations have a result"); the client must treat that as
+// success, not a deploy failure. This reproduces the "Update Report:
+// OperationHasNoResult" failure seen deploying a report whose definition is
+// large enough to take the async path.
+func TestUpdateItemDefinitionAsyncNoResult(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{status: 202, location: "https://api.fabric.microsoft.com/v1/operations/op-123"},
+		{status: 200, body: `{"status":"Succeeded"}`},
+		{status: 400, body: `{"requestId":"r","errorCode":"OperationHasNoResult","message":"The operation has no result","isRetriable":false}`},
+	}}
+
+	origClient := httpClient
+	origRetry := retryTokenFn
+	t.Cleanup(func() {
+		httpClient = origClient
+		retryTokenFn = origRetry
+	})
+	httpClient = &http.Client{Transport: transport}
+	retryTokenFn = func() (string, bool) { return "fresh-token", true }
+
+	def := &Definition{Parts: []DefinitionPart{
+		{Path: "definition.pbir", Payload: "e30=", PayloadType: "InlineBase64"},
+	}}
+	err := UpdateItemDefinition("tok",
+		"11111111-1111-1111-1111-111111111111",
+		"22222222-2222-2222-2222-222222222222", def)
+	if err != nil {
+		t.Fatalf("UpdateItemDefinition errored on a no-result operation: %v", err)
+	}
+	// POST + one poll + one /result fetch = 3 calls.
+	if len(transport.calls) != 3 {
+		t.Fatalf("want 3 HTTP calls (POST, poll, result), got %d: %v", len(transport.calls), transport.urls)
+	}
+	if !strings.HasSuffix(transport.urls[2], "/result") {
+		t.Errorf("third call should be the /result fetch, got %q", transport.urls[2])
 	}
 }

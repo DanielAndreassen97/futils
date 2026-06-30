@@ -681,6 +681,11 @@ func nextPollInterval(prev time.Duration) time.Duration {
 // concurrent workers — makes the upstream service reject the premature polls
 // with "RequestBlocked". Waiting one interval first (matching the reference
 // dry-run's `sleep(1); poll`) gives the operation time to be ready.
+// errOperationHasNoResult is the Fabric error code returned by
+// GET /operations/{id}/result for a succeeded LRO that produces no result
+// (e.g. updateDefinition). Per the LRO contract this means success, not failure.
+const errOperationHasNoResult = "OperationHasNoResult"
+
 func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 60
@@ -703,7 +708,17 @@ func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) 
 		}
 		switch op.Status {
 		case "Succeeded":
-			return doGet(token, operationURL+"/result")
+			result, err := doGet(token, operationURL+"/result")
+			if err != nil && strings.Contains(err.Error(), errOperationHasNoResult) {
+				// Per the Fabric LRO contract, "not all long running operations
+				// have a result" — updateDefinition succeeds but its /result
+				// endpoint returns 400 OperationHasNoResult. That's success with
+				// no body, not a failure. Callers that need a body (CreateItem,
+				// GetItemDefinition) target operations that DO produce one and so
+				// never reach this branch.
+				return nil, nil
+			}
+			return result, err
 		case "Failed":
 			return nil, fmt.Errorf("operation failed: %s", string(data))
 		}
