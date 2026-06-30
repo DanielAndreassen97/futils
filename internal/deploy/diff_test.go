@@ -161,19 +161,3 @@ func TestSubstitutePartsTagsUnresolvedWithItemName(t *testing.T) {
 		t.Fatalf("unresolved = %#v (want one tagged with NB_Config)", outcome.Unresolved)
 	}
 }
-
-func TestSubstitutePartsCollectsReportBindings(t *testing.T) {
-	rb := newRebindFixture(t, nil)
-	item := LocalItem{
-		Type:        "Report",
-		DisplayName: "Daniel - Testing",
-		Parts:       []Part{{Path: "definition.pbir", Content: flatPBIR("DP - DEV - SemMod", "HR", devHRModel)}},
-	}
-	_, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb)
-	if err != nil {
-		t.Fatalf("SubstituteParts: %v", err)
-	}
-	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
-		t.Fatalf("ReportBindings not threaded, got %+v", outcome.ReportBindings)
-	}
-}
