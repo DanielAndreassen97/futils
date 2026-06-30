@@ -753,7 +753,7 @@ func runDeploy(
 			// Post-deploy rebind pass: now that every group is published, repoint each
 			// report at its model and fold the outcome into the report's Result (matched
 			// by deployed GUID). Runs BEFORE the delete pass.
-			if outcomes := deploy.RebindReports(client, token, modelsByWS, pending); len(outcomes) > 0 {
+			if outcomes := deploy.RebindReports(client, token, modelsByWS, pending, rb != nil); len(outcomes) > 0 {
 				allResults = foldRebindOutcomes(allResults, outcomes)
 			}
 		}

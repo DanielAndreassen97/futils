@@ -164,16 +164,26 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 // so a model and its report can sit in different folders/groups and still bind —
 // while a model named "X" in one workspace can never bind a report in another
 // (the workspace key isolates them).
+//
+// rebinderActive signals whether a Rebinder is configured for this run (rb != nil
+// at the call site). This governs the byConnection warning:
 //   - byPath, model found in the report's workspace → RebindReport; an API
 //     failure becomes an Err outcome.
 //   - byPath, model NOT in modelsByWS → silent skip. The most common case is an
 //     incremental deploy where only the report changed and its SemanticModel was
 //     Unchanged (never published this run); the model is already live and the
 //     report is already correctly bound — emitting a Warning here is a false alarm.
-//   - byConnection → no action; the binding was rewritten in the published
-//     definition by RebindReportConnection — no warning needed.
+//   - byConnection, model CREATED this run (in modelsByWS) → RebindReport; the
+//     payload kept the baseline GUID because the model wasn't in the pre-deploy
+//     target index at diff time, so we bind it now (mirrors byPath).
+//   - byConnection, rebinderActive=false, model not this run → warn; the payload
+//     is unchanged (no rebinder ran the in-payload rewrite) so the report retains
+//     its stale dev binding — the operator must verify manually.
+//   - byConnection, rebinderActive=true, model not this run → no-op; the
+//     in-payload rewrite (RebindReportConnection) already resolved it, or it was
+//     surfaced as unresolved pre-deploy.
 //   - no dataset reference → no outcome (nothing to rebind).
-func RebindReports(client FabricClient, token string, modelsByWS map[string]map[string]string, pending []PendingReportRebind) []ReportRebindOutcome {
+func RebindReports(client FabricClient, token string, modelsByWS map[string]map[string]string, pending []PendingReportRebind, rebinderActive bool) []ReportRebindOutcome {
 	var outcomes []ReportRebindOutcome
 	for _, pr := range pending {
 		switch pr.Ref.Kind {
@@ -191,9 +201,27 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 				})
 			}
 		case refByConnection:
-			// byConnection bindings are rewritten in the published definition by
-			// RebindReportConnection (resolved by name to the target model GUID),
-			// so there is nothing to do post-deploy and no warning to emit.
+			if datasetID, ok := modelsByWS[pr.WorkspaceID][pr.Ref.ModelName]; ok {
+				// Model was created this run: the payload kept the baseline GUID
+				// because it wasn't in the pre-deploy target index at diff time.
+				// Rebind now, mirroring the byPath same-run case.
+				if err := client.RebindReport(token, pr.WorkspaceID, pr.ReportID, datasetID); err != nil {
+					outcomes = append(outcomes, ReportRebindOutcome{
+						ReportID: pr.ReportID,
+						Err:      fmt.Errorf("published but rebind failed: %w", err),
+					})
+				}
+			} else if !rebinderActive {
+				// No rebinder ran, so the payload rewrite never executed and the
+				// report retains its stale dev binding — warn so the operator can
+				// verify the binding in the target workspace.
+				outcomes = append(outcomes, ReportRebindOutcome{
+					ReportID: pr.ReportID,
+					Warning:  "report uses a byConnection dataset reference and no rebinder is configured — verify the binding in the target",
+				})
+			}
+			// else (rebinder active, model not published this run): the in-payload
+			// rewrite handled it, or it was surfaced as unresolved pre-deploy.
 		case refNone:
 			// No dataset reference to rebind — nothing to report.
 		}

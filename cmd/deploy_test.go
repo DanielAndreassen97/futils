@@ -657,10 +657,10 @@ func TestRunDeployCrossGroupRebind(t *testing.T) {
 	}
 }
 
-// TestRunDeployByConnectionNoWarning proves the runDeploy wiring: a byConnection
-// report produces NO rebind (the Rebind API is not called) and NO warning — its
-// binding is handled by the in-payload rewrite, so the post-deploy pass is silent.
-func TestRunDeployByConnectionNoWarning(t *testing.T) {
+// TestRunDeployByConnectionWarning proves the runDeploy wiring: a byConnection
+// report deployed with a nil rebinder (no in-payload rewrite ran) and no same-run
+// model must emit a warning so the operator knows to verify the binding manually.
+func TestRunDeployByConnectionWarning(t *testing.T) {
 	fake := &deployFakeAPI{}
 	report := []deploy.LocalItem{{Type: "Report", DisplayName: "ConnReport", LogicalID: "lid-r",
 		Parts: []deploy.Part{{Path: "definition.pbir",
@@ -671,13 +671,13 @@ func TestRunDeployByConnectionNoWarning(t *testing.T) {
 		t.Fatalf("runDeploy: %v", err)
 	}
 	if len(fake.rebinds) != 0 {
-		t.Fatalf("byConnection report must not rebind, got %v", fake.rebinds)
+		t.Fatalf("byConnection report must not rebind (no model to bind to), got %v", fake.rebinds)
 	}
 	if len(res) != 1 {
 		t.Fatalf("want 1 result, got %d", len(res))
 	}
-	if res[0].Warning != "" || res[0].Err != nil {
-		t.Errorf("byConnection report must be clean (no warning, no error), got warning=%q err=%v", res[0].Warning, res[0].Err)
+	if res[0].Warning == "" || !strings.Contains(res[0].Warning, "byConnection") {
+		t.Errorf("nil-rebinder byConnection report must warn, got warning=%q err=%v", res[0].Warning, res[0].Err)
 	}
 }
 

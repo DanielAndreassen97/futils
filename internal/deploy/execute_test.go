@@ -303,7 +303,7 @@ func runRebindPass(t *testing.T, rf *recordingFabric, target fabric.Workspace, p
 			t.Fatalf("item %s failed: %v", r.Name, r.Err)
 		}
 	}
-	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 	return res, outcomes
 }
 
@@ -379,7 +379,7 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 		if len(rf.rebinds) != 0 {
 			t.Fatalf("rebind must not happen inline during Execute, got %d", len(rf.rebinds))
 		}
-		outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+		outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 		for _, o := range outcomes {
 			if o.Err != nil {
 				t.Fatalf("rebind outcome error: %v", o.Err)
@@ -424,7 +424,7 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	}
 	pending = append(pending, p...)
 
-	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("model in W1 must not bind a report in W2, got rebinds=%v", rf.rebinds)
 	}
@@ -434,9 +434,10 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	}
 }
 
-// TestRebindReportsByConnectionNoWarning proves that a byConnection report no longer
-// emits a post-deploy warning — the binding is rewritten in the published definition
-// by RebindReportConnection, so there is nothing to do here.
+// TestRebindReportsByConnectionNoWarning proves that a byConnection report with an
+// active rebinder (rebinderActive=true) and a model not published this run produces
+// no warning and no rebind call — the in-payload rewrite (RebindReportConnection)
+// handled the binding, so the post-deploy pass is a clean no-op.
 func TestRebindReportsByConnectionNoWarning(t *testing.T) {
 	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
 	rf := &recordingFabric{fakeFabric: fakeFabric{
@@ -451,16 +452,16 @@ func TestRebindReportsByConnectionNoWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	// rebinderActive=true: the in-payload rewrite ran, model not published this run
+	// → clean no-op (no rebind call, no warning).
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("byConnection report must NOT trigger a RebindReport, got %v", rf.rebinds)
 	}
-	// byConnection bindings are rewritten in the published definition (RebindPart),
-	// so the post-deploy pass no longer warns.
 	for _, r := range outcomes {
 		if r.Warning != "" {
-			t.Errorf("byConnection report should not warn post-deploy, got %q", r.Warning)
+			t.Errorf("byConnection report with active rebinder must not warn, got %q", r.Warning)
 		}
 	}
 }
@@ -485,7 +486,7 @@ func TestRebindReportsModelMissingSkipsSilently(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("missing model must not rebind, got %v", rf.rebinds)
@@ -517,7 +518,7 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	outcomes := RebindReports(rf, "tok", modelsByWS, pending)
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
 	if len(outcomes) != 1 || outcomes[0].Err == nil {
 		t.Fatalf("rebind failure must produce an Err outcome, got %+v", outcomes)
 	}
@@ -540,6 +541,45 @@ func TestReportDatasetRefKinds(t *testing.T) {
 	noPbir := LocalItem{Type: "Report", Parts: []Part{{Path: "report.json", Content: []byte(`{}`)}}}
 	if ref := reportDatasetRef(noPbir); ref.Kind != refNone {
 		t.Errorf("no pbir = %+v, want refNone", ref)
+	}
+}
+
+// TestRebindReportsByConnectionCoDeployedBinds proves that a byConnection report
+// whose semantic model was CREATED in the same run (not in the pre-deploy target
+// index, so the payload kept the baseline GUID) gets rebound via modelsByWS
+// once that map is populated post-deploy.
+func TestRebindReportsByConnectionCoDeployedBinds(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{}}
+	pending := []PendingReportRebind{{
+		WorkspaceID: "ws-1", ReportID: "rep-1", ReportName: "R",
+		Ref: datasetRef{Kind: refByConnection, ModelName: "HR"},
+	}}
+	models := map[string]map[string]string{"ws-1": {"HR": "new-hr-guid"}}
+	outcomes := RebindReports(rf, "tok", models, pending, true)
+	if len(rf.rebinds) != 1 || rf.rebinds[0][2] != "new-hr-guid" {
+		t.Fatalf("co-deployed byConnection report must rebind to the same-run model, got rebinds=%v", rf.rebinds)
+	}
+	if len(outcomes) != 0 {
+		t.Errorf("clean rebind should produce no outcome, got %+v", outcomes)
+	}
+}
+
+// TestRebindReportsByConnectionNoRebinderWarns proves that when no rebinder is
+// configured (rebinderActive=false) and the model was not deployed this run,
+// a byConnection report emits a warning — the regression where the warning was
+// silently dropped.
+func TestRebindReportsByConnectionNoRebinderWarns(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{}}
+	pending := []PendingReportRebind{{
+		WorkspaceID: "ws-1", ReportID: "rep-1", ReportName: "R",
+		Ref: datasetRef{Kind: refByConnection, ModelName: "HR"},
+	}}
+	outcomes := RebindReports(rf, "tok", map[string]map[string]string{}, pending, false)
+	if len(rf.rebinds) != 0 {
+		t.Fatalf("no model to bind to — must not call RebindReport, got %v", rf.rebinds)
+	}
+	if len(outcomes) != 1 || !strings.Contains(outcomes[0].Warning, "byConnection") {
+		t.Fatalf("no rebinder → byConnection report must warn, got %+v", outcomes)
 	}
 }
 
