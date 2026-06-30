@@ -185,7 +185,7 @@ func TestBulkImportFlagsMissingReturnedItem(t *testing.T) {
 	}
 }
 
-func TestBulkImportFoldsByConnectionWarning(t *testing.T) {
+func TestBulkImportByConnectionNoWarning(t *testing.T) {
 	report := LocalItem{
 		Type:        "Report",
 		DisplayName: "Sales",
@@ -203,7 +203,9 @@ func TestBulkImportFoldsByConnectionWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BulkImport: %v", err)
 	}
-	if len(results) != 1 || !strings.Contains(results[0].Warning, "byConnection") {
-		t.Errorf("expected a byConnection warning, got %+v", results[0])
+	// byConnection bindings are rewritten in the published definition (RebindPart),
+	// so BulkImport must not emit a warning for them.
+	if len(results) != 1 || results[0].Warning != "" {
+		t.Errorf("byConnection report should not produce a warning, got %+v", results[0])
 	}
 }

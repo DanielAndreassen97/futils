@@ -74,20 +74,6 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 		}
 	}
 
-	// Fabric resolves byPath report→model references within the payload, but cannot
-	// rebind a byConnection (cross-env live connection) reference — warn, matching
-	// the per-item backend. Keyed by the same type+name identity.
-	byConn := map[string]bool{}
-	for _, item := range items {
-		if item.Type == "Report" && reportDatasetRef(item).Kind == refByConnection {
-			byConn[key(item.Type, item.DisplayName)] = true
-		}
-	}
-	for i := range out {
-		if byConn[key(out[i].Type, out[i].Name)] && out[i].Err == nil {
-			out[i].Warning = joinWarning(out[i].Warning, "report uses a byConnection dataset reference — cross-environment rebind is not supported; verify the binding in the target")
-		}
-	}
 	return out, nil
 }
 

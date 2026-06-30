@@ -170,8 +170,8 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 //     incremental deploy where only the report changed and its SemanticModel was
 //     Unchanged (never published this run); the model is already live and the
 //     report is already correctly bound — emitting a Warning here is a false alarm.
-//   - byConnection → a Warning (cross-environment rebind unsupported), so the
-//     user knows to verify the binding manually.
+//   - byConnection → no action; the binding was rewritten in the published
+//     definition by RebindReportConnection — no warning needed.
 //   - no dataset reference → no outcome (nothing to rebind).
 func RebindReports(client FabricClient, token string, modelsByWS map[string]map[string]string, pending []PendingReportRebind) []ReportRebindOutcome {
 	var outcomes []ReportRebindOutcome
@@ -191,10 +191,9 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 				})
 			}
 		case refByConnection:
-			outcomes = append(outcomes, ReportRebindOutcome{
-				ReportID: pr.ReportID,
-				Warning:  "report uses a byConnection dataset reference — cross-environment dataset rebind is not supported; verify the binding in the target",
-			})
+			// byConnection bindings are rewritten in the published definition by
+			// RebindReportConnection (resolved by name to the target model GUID),
+			// so there is nothing to do post-deploy and no warning to emit.
 		case refNone:
 			// No dataset reference to rebind — nothing to report.
 		}

@@ -425,9 +425,10 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	}
 }
 
-// TestRebindReportsByConnectionWarns proves fix #3: a report using a
-// byConnection dataset reference is NOT silently skipped — it gets a Warning.
-func TestRebindReportsByConnectionWarns(t *testing.T) {
+// TestRebindReportsByConnectionNoWarning proves that a byConnection report no longer
+// emits a post-deploy warning — the binding is rewritten in the published definition
+// by RebindReportConnection, so there is nothing to do here.
+func TestRebindReportsByConnectionNoWarning(t *testing.T) {
 	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{target},
@@ -446,14 +447,12 @@ func TestRebindReportsByConnectionWarns(t *testing.T) {
 	if len(rf.rebinds) != 0 {
 		t.Fatalf("byConnection report must NOT trigger a RebindReport, got %v", rf.rebinds)
 	}
-	if len(outcomes) != 1 || outcomes[0].Warning == "" {
-		t.Fatalf("byConnection report must produce a warning outcome, got %+v", outcomes)
-	}
-	if !strings.Contains(outcomes[0].Warning, "byConnection") {
-		t.Errorf("warning should name the byConnection reference, got %q", outcomes[0].Warning)
-	}
-	if outcomes[0].ReportID != "ConnRep-newid" {
-		t.Errorf("outcome must carry the report's deployed GUID, got %q", outcomes[0].ReportID)
+	// byConnection bindings are rewritten in the published definition (RebindPart),
+	// so the post-deploy pass no longer warns.
+	for _, r := range outcomes {
+		if r.Warning != "" {
+			t.Errorf("byConnection report should not warn post-deploy, got %q", r.Warning)
+		}
 	}
 }
 
