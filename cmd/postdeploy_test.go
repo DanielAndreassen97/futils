@@ -3,9 +3,11 @@ package cmd
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
+	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
 func TestPostDeployCandidates(t *testing.T) {
@@ -54,5 +56,88 @@ func TestPostDeployCandidatesEmpty(t *testing.T) {
 	}
 	if got := postDeployCandidates([]string{"NB_A"}, nil, nil); got != nil {
 		t.Fatalf("expected nil for no results, got %+v", got)
+	}
+}
+
+// fakeRunner scripts RunNotebook/GetJobInstance per item ID.
+type fakeRunner struct {
+	submitErr map[string]error  // itemID -> error from RunNotebook
+	status    map[string]string // itemID -> terminal job status
+	submitted []string          // itemIDs actually submitted, in order
+}
+
+func (f *fakeRunner) RunNotebook(token, workspaceID, itemID string, _ []fabric.JobInput, _ *fabric.DefaultLakehouse) (string, error) {
+	f.submitted = append(f.submitted, itemID)
+	if err := f.submitErr[itemID]; err != nil {
+		return "", err
+	}
+	return "instance-" + itemID, nil
+}
+
+func (f *fakeRunner) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
+	itemID := strings.TrimPrefix(instanceURL, "instance-")
+	st := f.status[itemID]
+	if st == "" {
+		st = fabric.JobStatusCompleted
+	}
+	return fabric.JobInstanceStatus{Status: st}, nil
+}
+
+func TestRunPostDeployRunsAllComplete(t *testing.T) {
+	f := &fakeRunner{}
+	runs := []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
+	}
+	out := runPostDeployRuns(f, "tok", runs, nil, nil)
+	if len(out) != 2 {
+		t.Fatalf("got %d outcomes, want 2", len(out))
+	}
+	for i, o := range out {
+		if o.Status != fabric.JobStatusCompleted || o.Err != nil {
+			t.Fatalf("outcome %d = %+v, want Completed", i, o)
+		}
+	}
+	if !reflect.DeepEqual(f.submitted, []string{"a", "b"}) {
+		t.Fatalf("submitted = %v, want [a b] (sequential, in order)", f.submitted)
+	}
+}
+
+func TestRunPostDeployRunsStopsOnFailure(t *testing.T) {
+	f := &fakeRunner{status: map[string]string{"b": fabric.JobStatusFailed}}
+	runs := []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
+		{Name: "NB_C", ItemID: "c", WorkspaceID: "ws-1"},
+	}
+	out := runPostDeployRuns(f, "tok", runs, nil, nil)
+	if len(out) != 3 {
+		t.Fatalf("got %d outcomes, want 3", len(out))
+	}
+	if out[0].Status != fabric.JobStatusCompleted {
+		t.Fatalf("first = %+v, want Completed", out[0])
+	}
+	if out[1].Status != fabric.JobStatusFailed || out[1].Err == nil {
+		t.Fatalf("second = %+v, want Failed with error", out[1])
+	}
+	if out[2].Status != postDeployStatusSkipped {
+		t.Fatalf("third = %+v, want Skipped", out[2])
+	}
+	if !reflect.DeepEqual(f.submitted, []string{"a", "b"}) {
+		t.Fatalf("submitted = %v — NB_C must never be submitted after a failure", f.submitted)
+	}
+}
+
+func TestRunPostDeployRunsSubmitError(t *testing.T) {
+	f := &fakeRunner{submitErr: map[string]error{"a": errors.New("403")}}
+	out := runPostDeployRuns(f, "tok", []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
+	}, nil, nil)
+	if out[0].Status != fabric.JobStatusFailed || out[0].Err == nil {
+		t.Fatalf("first = %+v, want Failed", out[0])
+	}
+	if out[1].Status != postDeployStatusSkipped {
+		t.Fatalf("second = %+v, want Skipped", out[1])
 	}
 }

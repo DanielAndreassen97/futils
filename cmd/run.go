@@ -311,11 +311,18 @@ func RunWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
+// jobPoller is the one-method slice of APIClient that pollJob needs, so
+// narrow fakes (and the post-deploy runner's notebookRunner) can be polled
+// without implementing the full client.
+type jobPoller interface {
+	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
+}
+
 // pollJob blocks until the job instance reaches a terminal state. Silent
 // by design — the caller runs it under a spinner, so status-transition
 // prints would mangle the animation. If you need per-status visibility
 // for debugging, use `cmd/fetch-nb -run` which prints each transition.
-func pollJob(client APIClient, token, instanceURL string) (fabric.JobInstanceStatus, error) {
+func pollJob(client jobPoller, token, instanceURL string) (fabric.JobInstanceStatus, error) {
 	const pollInterval = 5 * time.Second
 	const timeout = 2 * time.Hour
 
