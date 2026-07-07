@@ -217,9 +217,11 @@ const deployReportStyle = `<style>
 // renderDeployReport builds a self-contained HTML deploy report. When results
 // is non-nil it leads with a per-item outcome section (✓ deployed / ⚠ warning /
 // ✗ error); it always follows with every Changed item's per-part content diff
-// (old=deployed, new=local). All content is HTML-escaped. With results==nil it
-// is the compare-only viewer the browser preview shows.
-func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
+// (old=deployed, new=local). When postRuns is non-empty, a trailing
+// "Post-deploy runs" section reports each notebook run (✓ completed / ✗ failed
+// / ⊘ skipped). All content is HTML-escaped. With results==nil it is the
+// compare-only viewer the browser preview shows.
+func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome) string {
 	var b strings.Builder
 	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>futils deploy report</title>`)
 	b.WriteString(deployReportStyle)
@@ -265,6 +267,24 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 		}
 		renderRows("Deployed items", deployed)
 		renderRows("Deleted items", deleted)
+	}
+
+	// Post-deploy runs section — same panel/table look as the results sections.
+	if len(postRuns) > 0 {
+		b.WriteString(`<h2>Post-deploy runs</h2><div class="panel"><table>`)
+		for _, o := range postRuns {
+			markCls, mark, detailCls, detail := "ok", "✓", "detail", "Completed in "+o.Duration.String()
+			switch {
+			case o.Status == postDeployStatusSkipped:
+				markCls, mark, detailCls, detail = "del", "⊘", "detail", "skipped — earlier run failed"
+			case o.Err != nil:
+				markCls, mark, detailCls, detail = "efail", "✗", "detail efail", o.Err.Error()
+			}
+			b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
+			b.WriteString(`<td class="name">` + html.EscapeString(o.Run.Name) + ` <span class="type">` + html.EscapeString(o.Run.WorkspaceName) + `</span></td>`)
+			b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
+		}
+		b.WriteString(`</table></div>`)
 	}
 
 	// Build the deployed-items gate for fix [6]: when results != nil, only render
@@ -375,7 +395,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
 // in-browser preview.
 func renderDeployDiffHTML(groups []deployGroup) string {
-	return renderDeployReport(groups, nil)
+	return renderDeployReport(groups, nil, nil)
 }
 
 // renderSummaryCards builds the colored summary-card row. With results it shows

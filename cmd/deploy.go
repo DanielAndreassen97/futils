@@ -272,8 +272,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
-	_ = runOutcomes // TODO(task 8): pass into saveDeployHistory once its signature grows
-	saveDeployHistory(customer, groups, results)
+	saveDeployHistory(customer, groups, results, runOutcomes)
 	return nil
 }
 
@@ -865,7 +864,7 @@ func targetsSummary(groups []deployGroup) string {
 // while the results section reflects what was actually deployed (a cherry-picked
 // subset shows fewer results than diffs). A write failure is non-fatal — the
 // deploy already happened.
-func saveDeployHistory(customer config.Customer, groups []deployGroup, results []deploy.Result) {
+func saveDeployHistory(customer config.Customer, groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome) {
 	if len(results) == 0 {
 		return // nothing was published — no report to write
 	}
@@ -874,7 +873,7 @@ func saveDeployHistory(customer config.Customer, groups []deployGroup, results [
 		return
 	}
 	dir := historyDir(customer.RepoPath, customer.DeployHistoryPath)
-	htmlDoc := renderDeployReport(groups, results)
+	htmlDoc := renderDeployReport(groups, results, postRuns)
 	path, err := writeHistoryReport(dir, time.Now(), htmlDoc)
 	if err != nil {
 		fmt.Println(warningStyle.Render("Couldn't save deploy report: " + err.Error()))

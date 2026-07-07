@@ -516,13 +516,13 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 	results := []deploy.Result{{Name: "NB", Type: "Notebook", Action: deploy.ActionCreate}}
 
 	// Nothing published (empty results) → no report, no folder created.
-	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, nil) })
+	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, nil, nil) })
 	if entries, _ := os.ReadDir(filepath.Join(repo, "history")); len(entries) != 0 {
 		t.Errorf("empty results must write no report, found %d file(s)", len(entries))
 	}
 
 	// Items deployed → a .html report appears in the configured folder.
-	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, results) })
+	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, results, nil) })
 	entries, err := os.ReadDir(filepath.Join(repo, "history"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("expected 1 report file, got %d (err %v)", len(entries), err)
@@ -533,7 +533,7 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 
 	// Deployed but history unconfigured → skip notice, no panic.
 	out := captureStdout(t, func() {
-		saveDeployHistory(config.Customer{RepoPath: repo}, groups, results)
+		saveDeployHistory(config.Customer{RepoPath: repo}, groups, results, nil)
 	})
 	if !strings.Contains(out, "No deploy-history folder set") {
 		t.Errorf("expected skip notice when unconfigured, got %q", out)

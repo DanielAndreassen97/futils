@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -156,7 +158,7 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 		// NB_Config must be a deployed result so its diff renders under the deployed-only [6] gate.
 		{Name: "NB_Config", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results)
+	out := renderDeployReport(groups, results, nil)
 
 	if !strings.Contains(out, "<!doctype html>") {
 		t.Errorf("expected a doctype")
@@ -190,7 +192,7 @@ func TestRenderDeployReportHasCardsAndCollapse(t *testing.T) {
 		{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_A", Type: "Notebook", Action: deploy.ActionUpdate}}
-	out := renderDeployReport(groups, results)
+	out := renderDeployReport(groups, results, nil)
 	if !strings.Contains(out, `class="cards"`) {
 		t.Error("report must include the summary cards")
 	}
@@ -211,7 +213,7 @@ func TestRenderDeployReportDeleteOnlyHasNoContentDiffs(t *testing.T) {
 		{Name: "NB_Changed", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_Gone", Type: "Notebook", Action: deploy.ActionDelete}}
-	out := renderDeployReport(groups, results)
+	out := renderDeployReport(groups, results, nil)
 	if strings.Contains(out, "NB_Changed") {
 		t.Error("delete-only run must not render content diffs for items that were not deployed")
 	}
@@ -281,7 +283,7 @@ func TestRenderDeployReportGatesDiffByTypeAndName(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-only-marker.py", Old: "a", New: "b"}},
 		}},
 	}}
-	out := renderDeployReport(groups, results)
+	out := renderDeployReport(groups, results, nil)
 	if strings.Contains(out, "notebook-only-marker.py") {
 		t.Error("Notebook diff for type=Notebook name=X must not render when only type=DataPipeline name=X was deployed (gate must key by type+name)")
 	}
@@ -310,7 +312,7 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate},
 		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results)
+	out := renderDeployReport(groups, results, nil)
 	if !strings.Contains(out, "WS Alpha") {
 		t.Error("multi-group report must include workspace heading for WS Alpha")
 	}
@@ -334,8 +336,27 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 	singleResults := []deploy.Result{
 		{Name: "NB_Sole", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	singleOut := renderDeployReport(singleGroups, singleResults)
+	singleOut := renderDeployReport(singleGroups, singleResults, nil)
 	if strings.Contains(singleOut, `class="wsgroup"`) {
 		t.Error("single-group report must NOT include wsgroup element")
+	}
+}
+
+func TestRenderDeployReportPostDeploySection(t *testing.T) {
+	results := []deploy.Result{{Name: "NB_A", Type: "Notebook", Action: deploy.ActionUpdate, ID: "id-a", WorkspaceID: "ws-1"}}
+	postRuns := []postDeployOutcome{
+		{Run: postDeployRun{Name: "NB_A", WorkspaceName: "WS One"}, Status: fabric.JobStatusCompleted, Duration: 14 * time.Second},
+		{Run: postDeployRun{Name: "NB_B", WorkspaceName: "WS One"}, Status: fabric.JobStatusFailed, Err: errors.New("job Failed: boom")},
+		{Run: postDeployRun{Name: "NB_C", WorkspaceName: "WS One"}, Status: postDeployStatusSkipped},
+	}
+	html := renderDeployReport(nil, results, postRuns)
+	for _, want := range []string{"Post-deploy runs", "NB_A", "Completed in 14s", "job Failed: boom", "skipped — earlier run failed"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("report missing %q", want)
+		}
+	}
+	// No section when nothing ran.
+	if strings.Contains(renderDeployReport(nil, results, nil), "Post-deploy runs") {
+		t.Fatal("report must omit the Post-deploy runs section when no runs happened")
 	}
 }
