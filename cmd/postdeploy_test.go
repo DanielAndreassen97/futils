@@ -61,9 +61,11 @@ func TestPostDeployCandidatesEmpty(t *testing.T) {
 
 // fakeRunner scripts RunNotebook/GetJobInstance per item ID.
 type fakeRunner struct {
-	submitErr map[string]error  // itemID -> error from RunNotebook
-	status    map[string]string // itemID -> terminal job status
-	submitted []string          // itemIDs actually submitted, in order
+	submitErr  map[string]error  // itemID -> error from RunNotebook
+	status     map[string]string // itemID -> terminal job status
+	failReason map[string]any    // itemID -> FailureReason on the terminal status
+	pollErr    map[string]error  // itemID -> error from GetJobInstance
+	submitted  []string          // itemIDs actually submitted, in order
 }
 
 func (f *fakeRunner) RunNotebook(token, workspaceID, itemID string, _ []fabric.JobInput, _ *fabric.DefaultLakehouse) (string, error) {
@@ -76,11 +78,14 @@ func (f *fakeRunner) RunNotebook(token, workspaceID, itemID string, _ []fabric.J
 
 func (f *fakeRunner) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
 	itemID := strings.TrimPrefix(instanceURL, "instance-")
+	if err := f.pollErr[itemID]; err != nil {
+		return fabric.JobInstanceStatus{}, err
+	}
 	st := f.status[itemID]
 	if st == "" {
 		st = fabric.JobStatusCompleted
 	}
-	return fabric.JobInstanceStatus{Status: st}, nil
+	return fabric.JobInstanceStatus{Status: st, FailureReason: f.failReason[itemID]}, nil
 }
 
 func TestRunPostDeployRunsAllComplete(t *testing.T) {
@@ -125,6 +130,40 @@ func TestRunPostDeployRunsStopsOnFailure(t *testing.T) {
 	}
 	if !reflect.DeepEqual(f.submitted, []string{"a", "b"}) {
 		t.Fatalf("submitted = %v — NB_C must never be submitted after a failure", f.submitted)
+	}
+}
+
+func TestRunPostDeployRunsFailureReason(t *testing.T) {
+	f := &fakeRunner{
+		status:     map[string]string{"a": fabric.JobStatusFailed},
+		failReason: map[string]any{"a": "NotebookExecutionFailed: division by zero"},
+	}
+	out := runPostDeployRuns(f, "tok", []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+	}, nil, nil)
+	if out[0].Status != fabric.JobStatusFailed || out[0].Err == nil {
+		t.Fatalf("outcome = %+v, want Failed with error", out[0])
+	}
+	if !strings.Contains(out[0].Err.Error(), "NotebookExecutionFailed: division by zero") {
+		t.Fatalf("err = %q, want it to contain the failure reason", out[0].Err)
+	}
+}
+
+func TestRunPostDeployRunsPollError(t *testing.T) {
+	pollErr := errors.New("connection reset")
+	f := &fakeRunner{pollErr: map[string]error{"a": pollErr}}
+	out := runPostDeployRuns(f, "tok", []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
+	}, nil, nil)
+	if out[0].Status != fabric.JobStatusFailed || !errors.Is(out[0].Err, pollErr) {
+		t.Fatalf("first = %+v, want Failed wrapping the poll error", out[0])
+	}
+	if out[1].Status != postDeployStatusSkipped {
+		t.Fatalf("second = %+v, want Skipped", out[1])
+	}
+	if !reflect.DeepEqual(f.submitted, []string{"a"}) {
+		t.Fatalf("submitted = %v — NB_B must never be submitted after a poll error", f.submitted)
 	}
 }
 
