@@ -78,6 +78,10 @@ type Customer struct {
 	// DeployHistoryPath is a repo-relative folder where a timestamped HTML
 	// deploy-report is written after each real deploy. Empty = history off.
 	DeployHistoryPath string `json:"deploy_history_path,omitempty"`
+	// PostDeployRuns lists notebook display names offered for execution after
+	// a successful deploy. Only those actually deployed (created/updated) in a
+	// run are offered. List order = run order.
+	PostDeployRuns []string `json:"post_deploy_runs,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -217,6 +221,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		Substitutions       []Substitution      `json:"substitutions,omitempty"`
 		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
 		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
+		PostDeployRuns      []string            `json:"post_deploy_runs,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -229,6 +234,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.Substitutions = aux.Substitutions
 	c.ExcludedItemTypes = aux.ExcludedItemTypes
 	c.DeployHistoryPath = aux.DeployHistoryPath
+	c.PostDeployRuns = aux.PostDeployRuns
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
