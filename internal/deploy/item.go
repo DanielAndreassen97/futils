@@ -109,3 +109,43 @@ func RepoItemTypes(repoPath string) ([]string, error) {
 	sort.Strings(types)
 	return types, nil
 }
+
+// RepoItemNames scans repoPath (the working tree) for Fabric items of the
+// given type and returns their display names, sorted and de-duplicated.
+// Mirrors RepoItemTypes: unparseable .platform files are skipped, a missing
+// path yields an empty result rather than an error.
+func RepoItemNames(repoPath, itemType string) ([]string, error) {
+	if repoPath == "" {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	err := filepath.WalkDir(repoPath, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || d.Name() != ".platform" {
+			return nil
+		}
+		raw, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		meta, perr := parsePlatform(raw)
+		if perr == nil && meta.Type == itemType && meta.DisplayName != "" {
+			seen[meta.DisplayName] = true
+		}
+		return nil // skip unparseable .platform, don't fail the whole scan
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan repo item names: %w", err)
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names, nil
+}
