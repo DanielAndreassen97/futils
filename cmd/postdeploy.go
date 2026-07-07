@@ -134,6 +134,9 @@ var postDeployDimStyle = lipgloss.NewStyle().Foreground(ui.DimColor)
 // buildPostDeployPickItems renders candidates as pre-checked picker rows.
 // A workspace suffix is added only when the runs span >1 workspace.
 func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
+	if len(runs) == 0 {
+		return nil
+	}
 	multiWS := false
 	for _, r := range runs[1:] {
 		if r.WorkspaceID != runs[0].WorkspaceID {
@@ -152,6 +155,24 @@ func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
 	return items
 }
 
+// postDeployPickerTitle names the picker after the workspace(s) the runs
+// target: the single workspace name when all runs share one, or the
+// distinct workspace count when they span several — naming only runs[0]'s
+// workspace in that case would misrepresent the picker's contents.
+func postDeployPickerTitle(runs []postDeployRun) string {
+	if len(runs) == 0 {
+		return "Post-deploy runs"
+	}
+	seen := map[string]bool{}
+	for _, r := range runs {
+		seen[r.WorkspaceID] = true
+	}
+	if len(seen) <= 1 {
+		return "Post-deploy runs → " + runs[0].WorkspaceName
+	}
+	return fmt.Sprintf("Post-deploy runs → %d workspaces", len(seen))
+}
+
 // offerPostDeployRuns is the deploy-flow tail for post-deploy runs: intersect
 // the customer's registered notebooks with this run's successful deploys,
 // offer the (pre-checked) intersection, and run the picked ones sequentially.
@@ -168,8 +189,7 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 		return nil
 	}
 
-	title := "Post-deploy runs → " + runs[0].WorkspaceName
-	checked, err := ui.MultiSelectRich(title, buildPostDeployPickItems(runs))
+	checked, err := ui.MultiSelectRich(postDeployPickerTitle(runs), buildPostDeployPickItems(runs))
 	if err != nil {
 		// esc / quit = skip post-deploy entirely; the deploy already succeeded.
 		fmt.Println(infoStyle.Render("Post-deploy runs skipped."))

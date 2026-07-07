@@ -182,6 +182,10 @@ func TestRunPostDeployRunsSubmitError(t *testing.T) {
 }
 
 func TestBuildPostDeployPickItems(t *testing.T) {
+	if items := buildPostDeployPickItems(nil); items != nil {
+		t.Fatalf("empty runs must yield nil items, got %v", items)
+	}
+
 	single := buildPostDeployPickItems([]postDeployRun{
 		{Name: "NB_A", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
 		{Name: "NB_B", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
@@ -204,5 +208,45 @@ func TestBuildPostDeployPickItems(t *testing.T) {
 	})
 	if !strings.Contains(multi[0].Label, "WS One") || !strings.Contains(multi[1].Label, "WS Two") {
 		t.Fatalf("multi-workspace labels must carry workspace suffixes: %q / %q", multi[0].Label, multi[1].Label)
+	}
+}
+
+func TestPostDeployPickerTitle(t *testing.T) {
+	single := postDeployPickerTitle([]postDeployRun{
+		{Name: "NB_A", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+		{Name: "NB_B", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+	})
+	if single != "Post-deploy runs → WS One" {
+		t.Fatalf("single-workspace title = %q, want the workspace name", single)
+	}
+
+	multi := postDeployPickerTitle([]postDeployRun{
+		{Name: "NB_A", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+		{Name: "NB_A", WorkspaceID: "ws-2", WorkspaceName: "WS Two"},
+	})
+	if multi != "Post-deploy runs → 2 workspaces" {
+		t.Fatalf("multi-workspace title = %q, want a distinct-count summary", multi)
+	}
+}
+
+func TestRunPostDeployRunsHooks(t *testing.T) {
+	f := &fakeRunner{status: map[string]string{"b": fabric.JobStatusFailed}}
+	runs := []postDeployRun{
+		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
+		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
+		{Name: "NB_C", ItemID: "c", WorkspaceID: "ws-1"},
+	}
+	var startedNames, finishedNames []string
+	out := runPostDeployRuns(f, "tok", runs,
+		func(i, n int, r postDeployRun) { startedNames = append(startedNames, r.Name) },
+		func(o postDeployOutcome) { finishedNames = append(finishedNames, o.Run.Name) })
+	if !reflect.DeepEqual(startedNames, []string{"NB_A", "NB_B"}) {
+		t.Fatalf("started = %v — must not fire for skipped NB_C", startedNames)
+	}
+	if !reflect.DeepEqual(finishedNames, []string{"NB_A", "NB_B", "NB_C"}) {
+		t.Fatalf("finished = %v — must fire once per outcome incl. skipped", finishedNames)
+	}
+	if len(out) != 3 || out[2].Status != postDeployStatusSkipped {
+		t.Fatalf("outcomes = %+v", out)
 	}
 }

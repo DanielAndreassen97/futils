@@ -918,16 +918,44 @@ func editPostDeployRuns(configPath, customerName string) error {
 	if err != nil {
 		return err
 	}
-	if len(chosen) == 0 {
-		customer.PostDeployRuns = nil
-	} else {
-		customer.PostDeployRuns = chosen
-	}
+	customer.PostDeployRuns = mergePostDeploySelection(customer.PostDeployRuns, chosen)
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save post-deploy runs: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
 	return nil
+}
+
+// mergePostDeploySelection folds a fresh picker selection back into the
+// existing (user-controlled) run order. ui.MultiSelect returns checked items
+// in OPTIONS order (alphabetical via mergeSorted), so a plain assignment
+// would silently reset a hand-ordered list to that alphabetical order — and
+// list order IS the run order. Names still selected keep their existing
+// position; newly-added names are appended in the order chosen returns them.
+// Empty selection returns nil.
+func mergePostDeploySelection(existing, chosen []string) []string {
+	if len(chosen) == 0 {
+		return nil
+	}
+	chosenSet := make(map[string]bool, len(chosen))
+	for _, n := range chosen {
+		chosenSet[n] = true
+	}
+	var ordered []string
+	seen := make(map[string]bool, len(chosen))
+	for _, n := range existing {
+		if chosenSet[n] && !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	for _, n := range chosen {
+		if !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	return ordered
 }
 
 // setDeployHistoryPath sets the repo-relative folder where deploy reports are

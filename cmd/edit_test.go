@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -83,5 +84,19 @@ func TestValidateNewAlias(t *testing.T) {
 				t.Errorf("alias %q: got err=%v, wantErr=%v", tc.alias, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestMergePostDeploySelection(t *testing.T) {
+	existing := []string{"NB_Config", "NB_Z_First", "NB_A_Later"}
+	// User keeps NB_Z_First and NB_Config, drops NB_A_Later, adds NB_New.
+	chosen := []string{"NB_Config", "NB_New", "NB_Z_First"} // picker returns options order (alphabetical)
+	got := mergePostDeploySelection(existing, chosen)
+	want := []string{"NB_Config", "NB_Z_First", "NB_New"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged = %v, want %v", got, want)
+	}
+	if mergePostDeploySelection(existing, nil) != nil {
+		t.Fatal("empty selection must return nil")
 	}
 }
