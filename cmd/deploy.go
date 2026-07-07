@@ -271,6 +271,8 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return err
 	}
+	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
+	_ = runOutcomes // TODO(task 8): pass into saveDeployHistory once its signature grows
 	saveDeployHistory(customer, groups, results)
 	return nil
 }

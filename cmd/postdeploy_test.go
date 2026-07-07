@@ -180,3 +180,29 @@ func TestRunPostDeployRunsSubmitError(t *testing.T) {
 		t.Fatalf("second = %+v, want Skipped", out[1])
 	}
 }
+
+func TestBuildPostDeployPickItems(t *testing.T) {
+	single := buildPostDeployPickItems([]postDeployRun{
+		{Name: "NB_A", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+		{Name: "NB_B", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+	})
+	if len(single) != 2 {
+		t.Fatalf("got %d items, want 2", len(single))
+	}
+	for i, it := range single {
+		if !it.Checked {
+			t.Fatalf("item %d not pre-checked", i)
+		}
+		if strings.Contains(it.Label, "WS One") {
+			t.Fatalf("single-workspace label %q must not carry a workspace suffix", it.Label)
+		}
+	}
+
+	multi := buildPostDeployPickItems([]postDeployRun{
+		{Name: "NB_A", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+		{Name: "NB_A", WorkspaceID: "ws-2", WorkspaceName: "WS Two"},
+	})
+	if !strings.Contains(multi[0].Label, "WS One") || !strings.Contains(multi[1].Label, "WS Two") {
+		t.Fatalf("multi-workspace labels must carry workspace suffixes: %q / %q", multi[0].Label, multi[1].Label)
+	}
+}
