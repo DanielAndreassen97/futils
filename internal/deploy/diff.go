@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"path"
@@ -44,12 +45,17 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 
 // normalizePart canonicalizes a part's bytes so cosmetic differences Fabric
 // introduces when it stores/returns a definition don't read as real changes.
-// Valid JSON is re-marshalled with sorted keys; everything else is treated as
-// text (CRLF→LF, trailing per-line whitespace stripped, surrounding blank lines
+// Valid JSON is re-marshalled with sorted keys; numbers are decoded as
+// json.Number (not float64) so integers above 2^53 — e.g. numeric IDs or
+// epoch-nanosecond timestamps — keep full precision instead of two distinct
+// values collapsing to the same float. Everything else is treated as text
+// (CRLF→LF, trailing per-line whitespace stripped, surrounding blank lines
 // trimmed). Best-effort — per-type normalizers can refine this later.
 func normalizePart(content []byte) []byte {
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber()
 	var v any
-	if json.Unmarshal(content, &v) == nil {
+	if dec.Decode(&v) == nil && !dec.More() {
 		if canon, err := json.Marshal(v); err == nil {
 			return canon
 		}

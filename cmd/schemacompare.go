@@ -5,7 +5,6 @@ import (
 	"os"
 	"sort"
 	"sync"
-	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -42,6 +41,38 @@ func intersectLakehousesByName(src, tgt []fabric.Item) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// filterToPresent keeps the chosen names that exist in present, preserving the
+// chosen order — each side is fetched only for schemas it actually has.
+func filterToPresent(chosen, present []string) []string {
+	has := map[string]bool{}
+	for _, s := range present {
+		has[s] = true
+	}
+	var out []string
+	for _, s := range chosen {
+		if has[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// unionSorted returns the sorted union of two name lists. Used for the schema
+// pick-list so a schema present on only ONE side (e.g. destination-only) still
+// enters the comparison instead of being silently ignored.
+func unionSorted(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pickSchemaCompareWorkspace lets the user choose a workspace for one side of
@@ -171,11 +202,19 @@ func SchemaCompare(configPath string) error {
 		srcLhID := idByName(srcLakes, lhName)
 		tgtLhID := idByName(tgtLakes, lhName)
 
-		schemas, err := api.ListSchemas(srcID, srcLhID)
+		// List BOTH sides and take the union: a destination-only schema must be
+		// compared too (its tables would otherwise silently pass as "identical").
+		srcSchemas, err := api.ListSchemas(srcID, srcLhID)
 		if err != nil {
-			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: list schemas failed: %v", lhName, err)))
+			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: list source schemas failed: %v", lhName, err)))
 			continue
 		}
+		tgtSchemas, err := api.ListSchemas(tgtID, tgtLhID)
+		if err != nil {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: list destination schemas failed: %v", lhName, err)))
+			continue
+		}
+		schemas := unionSorted(srcSchemas, tgtSchemas)
 		if len(schemas) == 0 {
 			fmt.Println(infoStyle.Render(fmt.Sprintf("%s: no schemas.", lhName)))
 			continue
@@ -187,6 +226,12 @@ func SchemaCompare(configPath string) error {
 		if len(chosenSchemas) == 0 {
 			continue
 		}
+
+		// Fetch each side only for the schemas it actually has — asking the API
+		// for a schema missing on that side 404s the whole fetch. Tables under a
+		// one-sided schema surface in Compare as missing on the other side.
+		srcPick := filterToPresent(chosenSchemas, srcSchemas)
+		tgtPick := filterToPresent(chosenSchemas, tgtSchemas)
 
 		sp := ui.NewSpinner(fmt.Sprintf("Comparing %s…", lhName))
 		sp.Start()
@@ -200,8 +245,8 @@ func SchemaCompare(configPath string) error {
 			fwg                  sync.WaitGroup
 		)
 		fwg.Add(2)
-		go func() { defer fwg.Done(); srcSchema, srcErr = fetcher.Fetch(srcID, srcLhID, chosenSchemas) }()
-		go func() { defer fwg.Done(); tgtSchema, tgtErr = fetcher.Fetch(tgtID, tgtLhID, chosenSchemas) }()
+		go func() { defer fwg.Done(); srcSchema, srcErr = fetcher.Fetch(srcID, srcLhID, srcPick) }()
+		go func() { defer fwg.Done(); tgtSchema, tgtErr = fetcher.Fetch(tgtID, tgtLhID, tgtPick) }()
 		fwg.Wait()
 		sp.Stop()
 		if srcErr != nil {
@@ -228,7 +273,9 @@ func SchemaCompare(configPath string) error {
 	return nil
 }
 
-// showSchemaCompareInBrowser writes the HTML report to a temp file and opens it.
+// showSchemaCompareInBrowser writes the HTML report to a temp file and opens
+// it. The file is deliberately NOT deleted afterwards — a deletion timer races
+// the browser's load (see showDiffsInBrowser); the OS cleans its temp dir.
 func showSchemaCompareInBrowser(srcLabel, tgtLabel string, diffs []schemacompare.LakehouseDiff) error {
 	doc := renderSchemaCompareReport(srcLabel, tgtLabel, diffs)
 	f, err := os.CreateTemp("", "futils-schema-compare-*.html")
@@ -241,9 +288,5 @@ func showSchemaCompareInBrowser(srcLabel, tgtLabel string, diffs []schemacompare
 		return err
 	}
 	f.Close()
-	if err := openInBrowser(path); err != nil {
-		return err
-	}
-	go func() { time.Sleep(5 * time.Second); _ = os.Remove(path) }()
-	return nil
+	return openInBrowser(path)
 }

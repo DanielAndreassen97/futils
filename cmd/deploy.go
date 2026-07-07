@@ -310,6 +310,15 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 		}
 		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb)
 		if rb != nil {
+			// Existing (content-compared) reports get their custom-substitution
+			// unresolved via diffExistingRows; NEW reports only pass through here,
+			// so this pass also owns their substitution refs.
+			newReport := map[string]bool{}
+			for _, r := range g.Rows {
+				if r.ItemType() == "Report" && r.Class == deploy.ClassNew {
+					newReport[r.Name()] = true
+				}
+			}
 			for _, it := range items {
 				if it.Type != "Report" {
 					continue
@@ -321,10 +330,17 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 					// Match the publish pipeline: apply the customer's find→replace
 					// substitutions to the pbir before resolving the binding, so the
 					// previewed binding can't differ from what SubstituteParts publishes.
-					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
+					subbed, subOutcome := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
 					_, outcome := rb.RebindReportConnection(it, subbed)
 					g.ReportBindings = append(g.ReportBindings, outcome.ReportBindings...)
-					g.Unresolved = append(g.Unresolved, outcome.Unresolved...)
+					unres := outcome.Unresolved
+					if newReport[it.DisplayName] {
+						unres = append(unres, subOutcome.Unresolved...)
+					}
+					for i := range unres {
+						unres[i].ItemName = it.DisplayName
+					}
+					g.Unresolved = append(g.Unresolved, unres...)
 					break // definition.pbir is the only part that carries the binding
 				}
 			}
@@ -580,13 +596,21 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			}
 			continue
 		}
-		// Report BINDING outcomes (ReportBindings / Unresolved) are owned by the
-		// dedicated pass in buildDeployGroups, so they are not collected here for
-		// Report items (the report content is still rewritten above for an accurate
-		// content diff). Substitution Changes are collected for every item — for a
-		// report these are the only Changes (the binding rewrite emits none), so
-		// there is no double-count.
-		if rows[idx].ItemType() != "Report" {
+		// Report BINDING refs (Location == LocationReportBinding) are owned by the
+		// dedicated pass in buildDeployGroups (it runs for every report, new or
+		// existing) — dropping them here avoids a double report. Everything else a
+		// report part produced (e.g. custom-substitution refs) is collected exactly
+		// like for any other item type; the dedicated pass does NOT re-collect
+		// those for existing reports. Substitution Changes are collected for every
+		// item — for a report these are the only Changes (the binding rewrite
+		// emits none), so there is no double-count.
+		if rows[idx].ItemType() == "Report" {
+			for _, u := range c.unresolved {
+				if u.Location != deploy.LocationReportBinding {
+					unresolved = append(unresolved, u)
+				}
+			}
+		} else {
 			unresolved = append(unresolved, c.unresolved...)
 		}
 		changes = append(changes, c.changes...)

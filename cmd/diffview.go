@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 )
@@ -21,18 +20,53 @@ type DiffLine struct {
 	Text string
 }
 
-// unifiedLineDiff computes a line-level diff of old→new using a longest-common-
-// subsequence over lines, emitting context/removed/added lines in order. At a
-// divergence, removed lines precede added lines.
+// commonAffixLen counts the leading (prefix) and trailing (suffix) lines that a
+// and b share. The two regions never overlap: suffix only counts within what the
+// prefix leaves, so identical inputs report prefix=len, suffix=0.
+func commonAffixLen(a, b []string) (prefix, suffix int) {
+	limit := len(a)
+	if len(b) < limit {
+		limit = len(b)
+	}
+	for prefix < limit && a[prefix] == b[prefix] {
+		prefix++
+	}
+	for suffix < limit-prefix && a[len(a)-1-suffix] == b[len(b)-1-suffix] {
+		suffix++
+	}
+	return
+}
+
+// unifiedLineDiff computes a line-level diff of old→new. It first strips the
+// common prefix/suffix (emitted verbatim as context) so the O(n×m) LCS only runs
+// over the divergent core — a tiny edit in a huge file diffs in milliseconds
+// instead of allocating a file²-sized table. At a divergence removed lines
+// precede added lines.
 func unifiedLineDiff(oldText, newText string) []DiffLine {
 	a := strings.Split(oldText, "\n")
 	b := strings.Split(newText, "\n")
+	prefix, suffix := commonAffixLen(a, b)
 
-	// LCS length table.
+	var out []DiffLine
+	for i := 0; i < prefix; i++ {
+		out = append(out, DiffLine{' ', a[i]})
+	}
+	out = append(out, lcsDiff(a[prefix:len(a)-suffix], b[prefix:len(b)-suffix])...)
+	for i := len(a) - suffix; i < len(a); i++ {
+		out = append(out, DiffLine{' ', a[i]})
+	}
+	return out
+}
+
+// lcsDiff diffs two line slices via a longest-common-subsequence table, emitting
+// context/removed/added lines in order. Callers pass the divergent core only, so
+// the len(a)×len(b) table stays bounded. Cells are int32 (counts never exceed
+// min(len(a),len(b)) ≪ 2³¹), halving the table's footprint vs int.
+func lcsDiff(a, b []string) []DiffLine {
 	n, m := len(a), len(b)
-	lcs := make([][]int, n+1)
+	lcs := make([][]int32, n+1)
 	for i := range lcs {
-		lcs[i] = make([]int, m+1)
+		lcs[i] = make([]int32, m+1)
 	}
 	for i := n - 1; i >= 0; i-- {
 		for j := m - 1; j >= 0; j-- {
@@ -70,26 +104,98 @@ func unifiedLineDiff(oldText, newText string) []DiffLine {
 	return out
 }
 
-// maxDiffLines caps how many lines either side of a part may have before the
-// (O(n×m)) line diff is skipped. A pathologically large part — e.g. a generated
-// model.bim, or a minified JSON pretty-printed to millions of lines — would
-// otherwise blow up both memory (the LCS table is len(a)×len(b) ints) and the
-// HTML (one <span> per line, which chokes the browser). Past the cap we emit a
-// single summary line instead. ~2000 keeps every realistic Fabric definition
-// while skipping only the runaway cases.
-const maxDiffLines = 2000
+// maxDiffCells caps the LCS table area (coreOld × coreNew), where the core is
+// what's left after stripping the common prefix/suffix. This guards LCS COST
+// only (rendered size is bounded separately by maxRenderedDiffLines), so we cap
+// the table's AREA, not either dimension: scattered edits in a big notebook
+// leave a large core that's still cheap (the 3400-line, ~2300-core real case is
+// ~5M cells), and a lopsided diff (thousands deleted, few added) stays cheap
+// too — only a near-total rewrite of a huge file, the genuinely expensive case,
+// trips it. 40M int32 cells ≈ 160 MB, a sane ceiling for a one-off CLI render.
+const maxDiffCells = 40_000_000
 
-// cappedLineDiff is unifiedLineDiff guarded by a size cap: within the cap it
-// returns the real line diff; past it, a single summary line so one huge change
-// can't blow up the report.
+// contextLines is how many unchanged lines foldContext keeps on each side of a
+// change; the rest of every long unchanged run collapses into one marker.
+const contextLines = 3
+
+// maxRenderedDiffLines bounds the folded diff that actually reaches the HTML
+// report. The area cap bounds LCS cost but not output size: a lopsided diff
+// (e.g. a wholesale-new part, 1×N core) sails under it, and folding only
+// collapses unchanged lines, never '+'/'-' — so a minified multi-MB JSON
+// pretty-printed to hundreds of thousands of lines would render one <span> per
+// line and freeze the browser tab. 10k lines is comfortably browsable and far
+// above any diff a human will actually read.
+const maxRenderedDiffLines = 10_000
+
+// cappedLineDiff is unifiedLineDiff guarded twice: an area cap on the divergent
+// core (LCS cost — past it, a single summary line), and a rendered-lines cap on
+// the folded output (browser cost — past it, the head plus a truncation marker).
 func cappedLineDiff(oldText, newText string) []DiffLine {
-	oldN := strings.Count(oldText, "\n") + 1
-	newN := strings.Count(newText, "\n") + 1
-	if oldN > maxDiffLines || newN > maxDiffLines {
+	a := strings.Split(oldText, "\n")
+	b := strings.Split(newText, "\n")
+	prefix, suffix := commonAffixLen(a, b)
+	coreOld := len(a) - prefix - suffix
+	coreNew := len(b) - prefix - suffix
+	if int64(coreOld)*int64(coreNew) > maxDiffCells {
 		return []DiffLine{{' ', fmt.Sprintf(
-			"Content differs: %d → %d lines — too large to diff inline (open the file locally).", oldN, newN)}}
+			"Change too large to diff inline — %d → %d divergent lines (out of %d → %d total).",
+			coreOld, coreNew, len(a), len(b))}}
 	}
-	return unifiedLineDiff(oldText, newText)
+	folded := foldContext(unifiedLineDiff(oldText, newText), contextLines)
+	if len(folded) > maxRenderedDiffLines {
+		omitted := len(folded) - maxRenderedDiffLines
+		folded = append(folded[:maxRenderedDiffLines:maxRenderedDiffLines],
+			DiffLine{'@', fmt.Sprintf("⋯ diff truncated — %d more lines omitted ⋯", omitted)})
+	}
+	return folded
+}
+
+// foldContext collapses long runs of unchanged lines into a single fold marker
+// ({'@', "⋯ N unchanged lines ⋯"}), keeping ctx lines of context on each side of
+// every change so the reader lands on the edit instead of scrolling thousands of
+// identical lines. Input with no changes passes through unchanged.
+func foldContext(lines []DiffLine, ctx int) []DiffLine {
+	keep := make([]bool, len(lines))
+	changed := false
+	for i, l := range lines {
+		if l.Op != '-' && l.Op != '+' {
+			continue
+		}
+		changed = true
+		keep[i] = true
+		for d := 1; d <= ctx; d++ {
+			if i-d >= 0 {
+				keep[i-d] = true
+			}
+			if i+d < len(lines) {
+				keep[i+d] = true
+			}
+		}
+	}
+	if !changed {
+		return lines
+	}
+
+	var out []DiffLine
+	for i := 0; i < len(lines); {
+		if keep[i] {
+			out = append(out, lines[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(lines) && !keep[j] {
+			j++
+		}
+		n := j - i
+		noun := "lines"
+		if n == 1 {
+			noun = "line"
+		}
+		out = append(out, DiffLine{'@', fmt.Sprintf("⋯ %d unchanged %s ⋯", n, noun)})
+		i = j
+	}
+	return out
 }
 
 // prettyForDiff pretty-prints content as 2-space-indented JSON when it parses
@@ -205,6 +311,7 @@ const deployReportStyle = `<style>
   pre .ctx{color:#8fa096}
   pre .add{color:var(--addfg);background:linear-gradient(90deg,rgba(34,197,94,.16),rgba(34,197,94,.04))}
   pre .rem{color:var(--delfg);background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.03))}
+  pre .fold{color:#6b7a70;font-style:italic;background:rgba(255,255,255,.022);border-top:1px solid rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.04)}
   .empty{color:var(--muted);padding:1rem .95rem}
   .foot{color:#5d6b61;font-size:.74rem;margin-top:2.4rem;border-top:1px solid var(--panel-line);padding-top:.8rem}
   .foot code{color:#9ff0d6}
@@ -357,6 +464,8 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result) string {
 						cls, prefix = "rem", "-"
 					case '+':
 						cls, prefix = "add", "+"
+					case '@':
+						cls, prefix = "fold", " "
 					}
 					b.WriteString(`<span class="ln ` + cls + `">` + prefix + " " + html.EscapeString(ln.Text) + "</span>")
 				}
@@ -450,10 +559,11 @@ func openInBrowser(path string) error {
 	return cmd.Start()
 }
 
-// showDiffsInBrowser renders the diff HTML to a temp file, opens it in the
-// browser, and schedules the temp file for deletion (after the browser has had
-// time to load it). The file lives in the OS temp dir — it is an ephemeral
-// viewer, not a saved artifact.
+// showDiffsInBrowser renders the diff HTML to a temp file and opens it in the
+// browser. The file is deliberately NOT deleted afterwards: any timer races the
+// browser's load (a cold start can take >5s and would land on file-not-found,
+// with no way back to the report). It lives in the OS temp dir, which the OS
+// cleans on its own — it is an ephemeral viewer, not a saved artifact.
 func showDiffsInBrowser(groups []deployGroup) error {
 	htmlDoc := renderDeployDiffHTML(groups)
 	f, err := os.CreateTemp("", "futils-deploy-diff-*.html")
@@ -469,11 +579,5 @@ func showDiffsInBrowser(groups []deployGroup) error {
 	if err := openInBrowser(path); err != nil {
 		return fmt.Errorf("open browser: %w", err)
 	}
-	// Delete after the browser has loaded it; if the process exits first, the OS
-	// cleans the temp dir anyway.
-	go func() {
-		time.Sleep(5 * time.Second)
-		_ = os.Remove(path)
-	}()
 	return nil
 }

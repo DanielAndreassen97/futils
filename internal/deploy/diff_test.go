@@ -16,6 +16,18 @@ func TestNormalizePartJSONReorderEqual(t *testing.T) {
 	}
 }
 
+// TestNormalizePartPreservesLargeIntegers proves JSON canonicalization keeps
+// integer precision above 2^53: two parts differing only in such a value must
+// NOT normalize identically (float64 round-tripping would collapse them and
+// silently classify the edit as Unchanged).
+func TestNormalizePartPreservesLargeIntegers(t *testing.T) {
+	a := normalizePart([]byte(`{"id": 9007199254740993}`))
+	b := normalizePart([]byte(`{"id": 9007199254740992}`))
+	if string(a) == string(b) {
+		t.Fatalf("distinct large integers must not normalize equal: %q", a)
+	}
+}
+
 func TestNormalizePartWhitespace(t *testing.T) {
 	a := normalizePart([]byte("line1   \r\nline2\t\n"))
 	b := normalizePart([]byte("line1\nline2"))

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -111,14 +112,215 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 	}
 }
 
-func TestCappedLineDiffSkipsHugeInput(t *testing.T) {
-	huge := strings.Repeat("x\n", maxDiffLines+50)
-	got := cappedLineDiff(huge, huge+"y\n")
+func TestCommonAffixLen(t *testing.T) {
+	// Shared "a" head and "c" tail; only the middle differs.
+	prefix, suffix := commonAffixLen([]string{"a", "X", "c"}, []string{"a", "Y", "c"})
+	if prefix != 1 || suffix != 1 {
+		t.Fatalf("prefix/suffix = %d/%d, want 1/1", prefix, suffix)
+	}
+	// Identical slices: prefix consumes everything, suffix must not double-count.
+	prefix, suffix = commonAffixLen([]string{"x", "y"}, []string{"x", "y"})
+	if prefix != 2 || suffix != 0 {
+		t.Fatalf("identical: prefix/suffix = %d/%d, want 2/0 (suffix must not overlap prefix)", prefix, suffix)
+	}
+	// Nothing in common.
+	prefix, suffix = commonAffixLen([]string{"a"}, []string{"b"})
+	if prefix != 0 || suffix != 0 {
+		t.Fatalf("disjoint: prefix/suffix = %d/%d, want 0/0", prefix, suffix)
+	}
+}
+
+func TestCappedLineDiffSkipsHugeDivergentInput(t *testing.T) {
+	// Two large, fully DIFFERENT blobs → the divergent core's AREA (core²) exceeds
+	// the cap. sqrt(maxDiffCells) lines each side overshoots the cell budget.
+	side := int(math.Sqrt(float64(maxDiffCells))) + 100
+	old := strings.Repeat("a\n", side)
+	new := strings.Repeat("b\n", side)
+	got := cappedLineDiff(old, new)
 	if len(got) != 1 {
 		t.Fatalf("an over-cap diff must collapse to one summary line, got %d lines", len(got))
 	}
 	if !strings.Contains(got[0].Text, "too large to diff inline") {
 		t.Errorf("expected the cap summary, got %q", got[0].Text)
+	}
+}
+
+func TestCappedLineDiffBoundsLopsidedDiff(t *testing.T) {
+	// A wholesale-new part (old empty) has a 1×N core, so the AREA cap never
+	// trips — but folding can't collapse '+' lines, so without a rendered-lines
+	// bound every added line becomes a <span> (the minified-JSON-pretty-printed
+	// case the old maxDiffLines guard existed for). The folded output must be
+	// truncated with a marker, not emitted in full.
+	var sb strings.Builder
+	for i := 0; i < maxRenderedDiffLines+50_000; i++ {
+		fmt.Fprintf(&sb, "line %d\n", i)
+	}
+	got := cappedLineDiff("", sb.String())
+	if len(got) > maxRenderedDiffLines+1 {
+		t.Fatalf("lopsided diff must be truncated to maxRenderedDiffLines(+marker), got %d lines", len(got))
+	}
+	last := got[len(got)-1]
+	if last.Op != '@' || !strings.Contains(last.Text, "truncated") {
+		t.Errorf("truncated diff must end with a truncation marker, got op=%q text=%q", last.Op, last.Text)
+	}
+}
+
+func TestCappedLineDiffBigFileSmallChangeStillDiffs(t *testing.T) {
+	// A big file with a single changed line MUST produce a real diff — the cap is
+	// on the divergent core's area, not total file size. Prefix/suffix trim leaves
+	// a 1-line core here, so this is the easy case; the scattered-edit test above
+	// covers the harder large-core variant.
+	var oldB, newB strings.Builder
+	total := 3400
+	for i := 0; i < total; i++ {
+		line := fmt.Sprintf("line%d\n", i)
+		oldB.WriteString(line)
+		if i == total/2 {
+			newB.WriteString("CHANGED\n")
+		} else {
+			newB.WriteString(line)
+		}
+	}
+	got := cappedLineDiff(oldB.String(), newB.String())
+	for _, l := range got {
+		if strings.Contains(l.Text, "too large") {
+			t.Fatalf("a big file with one changed line must diff, not cap: %q", l.Text)
+		}
+	}
+	var sawRem, sawAdd bool
+	for _, l := range got {
+		if l.Op == '-' && l.Text == fmt.Sprintf("line%d", total/2) {
+			sawRem = true
+		}
+		if l.Op == '+' && l.Text == "CHANGED" {
+			sawAdd = true
+		}
+	}
+	if !sawRem || !sawAdd {
+		t.Fatalf("expected the changed line in the diff (rem=%v add=%v)", sawRem, sawAdd)
+	}
+}
+
+func TestCappedLineDiffScatteredChangesLargeCoreStillDiffs(t *testing.T) {
+	// The real bug: changes are SPREAD across a big file, so prefix/suffix trim
+	// leaves a large divergent core (~2300 lines) even though only a handful of
+	// lines actually differ. The product (core²) is still tiny vs the cap, so it
+	// must diff — and fold the identical stretches between the scattered changes.
+	const total = 3412
+	var oldB, newB strings.Builder
+	for i := 0; i < total; i++ {
+		line := fmt.Sprintf("line%d\n", i)
+		oldB.WriteString(line)
+		switch i {
+		case 100, 2400: // an early and a late edit → core spans ~2300 lines
+			newB.WriteString(fmt.Sprintf("EDITED%d\n", i))
+		default:
+			newB.WriteString(line)
+		}
+	}
+	got := cappedLineDiff(oldB.String(), newB.String())
+	for _, l := range got {
+		if strings.Contains(l.Text, "too large") {
+			t.Fatalf("scattered edits with a small product must diff, not cap: %q", l.Text)
+		}
+	}
+	var sawEarly, sawLate, folds int
+	for _, l := range got {
+		if l.Op == '+' && l.Text == "EDITED100" {
+			sawEarly++
+		}
+		if l.Op == '+' && l.Text == "EDITED2400" {
+			sawLate++
+		}
+		if l.Op == '@' {
+			folds++
+		}
+	}
+	if sawEarly == 0 || sawLate == 0 {
+		t.Fatalf("both scattered edits must surface (early=%d late=%d)", sawEarly, sawLate)
+	}
+	if folds == 0 {
+		t.Error("the long identical stretch between the two edits must fold")
+	}
+}
+
+func TestFoldContextCollapsesLongRuns(t *testing.T) {
+	// One change surrounded by lots of context: distant context folds into a
+	// marker, near context (±contextLines) is kept.
+	var lines []DiffLine
+	for i := 0; i < 50; i++ {
+		lines = append(lines, DiffLine{' ', fmt.Sprintf("ctx%d", i)})
+	}
+	lines[25] = DiffLine{'-', "before"}
+	lines = append(lines[:26], append([]DiffLine{{'+', "after"}}, lines[26:]...)...)
+
+	got := foldContext(lines, contextLines)
+
+	var folds, ctx int
+	for _, l := range got {
+		switch l.Op {
+		case '@':
+			folds++
+		case ' ':
+			ctx++
+		}
+	}
+	if folds == 0 {
+		t.Fatal("expected at least one fold marker collapsing distant context")
+	}
+	// Near the single change we keep ~contextLines on each side, plus a little
+	// slack — never the full 50 lines.
+	if ctx > 4*contextLines {
+		t.Fatalf("context not folded: kept %d context lines, want <= %d", ctx, 4*contextLines)
+	}
+	// The change itself must survive folding.
+	var sawChange bool
+	for _, l := range got {
+		if l.Op == '-' && l.Text == "before" {
+			sawChange = true
+		}
+	}
+	if !sawChange {
+		t.Error("fold must keep changed lines")
+	}
+}
+
+func TestFoldContextNoChangeReturnsAsIs(t *testing.T) {
+	lines := []DiffLine{{' ', "a"}, {' ', "b"}}
+	got := foldContext(lines, contextLines)
+	if len(got) != 2 {
+		t.Fatalf("all-context input must pass through unfolded, got %d lines", len(got))
+	}
+}
+
+func TestRenderDeployReportBigFileSmallChangeShowsDiff(t *testing.T) {
+	// End-to-end: a Changed item whose part is a big file with a tiny change must
+	// render the actual changed token, not the cap message.
+	var oldB, newB strings.Builder
+	for i := 0; i < 3400; i++ {
+		oldB.WriteString(fmt.Sprintf("row%d\n", i))
+		if i == 100 {
+			newB.WriteString("lh = \"TEST_LAKEHOUSE\"\n")
+		} else {
+			newB.WriteString(fmt.Sprintf("row%d\n", i))
+		}
+	}
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "WS"},
+		Diffs: []ItemDiff{{
+			Name: "NB_Big", Type: "Notebook",
+			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: oldB.String(), New: newB.String()}},
+		}},
+	}}
+	out := renderDeployReport(groups, nil)
+	if strings.Contains(out, "too large to diff") {
+		t.Error("big file with a tiny change must render a real diff, not the cap message")
+	}
+	if !strings.Contains(out, "TEST_LAKEHOUSE") {
+		t.Error("the actual changed token must appear in the rendered diff")
+	}
+	if !strings.Contains(out, "unchanged lines") {
+		t.Error("expected a folded-context marker for the long unchanged runs")
 	}
 }
 

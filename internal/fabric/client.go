@@ -230,6 +230,23 @@ func recordThrottle(method, rawURL, retryAfter string, body []byte) {
 	firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
 }
 
+// ThrottleBackoff records one 429 and sleeps the computed backoff (Retry-After
+// bounded by the front-loaded exponential schedule — see throttleDelay). Shared
+// by this package's retry loops and exported for other Fabric-surface clients
+// (e.g. the OneLake Table API client) so every throttle feeds the same
+// counters, first-429 detail, and live snapshot the spinners render.
+func ThrottleBackoff(method, rawURL, retryAfter string, attempt int, body []byte) {
+	recordThrottle(method, rawURL, retryAfter, body)
+	atomic.AddInt64(&throttleHits, 1)
+	atomic.AddInt64(&throttleActive, 1)
+	d := throttleDelay(retryAfter, attempt)
+	noteThrottle(d, attempt)
+	time.Sleep(d)
+	if atomic.AddInt64(&throttleActive, -1) == 0 {
+		clearThrottleState()
+	}
+}
+
 // throttleDelay computes how long to wait before retrying a 429.
 // Formula: min(retryAfterSecs, 10·2^attempt), clamped to maxThrottleWait (60s).
 // This matches fabric-cicd's approach: front-load short waits so we never sit
@@ -817,15 +834,7 @@ func doGet(token, rawURL string) ([]byte, error) {
 			}
 		}
 		if status == http.StatusTooManyRequests && attempt < maxThrottleRetries {
-			recordThrottle("GET", rawURL, retryAfter, body)
-			atomic.AddInt64(&throttleHits, 1)
-			atomic.AddInt64(&throttleActive, 1)
-			d := throttleDelay(retryAfter, attempt)
-			noteThrottle(d, attempt)
-			time.Sleep(d)
-			if atomic.AddInt64(&throttleActive, -1) == 0 {
-				clearThrottleState()
-			}
+			ThrottleBackoff("GET", rawURL, retryAfter, attempt, body)
 			continue
 		}
 		if status >= 400 {
@@ -921,16 +930,7 @@ func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, [
 			}
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxThrottleRetries {
-			retryAfter := resp.Header.Get("Retry-After")
-			recordThrottle(method, rawURL, retryAfter, body)
-			atomic.AddInt64(&throttleHits, 1)
-			atomic.AddInt64(&throttleActive, 1)
-			d := throttleDelay(retryAfter, attempt)
-			noteThrottle(d, attempt)
-			time.Sleep(d)
-			if atomic.AddInt64(&throttleActive, -1) == 0 {
-				clearThrottleState()
-			}
+			ThrottleBackoff(method, rawURL, resp.Header.Get("Retry-After"), attempt, body)
 			continue
 		}
 		return resp, body, nil

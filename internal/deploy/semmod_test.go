@@ -46,6 +46,56 @@ func TestRebindOneLakeSource(t *testing.T) {
 	}
 }
 
+// TestRebindOneLakeSharedWorkspaceDifferentTargets proves that two OneLake
+// sources sharing the SAME baseline workspace whose lakehouses resolve to
+// DIFFERENT target workspaces are each rewritten to their own workspace — the
+// old-value dedup must not funnel both URLs into the first target workspace.
+func TestRebindOneLakeSharedWorkspaceDifferentTargets(t *testing.T) {
+	const (
+		lhOne = "44444444-4444-4444-4444-444444444444"
+		lhTwo = "55555555-5555-5555-5555-555555555555"
+		tgtA  = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		tgtB  = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	)
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-a", DisplayName: "TGT A"},
+			{ID: "tgt-b", DisplayName: "TGT B"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"dev-data": {
+				{ID: lhOne, DisplayName: "LH_One", Type: "Lakehouse"},
+				{ID: lhTwo, DisplayName: "LH_Two", Type: "Lakehouse"},
+			},
+			"tgt-a": {{ID: tgtA, DisplayName: "LH_One", Type: "Lakehouse"}},
+			"tgt-b": {{ID: tgtB, DisplayName: "LH_Two", Type: "Lakehouse"}},
+		},
+	}
+	rb, err := NewRebinder(f, "tok",
+		[]fabric.Workspace{f.workspaces[0]},
+		[]fabric.Workspace{f.workspaces[1], f.workspaces[2]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let
+	A = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/dev-data/` + lhOne + `"),
+	B = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/dev-data/` + lhTwo + `")
+in
+	B`
+	got, outcome := rb.RebindSemanticModel([]byte(in))
+	s := string(got)
+	if !strings.Contains(s, "onelake.dfs.fabric.microsoft.com/tgt-a/"+tgtA) {
+		t.Errorf("LH_One must land in tgt-a:\n%s", s)
+	}
+	if !strings.Contains(s, "onelake.dfs.fabric.microsoft.com/tgt-b/"+tgtB) {
+		t.Errorf("LH_Two must land in tgt-b (not funneled into tgt-a):\n%s", s)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("both lakehouses resolve — no unresolved expected, got %+v", outcome.Unresolved)
+	}
+}
+
 func newSemmodSQLRebinder(t *testing.T) *Rebinder {
 	t.Helper()
 	f := &fakeFabric{

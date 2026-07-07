@@ -1,6 +1,9 @@
 package deploy
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // sqlDbRe matches a Direct Lake on SQL data-source expression, capturing the
 // SQL analytics endpoint host (connection string) and its endpoint GUID:
@@ -73,6 +76,7 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 // surfaced. Returns the rewritten string.
 func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 	seen := map[string]bool{}
+	sqlStart := len(out.Changes)
 	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
 		host, id := m[1], m[2]
 		lake, ok := rb.baseEndpointLookup(id)
@@ -93,9 +97,11 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		addChange(out, seen, "SQL endpoint", tgt.Name, host, newHost)
 		addChange(out, seen, "SQL endpoint", tgt.Name, id, newID)
 	}
-	// out.Changes may include entries appended by a prior pass (OneLake);
-	// applyChanges over a value no longer present is a harmless no-op.
-	return applyChanges(s, out.Changes)
+	// Apply only THIS pass's changes: the OneLake pass rewrites per-URL, so its
+	// recorded (display) changes must not be re-applied globally here — a
+	// baseline workspace GUID can map to different targets per lakehouse, and a
+	// global replace would also corrupt URLs left intact as unresolved.
+	return applyChanges(s, out.Changes[sqlStart:])
 }
 
 // RebindSemanticModel rewrites a Direct Lake semantic model part's data-source
@@ -113,20 +119,50 @@ func (rb *Rebinder) RebindSemanticModel(content []byte) ([]byte, RebindOutcome) 
 
 // rebindOneLakeSources rewrites every Direct Lake on OneLake source URL in s by
 // resolving its lakehouse GUID baseline→target (by name, overrides honored) and
-// its workspace GUID to the resolved lakehouse's target workspace. Applied
-// changes and unresolved refs are appended to out. Returns the rewritten string.
+// its workspace GUID to the resolved lakehouse's target workspace. Each URL is
+// rewritten as a WHOLE (workspace + lakehouse segment together): a global
+// per-GUID replace cannot express two lakehouses that share a baseline
+// workspace but resolve to different target workspaces, and would also touch
+// URLs deliberately left intact as unresolved. Applied changes (per-GUID, for
+// the summary) and unresolved refs are appended to out; the recorded changes
+// are display-only here and are never re-applied globally.
 func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
-	seen := map[string]bool{}
+	seenURL := map[string]bool{}
+	seenChange := map[string]bool{}
+	rewrites := map[string]string{} // full matched URL -> rewritten URL
+	record := func(kind, name, oldV, newV string) {
+		key := oldV + "\x00" + newV
+		if oldV == "" || oldV == newV || seenChange[key] {
+			return
+		}
+		seenChange[key] = true
+		out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
+	}
 	for _, m := range onelakeRe.FindAllStringSubmatch(s, -1) {
-		wsGUID, lhGUID := m[1], m[2]
-		if it, ok, reason := rb.resolveGUIDReason(lhGUID); ok {
-			addChange(out, seen, "Lakehouse", it.Name, lhGUID, it.GUID)
-			if it.WorkspaceID != "" {
-				addChange(out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), wsGUID, it.WorkspaceID)
-			}
-		} else {
+		full, wsGUID, lhGUID := m[0], m[1], m[2]
+		if seenURL[full] {
+			continue
+		}
+		seenURL[full] = true
+		it, ok, reason := rb.resolveGUIDReason(lhGUID)
+		if !ok {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
+			continue
+		}
+		newWS := wsGUID
+		if it.WorkspaceID != "" {
+			newWS = it.WorkspaceID
+		}
+		if newURL := "onelake.dfs.fabric.microsoft.com/" + newWS + "/" + it.GUID; newURL != full {
+			rewrites[full] = newURL
+		}
+		record("Lakehouse", it.Name, lhGUID, it.GUID)
+		if it.WorkspaceID != "" {
+			record("Workspace", rb.workspaceName(it.WorkspaceID), wsGUID, it.WorkspaceID)
 		}
 	}
-	return applyChanges(s, out.Changes)
+	for oldURL, newURL := range rewrites {
+		s = strings.ReplaceAll(s, oldURL, newURL)
+	}
+	return s
 }

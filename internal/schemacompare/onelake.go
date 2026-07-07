@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"sort"
 	"time"
+
+	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
 const defaultBaseURL = "https://onelake.table.fabric.microsoft.com/delta"
@@ -68,7 +70,10 @@ func (c *Client) get(rawURL string, out any) error {
 			return fmt.Errorf("read response from %s: %w", rawURL, rerr)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests && attempt < 5 {
-			time.Sleep(time.Duration(attempt+1) * 2 * time.Second)
+			// Route through the fabric package's shared throttle path: honors
+			// Retry-After (bounded by the exponential schedule) and feeds the
+			// counters/snapshot the compare spinner renders.
+			fabric.ThrottleBackoff(http.MethodGet, rawURL, resp.Header.Get("Retry-After"), attempt, body)
 			continue
 		}
 		if resp.StatusCode >= 400 {

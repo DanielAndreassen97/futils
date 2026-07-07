@@ -97,6 +97,33 @@ func (f *deployFakeAPI) BulkImportDefinitions(token, ws string, parts []fabric.D
 	return &fabric.BulkImportResult{}, nil
 }
 
+// APIClient stubs not exercised by deploy tests — present so deployFakeAPI can
+// be handed to buildDeployGroups, which takes the full APIClient.
+func (f *deployFakeAPI) GetAccessToken(string) (string, error)          { return "tok", nil }
+func (f *deployFakeAPI) GetWorkspaceID(_, name string) (string, error) { return name, nil }
+func (f *deployFakeAPI) ListNotebooks(_, ws string) ([]fabric.Item, error) {
+	return f.ListItemsByType("", ws, "Notebook")
+}
+func (f *deployFakeAPI) GetNotebookIpynb(string, string, string) ([]byte, error) {
+	return nil, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) RunNotebook(string, string, string, []fabric.JobInput, *fabric.DefaultLakehouse) (string, error) {
+	return "", fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) GetJobInstance(string, string) (fabric.JobInstanceStatus, error) {
+	return fabric.JobInstanceStatus{}, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) ListDatasets(string, string) ([]fabric.Dataset, error) { return nil, nil }
+func (f *deployFakeAPI) QueryRefreshableTables(string, string, string) ([]string, error) {
+	return nil, nil
+}
+func (f *deployFakeAPI) TriggerRefresh(string, string, string, []string) (string, error) {
+	return "", fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) WaitForRefresh(string, string, string, string) (fabric.RefreshStatus, error) {
+	return fabric.RefreshStatus{}, fmt.Errorf("not used by deploy tests")
+}
+
 // platformDef builds a deployed definition for a notebook: a matching content
 // part plus a .platform part carrying the given description — mirroring what
 // Fabric's getDefinition returns.
@@ -678,6 +705,114 @@ func TestRunDeployByConnectionWarning(t *testing.T) {
 	}
 	if res[0].Warning == "" || !strings.Contains(res[0].Warning, "byConnection") {
 		t.Errorf("nil-rebinder byConnection report must warn, got warning=%q err=%v", res[0].Warning, res[0].Err)
+	}
+}
+
+// newDeployGroupsRebinder builds a Rebinder over the fake's dev/target
+// workspaces for buildDeployGroups tests.
+func newDeployGroupsRebinder(t *testing.T, fake *deployFakeAPI) *deploy.Rebinder {
+	t.Helper()
+	rb, err := deploy.NewRebinder(fake, "tok",
+		[]fabric.Workspace{{ID: "ws-dev", DisplayName: "DEV"}},
+		[]fabric.Workspace{{ID: "ws-tgt", DisplayName: "TGT"}}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	return rb
+}
+
+// TestBuildDeployGroupsReportUnresolvedCarriesItemName proves finding-cluster
+// fix: unresolved refs from the dedicated report-binding pass must carry the
+// report's name (printUnresolved shows "<guid> in <ItemName>"), and a custom
+// substitution whose target is missing must surface for a NEW report too.
+func TestBuildDeployGroupsReportUnresolvedCarriesItemName(t *testing.T) {
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{
+			{ID: "ws-dev", DisplayName: "DEV"}, {ID: "ws-tgt", DisplayName: "TGT"},
+		},
+		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {}},
+	}
+	rb := newDeployGroupsRebinder(t, fake)
+	rb.SetSubstitutions([]deploy.Substitution{{
+		ItemType: "Report", ItemName: "NewRep",
+		FindValue: "placeholder", TargetType: "Lakehouse", TargetName: "LH_Missing",
+	}})
+	// Flat byConnection: model name "HR" resolves from the catalog but exists in
+	// neither index → binding unresolved (not-in-target).
+	report := deploy.LocalItem{Type: "Report", DisplayName: "NewRep", FolderPath: "Frontend",
+		Parts: []deploy.Part{{Path: "definition.pbir",
+			Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DEV\";initial catalog=HR;semanticmodelid=99999999-9999-9999-9999-999999999999"}}}`)}}}
+
+	groups, err := buildDeployGroups(fake, "tok",
+		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
+		[]deploy.LocalItem{report}, fake.workspaces, rb, nil)
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("want 1 group, got %d", len(groups))
+	}
+	var binding, customSub int
+	for _, u := range groups[0].Unresolved {
+		if u.ItemName != "NewRep" {
+			t.Errorf("unresolved ref %+v must carry ItemName=NewRep", u)
+		}
+		switch u.Location {
+		case "report dataset binding":
+			binding++
+		case "custom substitution":
+			customSub++
+		}
+	}
+	if binding != 1 {
+		t.Errorf("want exactly 1 binding unresolved, got %d (%+v)", binding, groups[0].Unresolved)
+	}
+	if customSub != 1 {
+		t.Errorf("new report's custom-substitution unresolved must surface exactly once, got %d (%+v)", customSub, groups[0].Unresolved)
+	}
+}
+
+// TestBuildDeployGroupsExistingReportCustomSubUnresolvedSurfaces proves that an
+// EXISTING report's unresolved custom substitution is not silently dropped by
+// the "binding pass owns report unresolved" filter in diffExistingRows.
+func TestBuildDeployGroupsExistingReportCustomSubUnresolvedSurfaces(t *testing.T) {
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{
+			{ID: "ws-dev", DisplayName: "DEV"}, {ID: "ws-tgt", DisplayName: "TGT"},
+		},
+		items: map[string][]fabric.Item{
+			"ws-dev": {},
+			"ws-tgt": {{ID: "rep-id", DisplayName: "Rep", Type: "Report", WorkspaceID: "ws-tgt"}},
+		},
+		defByID: map[string]*fabric.Definition{},
+	}
+	rb := newDeployGroupsRebinder(t, fake)
+	rb.SetSubstitutions([]deploy.Substitution{{
+		ItemType: "Report", ItemName: "Rep",
+		FindValue: "placeholder", TargetType: "Lakehouse", TargetName: "LH_Missing",
+	}})
+	// byPath pbir → no binding unresolved; the custom-sub ref is the only one.
+	report := deploy.LocalItem{Type: "Report", DisplayName: "Rep", FolderPath: "Frontend",
+		Parts: []deploy.Part{{Path: "definition.pbir",
+			Content: []byte(`{"datasetReference":{"byPath":{"path":"../M.SemanticModel"}}}`)}}}
+
+	groups, err := buildDeployGroups(fake, "tok",
+		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
+		[]deploy.LocalItem{report}, fake.workspaces, rb, nil)
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+	var customSub int
+	for _, u := range groups[0].Unresolved {
+		if u.Location == "custom substitution" {
+			customSub++
+			if u.ItemName != "Rep" {
+				t.Errorf("custom-sub unresolved must carry ItemName=Rep, got %+v", u)
+			}
+		}
+	}
+	if customSub != 1 {
+		t.Errorf("existing report's custom-substitution unresolved must surface exactly once, got %d (%+v)", customSub, groups[0].Unresolved)
 	}
 }
 

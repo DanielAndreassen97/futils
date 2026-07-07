@@ -284,7 +284,7 @@ func TestReportDatasetRefFlatByConnection(t *testing.T) {
 	item := LocalItem{Type: "Report", Parts: []Part{
 		{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR;semanticmodelid=12995bce-ace2-401b-a5fb-6b8dd6a45ead"}}}`)},
 	}}
-	if got := reportDatasetRef(item); got.Kind != refByConnection {
+	if got := reportDatasetRef(item, nil, nil); got.Kind != refByConnection {
 		t.Errorf("flat connectionString should classify as refByConnection, got %v", got.Kind)
 	}
 }
@@ -527,19 +527,19 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 // TestReportDatasetRefKinds documents the three-way parse of definition.pbir.
 func TestReportDatasetRefKinds(t *testing.T) {
 	byPath := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
-	if ref := reportDatasetRef(byPath); ref.Kind != refByPath || ref.ModelName != "MyModel" {
+	if ref := reportDatasetRef(byPath, nil, nil); ref.Kind != refByPath || ref.ModelName != "MyModel" {
 		t.Errorf("byPath = %+v, want {refByPath MyModel}", ref)
 	}
 	byConn := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
-	if ref := reportDatasetRef(byConn); ref.Kind != refByConnection {
+	if ref := reportDatasetRef(byConn, nil, nil); ref.Kind != refByConnection {
 		t.Errorf("byConnection = %+v, want refByConnection", ref)
 	}
 	none := LocalItem{Type: "Report", Parts: []Part{{Path: "definition.pbir", Content: []byte(`{}`)}}}
-	if ref := reportDatasetRef(none); ref.Kind != refNone {
+	if ref := reportDatasetRef(none, nil, nil); ref.Kind != refNone {
 		t.Errorf("empty pbir = %+v, want refNone", ref)
 	}
 	noPbir := LocalItem{Type: "Report", Parts: []Part{{Path: "report.json", Content: []byte(`{}`)}}}
-	if ref := reportDatasetRef(noPbir); ref.Kind != refNone {
+	if ref := reportDatasetRef(noPbir, nil, nil); ref.Kind != refNone {
 		t.Errorf("no pbir = %+v, want refNone", ref)
 	}
 }
@@ -597,6 +597,88 @@ func TestRebindReportsByConnectionCoDeployedBindsEndToEnd(t *testing.T) {
 		if o.Err != nil || o.Warning != "" {
 			t.Errorf("clean co-deployed rebind must produce no outcome, got %+v", o)
 		}
+	}
+}
+
+// structuredByConnectionPBIR builds the fabric-cicd structured byConnection
+// shape: no connectionString, the model referenced only by its baseline GUID.
+func structuredByConnectionPBIR(modelGUID string) []byte {
+	return []byte(`{"datasetReference":{"byConnection":{"connectionString":null,"pbiServiceModelId":null,"pbiModelVirtualServerName":"sobe_wowvirtualserver","pbiModelDatabaseName":"` + modelGUID + `","name":"EntityDataSource","connectionType":"pbiServiceLive"}}}`)
+}
+
+// TestRebindReportsStructuredByConnectionCoDeployedBinds proves that a report in
+// the STRUCTURED byConnection shape (no connectionString to recover a name from)
+// still binds to its co-deployed model: the pending ref must resolve the model
+// name from the baseline GUID via the rebinder's baseline index.
+func TestRebindReportsStructuredByConnectionCoDeployedBinds(t *testing.T) {
+	dev := fabric.Workspace{ID: "ws-dev", DisplayName: "DEV"}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{dev, target},
+		itemsByWS: map[string][]fabric.Item{
+			"ws-dev":  {{ID: devHRModel, DisplayName: "HR", Type: "SemanticModel"}},
+			"ws-test": {}, // model absent pre-deploy: it is CREATED this run
+		},
+	}}
+	rb, err := NewRebinder(rf, "tok", []fabric.Workspace{dev}, []fabric.Workspace{target}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+
+	model := LocalItem{Type: "SemanticModel", DisplayName: "HR", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "StructRep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: structuredByConnectionPBIR(devHRModel)}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), rb, modelsByWS, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	outcomes := RebindReports(rf, "tok", modelsByWS, pending, true)
+	if !findRebind(rf, "ws-test", "StructRep-newid", "HR-newid") {
+		t.Fatalf("structured byConnection report must rebind to the co-deployed HR GUID, got rebinds=%v (pending=%+v)", rf.rebinds, pending)
+	}
+	for _, o := range outcomes {
+		if o.Err != nil {
+			t.Errorf("clean rebind must not error, got %+v", o)
+		}
+	}
+}
+
+// TestExecutePendingRebindUsesSubstitutedPBIR proves the pending ref is parsed
+// from the SUBSTITUTED pbir, not the raw part: a custom substitution rewrites
+// the model name to the target form, and the co-deployed model (published under
+// that target name) must still be matched.
+func TestExecutePendingRebindUsesSubstitutedPBIR(t *testing.T) {
+	dev := fabric.Workspace{ID: "ws-dev", DisplayName: "DEV"}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{dev, target},
+		itemsByWS:  map[string][]fabric.Item{"ws-dev": {}, "ws-test": {}},
+	}}
+	rb, err := NewRebinder(rf, "tok", []fabric.Workspace{dev}, []fabric.Workspace{target}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	rb.SetSubstitutions([]Substitution{{FindValue: "SM_Sales [dev]", Literal: "SM_Sales"}})
+
+	// Baseline GUID unknown to the baseline index — the name candidate from the
+	// (substituted) connectionString is the only way to match the model.
+	pbir := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DEV\";initial catalog=SM_Sales [dev];integrated security=ClaimsToken;semanticmodelid=99999999-9999-9999-9999-999999999999"}}}`)
+	model := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", LogicalID: "lid-m",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	report := LocalItem{Type: "Report", DisplayName: "SalesRep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: pbir}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), rb, modelsByWS, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	RebindReports(rf, "tok", modelsByWS, pending, true)
+	if !findRebind(rf, "ws-test", "SalesRep-newid", "SM_Sales-newid") {
+		t.Fatalf("pending ref must be parsed from the substituted pbir (SM_Sales), got rebinds=%v (pending=%+v)", rf.rebinds, pending)
 	}
 }
 

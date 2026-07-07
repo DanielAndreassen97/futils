@@ -35,6 +35,12 @@ const (
 	ReasonAmbiguous   = "ambiguous"     // name appears in 2+ target workspaces
 )
 
+// LocationReportBinding is the UnresolvedRef.Location for a report's
+// definition.pbir dataset binding. Exported because the cmd layer uses it to
+// route ownership: binding refs are collected by the dedicated report-binding
+// pass, everything else by the per-item substitution pass.
+const LocationReportBinding = "report dataset binding"
+
 // reasonForStatus maps a target LookupStatus to the UnresolvedRef Reason.
 func reasonForStatus(st LookupStatus) string {
 	if st == LookupAmbiguous {
@@ -462,7 +468,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 	}
 	if modelName == "" {
 		out.Unresolved = append(out.Unresolved, UnresolvedRef{
-			GUID: baselineGUID, ItemType: "SemanticModel", Location: "report dataset binding", Reason: ReasonNameUnknown,
+			GUID: baselineGUID, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: ReasonNameUnknown,
 		})
 		return content, out
 	}
@@ -470,7 +476,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 	it, st := rb.target.LookupName(modelName, "SemanticModel")
 	if st != LookupFound {
 		out.Unresolved = append(out.Unresolved, UnresolvedRef{
-			GUID: baselineGUID, ItemType: "SemanticModel", Location: "report dataset binding", Reason: reasonForStatus(st),
+			GUID: baselineGUID, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: reasonForStatus(st),
 		})
 		return content, out
 	}

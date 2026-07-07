@@ -33,10 +33,29 @@ const (
 // datasetRef is the parsed result of a report's definition.pbir dataset
 // reference. ModelName is set for refByPath and for refByConnection (the flat
 // connectionString's model name when extractable); empty when the shape carries
-// no usable name.
+// no usable name. AltNames holds additional byConnection display-name
+// candidates recovered from the rebinder (override name, baseline-index name
+// for the reference's model GUID) so the structured shape — which carries no
+// name at all — can still match a co-deployed model.
 type datasetRef struct {
 	Kind      refKind
 	ModelName string
+	AltNames  []string
+}
+
+// nameCandidates returns the model display-name candidates in match order
+// (primary first), with empties and duplicates of the primary skipped.
+func (r datasetRef) nameCandidates() []string {
+	out := make([]string, 0, 1+len(r.AltNames))
+	if r.ModelName != "" {
+		out = append(out, r.ModelName)
+	}
+	for _, n := range r.AltNames {
+		if n != "" && n != r.ModelName {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // PendingReportRebind defers a single report's rebind to the post-deploy pass.
@@ -103,7 +122,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			defer markDone()
 			res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
 
-			def, err := buildDefinition(p.Item, idMap, resolver, rb)
+			def, parts, err := buildDefinition(p.Item, idMap, resolver, rb)
 			if err != nil {
 				res.Err = err
 				results = append(results, res)
@@ -147,11 +166,14 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 				modelsByWS[target.ID][p.Item.DisplayName] = deployedID
 			}
 			if p.Item.Type == "Report" {
+				// Parse the ref from the SUBSTITUTED parts (what was actually
+				// published), not the raw git content — a custom substitution may
+				// have rewritten the model reference to its target-environment name.
 				pending = append(pending, PendingReportRebind{
 					WorkspaceID: target.ID,
 					ReportID:    deployedID,
 					ReportName:  p.Item.DisplayName,
-					Ref:         reportDatasetRef(p.Item),
+					Ref:         reportDatasetRef(p.Item, parts, rb),
 				})
 			}
 			results = append(results, res)
@@ -203,7 +225,15 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 				})
 			}
 		case refByConnection:
-			if datasetID, ok := modelsByWS[pr.WorkspaceID][pr.Ref.ModelName]; ok {
+			var datasetID string
+			var found bool
+			for _, name := range pr.Ref.nameCandidates() {
+				if id, ok := modelsByWS[pr.WorkspaceID][name]; ok {
+					datasetID, found = id, true
+					break
+				}
+			}
+			if found {
 				// Model was created this run: the payload kept the baseline GUID
 				// because it wasn't in the pre-deploy target index at diff time.
 				// Rebind now, mirroring the byPath same-run case.
@@ -232,13 +262,15 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 }
 
 // buildDefinition applies logicalId + rebind substitution to each text part and
-// base64-encodes them into a fabric.Definition. Unresolved references are
-// intentionally discarded here — the dry-run surfaces them; the publish path
-// leaves any unresolved (cosmetic) GUID as-is.
-func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, error) {
+// base64-encodes them into a fabric.Definition. It also returns the substituted
+// raw parts (path → bytes) so the caller can inspect what was actually
+// published (the pending report rebind parses its dataset ref from them).
+// Unresolved references are intentionally discarded here — the dry-run surfaces
+// them; the publish path leaves any unresolved (cosmetic) GUID as-is.
+func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, map[string][]byte, error) {
 	parts, _, err := SubstituteParts(item, idMap, resolver, rb)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	def := &fabric.Definition{}
 	for _, part := range item.Parts { // preserve discovery order
@@ -248,7 +280,7 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 			PayloadType: "InlineBase64",
 		})
 	}
-	return def, nil
+	return def, parts, nil
 }
 
 // reportDatasetRef parses a report's definition.pbir dataset reference once and
@@ -257,41 +289,69 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 // both):
 //   - byPath → refByPath with the model display name (e.g. "../MyModel.SemanticModel" → "MyModel").
 //   - byConnection present → refByConnection, with ModelName recovered from the
-//     flat connectionString's "initial catalog" when extractable (empty for the
-//     structured shape or a GUID-only catalog).
+//     flat connectionString's "initial catalog" when extractable, and AltNames
+//     resolved from the reference's model GUID via the rebinder (override name,
+//     baseline-index name) — the structured shape carries no name of its own.
 //   - neither / no pbir / unparseable → refNone (nothing to rebind).
-func reportDatasetRef(report LocalItem) datasetRef {
+//
+// parts, when non-nil, holds the SUBSTITUTED part bytes (from buildDefinition):
+// the ref is parsed from what was actually published, so custom substitutions
+// that rewrite the model reference are honored. rb may be nil (no rebinder).
+func reportDatasetRef(report LocalItem, parts map[string][]byte, rb *Rebinder) datasetRef {
 	for _, part := range report.Parts {
 		if path.Base(part.Path) != "definition.pbir" {
 			continue
 		}
-		var pbir struct {
-			DatasetReference struct {
-				ByPath struct {
-					Path string `json:"path"`
-				} `json:"byPath"`
-				ByConnection json.RawMessage `json:"byConnection"`
-			} `json:"datasetReference"`
+		content := part.Content
+		if sub, ok := parts[part.Path]; ok {
+			content = sub
 		}
-		if err := json.Unmarshal(part.Content, &pbir); err != nil {
-			return datasetRef{Kind: refNone}
-		}
-		if ref := pbir.DatasetReference.ByPath.Path; ref != "" {
-			base := path.Base(ref) // "MyModel.SemanticModel"
-			return datasetRef{Kind: refByPath, ModelName: strings.TrimSuffix(base, ".SemanticModel")}
-		}
-		if len(pbir.DatasetReference.ByConnection) > 0 && string(pbir.DatasetReference.ByConnection) != "null" {
-			// Recover the model display name so the post-deploy pass can match a
-			// same-run-created model in modelsByWS (mirrors byPath). Only the flat
-			// connectionString shape carries a name; the structured shape yields "".
-			var bc struct {
-				ConnectionString string `json:"connectionString"`
-			}
-			_ = json.Unmarshal(pbir.DatasetReference.ByConnection, &bc)
-			name, _ := parseFlatConn(bc.ConnectionString)
-			return datasetRef{Kind: refByConnection, ModelName: name}
-		}
+		return pbirDatasetRef(content, rb)
+	}
+	return datasetRef{Kind: refNone}
+}
+
+// pbirDatasetRef classifies one definition.pbir document. See reportDatasetRef.
+func pbirDatasetRef(content []byte, rb *Rebinder) datasetRef {
+	var pbir struct {
+		DatasetReference struct {
+			ByPath struct {
+				Path string `json:"path"`
+			} `json:"byPath"`
+			ByConnection json.RawMessage `json:"byConnection"`
+		} `json:"datasetReference"`
+	}
+	if err := json.Unmarshal(content, &pbir); err != nil {
 		return datasetRef{Kind: refNone}
+	}
+	if ref := pbir.DatasetReference.ByPath.Path; ref != "" {
+		base := path.Base(ref) // "MyModel.SemanticModel"
+		return datasetRef{Kind: refByPath, ModelName: strings.TrimSuffix(base, ".SemanticModel")}
+	}
+	if len(pbir.DatasetReference.ByConnection) > 0 && string(pbir.DatasetReference.ByConnection) != "null" {
+		// Recover model display-name candidates so the post-deploy pass can match
+		// a same-run-created model in modelsByWS (mirrors byPath). The flat
+		// connectionString carries a name directly; both shapes carry a model GUID
+		// the rebinder can translate to a name (override first, then baseline index).
+		var bc struct {
+			ConnectionString     string `json:"connectionString"`
+			PbiModelDatabaseName string `json:"pbiModelDatabaseName"`
+		}
+		_ = json.Unmarshal(pbir.DatasetReference.ByConnection, &bc)
+		name, guid := parseFlatConn(bc.ConnectionString)
+		if guid == "" {
+			guid = bc.PbiModelDatabaseName
+		}
+		ref := datasetRef{Kind: refByConnection, ModelName: name}
+		if rb != nil && guid != "" {
+			if ov, ok := rb.overrides[guid]; ok {
+				ref.AltNames = append(ref.AltNames, ov.ItemName)
+			}
+			if base, ok := rb.baseline.ItemByGUID(guid); ok {
+				ref.AltNames = append(ref.AltNames, base.Name)
+			}
+		}
+		return ref
 	}
 	return datasetRef{Kind: refNone}
 }

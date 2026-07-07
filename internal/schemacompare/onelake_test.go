@@ -5,7 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
 func TestClientListSchemas(t *testing.T) {
@@ -83,5 +87,36 @@ func TestClientErrorStatus(t *testing.T) {
 	c := NewClientWithBase("tok", srv.URL)
 	if _, err := c.ListSchemas("ws", "lh"); err == nil {
 		t.Error("expected an error on 403")
+	}
+}
+
+// TestClientGetHonorsRetryAfterViaFabricThrottle proves 429 handling is routed
+// through the fabric package's shared throttle path: the Retry-After header
+// governs the wait (1s here, not the old fixed 2s linear backoff) and the hit
+// is recorded in the shared instrumentation the spinners render.
+func TestClientGetHonorsRetryAfterViaFabricThrottle(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"schemas":[{"name":"dbo"}]}`))
+	}))
+	defer srv.Close()
+
+	before := fabric.ThrottleHits()
+	start := time.Now()
+	schemas, err := NewClientWithBase("tok", srv.URL).ListSchemas("ws", "lh")
+	elapsed := time.Since(start)
+	if err != nil || len(schemas) != 1 {
+		t.Fatalf("ListSchemas after one 429 = (%v, %v), want one schema", schemas, err)
+	}
+	if got := fabric.ThrottleHits() - before; got != 1 {
+		t.Errorf("throttle hit not recorded in shared instrumentation: delta = %d, want 1", got)
+	}
+	if elapsed < 900*time.Millisecond || elapsed > 1900*time.Millisecond {
+		t.Errorf("wait = %v, want ~1s (Retry-After honored, not the fixed 2s backoff)", elapsed)
 	}
 }
