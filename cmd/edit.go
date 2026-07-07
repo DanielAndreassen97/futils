@@ -23,6 +23,7 @@ const (
 	editActionSubstitutions = "__substitutions"
 	editActionExcludeTypes  = "__exclude_types"
 	editActionDeployHistory = "__deploy_history"
+	editActionPostDeploy    = "__post_deploy_runs"
 	envActionAddWS          = "__add_ws"
 	envActionRemoveWS       = "__remove_ws"
 	envActionRenameAlias    = "__rename_alias"
@@ -113,6 +114,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := excludeItemTypes(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionPostDeploy:
+			if err := editPostDeployRuns(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionDeployHistory:
 			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
@@ -152,6 +157,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
 		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
 		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
+		ui.MenuOption{Label: "Post-deploy runs", Value: editActionPostDeploy},
 		ui.MenuOption{Label: "Set deploy-history folder", Value: editActionDeployHistory},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
@@ -877,6 +883,79 @@ func excludeItemTypes(configPath, customerName string) error {
 	}
 	fmt.Println(infoStyle.Render("Saved excluded item types."))
 	return nil
+}
+
+// editPostDeployRuns lets the user pick which notebooks futils offers to run
+// after each deploy. Only notebooks actually deployed (created/updated) in a
+// given run are offered at deploy time; this list is the superset. The saved
+// JSON order is the run order — reorder in the config file if needed.
+func editPostDeployRuns(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if customer.RepoPath == "" {
+		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list notebooks."))
+		return ui.ErrGoBack
+	}
+	names, err := deploy.RepoItemNames(customer.RepoPath, "Notebook")
+	if err != nil {
+		return fmt.Errorf("scan repo for notebooks: %w", err)
+	}
+	// Union of repo notebooks and already-registered names, so a registered
+	// notebook missing from the current scan isn't silently dropped on save.
+	options := mergeSorted(names, customer.PostDeployRuns)
+	if len(options) == 0 {
+		fmt.Println(infoStyle.Render("No notebooks found under the repo path."))
+		return ui.ErrGoBack
+	}
+
+	chosen, err := ui.MultiSelect("Select notebooks to offer as post-deploy runs (only deployed ones are offered per run)", options, customer.PostDeployRuns)
+	if err != nil {
+		return err
+	}
+	customer.PostDeployRuns = mergePostDeploySelection(customer.PostDeployRuns, chosen)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save post-deploy runs: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
+	return nil
+}
+
+// mergePostDeploySelection folds a fresh picker selection back into the
+// existing (user-controlled) run order. ui.MultiSelect returns checked items
+// in OPTIONS order (alphabetical via mergeSorted), so a plain assignment
+// would silently reset a hand-ordered list to that alphabetical order — and
+// list order IS the run order. Names still selected keep their existing
+// position; newly-added names are appended in the order chosen returns them.
+// Empty selection returns nil.
+func mergePostDeploySelection(existing, chosen []string) []string {
+	if len(chosen) == 0 {
+		return nil
+	}
+	chosenSet := make(map[string]bool, len(chosen))
+	for _, n := range chosen {
+		chosenSet[n] = true
+	}
+	var ordered []string
+	seen := make(map[string]bool, len(chosen))
+	for _, n := range existing {
+		if chosenSet[n] && !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	for _, n := range chosen {
+		if !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	return ordered
 }
 
 // setDeployHistoryPath sets the repo-relative folder where deploy reports are

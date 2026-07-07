@@ -574,3 +574,20 @@ func TestDeployHistoryPathRoundTrip(t *testing.T) {
 		t.Fatalf("DeployHistoryPath = %q, want %q", got, "BackEnd/deploymenthistory")
 	}
 }
+
+// PostDeployRuns must survive a marshal→unmarshal round trip. Customer has a
+// custom UnmarshalJSON; a field missing from its aux struct silently drops.
+func TestCustomerPostDeployRunsRoundTrip(t *testing.T) {
+	in := Customer{PostDeployRuns: []string{"NB_Config", "NB_InsertScript_A"}}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Customer
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out.PostDeployRuns, in.PostDeployRuns) {
+		t.Fatalf("PostDeployRuns = %v, want %v", out.PostDeployRuns, in.PostDeployRuns)
+	}
+}

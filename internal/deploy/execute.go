@@ -13,12 +13,13 @@ import (
 
 // Result is the per-item outcome of a deploy run.
 type Result struct {
-	Name    string
-	Type    string
-	Action  Action
-	ID      string // deployed item ID
-	Err     error
-	Warning string // non-fatal issue after a successful publish (e.g. description not synced)
+	Name        string
+	Type        string
+	Action      Action
+	ID          string // deployed item ID
+	WorkspaceID string // target workspace the item was deployed to / deleted from
+	Err         error
+	Warning     string // non-fatal issue after a successful publish (e.g. description not synced)
 }
 
 // refKind classifies a report's definition.pbir dataset reference.
@@ -120,7 +121,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 	for _, p := range plan {
 		func() {
 			defer markDone()
-			res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action}
+			res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action, WorkspaceID: target.ID}
 
 			def, parts, err := buildDefinition(p.Item, idMap, resolver, rb)
 			if err != nil {

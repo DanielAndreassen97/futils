@@ -20,7 +20,7 @@ type DeleteTarget struct {
 func DeleteItems(client FabricClient, token string, target fabric.Workspace, targets []DeleteTarget) []Result {
 	results := make([]Result, 0, len(targets))
 	for _, t := range targets {
-		res := Result{Name: t.Name, Type: t.Type, Action: ActionDelete}
+		res := Result{Name: t.Name, Type: t.Type, Action: ActionDelete, WorkspaceID: target.ID}
 		if err := client.DeleteItem(token, target.ID, t.ID); err != nil {
 			res.Err = fmt.Errorf("delete %s: %w", t.Name, err)
 		}

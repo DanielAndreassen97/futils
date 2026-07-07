@@ -74,6 +74,10 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 		}
 	}
 
+	for i := range out {
+		out[i].WorkspaceID = target.ID
+	}
+
 	return out, nil
 }
 

@@ -71,3 +71,39 @@ func TestRepoItemTypesMissingPath(t *testing.T) {
 		t.Errorf("missing path: got %v err %v, want empty/no-error", got, err)
 	}
 }
+
+// writeTestPlatform drops a minimal .platform file for one item folder.
+func writeTestPlatform(t *testing.T, root, folder, itemType, name string) {
+	t.Helper()
+	dir := filepath.Join(root, folder)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `{"metadata":{"type":"` + itemType + `","displayName":"` + name + `"}}`
+	if err := os.WriteFile(filepath.Join(dir, ".platform"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRepoItemNames(t *testing.T) {
+	root := t.TempDir()
+	writeTestPlatform(t, root, "NB_B.Notebook", "Notebook", "NB_B")
+	writeTestPlatform(t, root, "NB_A.Notebook", "Notebook", "NB_A")
+	writeTestPlatform(t, root, "LH_X.Lakehouse", "Lakehouse", "LH_X")
+
+	names, err := RepoItemNames(root, "Notebook")
+	if err != nil {
+		t.Fatalf("RepoItemNames: %v", err)
+	}
+	want := []string{"NB_A", "NB_B"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+}
+
+func TestRepoItemNamesEmptyPath(t *testing.T) {
+	names, err := RepoItemNames("", "Notebook")
+	if err != nil || names != nil {
+		t.Fatalf("got (%v, %v), want (nil, nil)", names, err)
+	}
+}
