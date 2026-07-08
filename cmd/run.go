@@ -61,6 +61,8 @@ type APIClient interface {
 	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
 	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error)
 	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
+	UpdateItem(token, workspaceID, itemID, displayName, description string) error
+	DeleteItem(token, workspaceID, itemID string) error
 	RebindReport(token, workspaceID, reportID, datasetID string) error
 
 	// Refresh flow.
@@ -68,6 +70,10 @@ type APIClient interface {
 	QueryRefreshableTables(token, workspaceID, datasetID string) ([]string, error)
 	TriggerRefresh(token, workspaceID, datasetID string, tables []string) (string, error)
 	WaitForRefresh(token, workspaceID, datasetID, requestID string) (fabric.RefreshStatus, error)
+
+	// Deploy flow.
+	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
+	BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error)
 }
 
 // RealAPIClient just forwards to the internal/fabric package functions.
@@ -109,6 +115,12 @@ func (RealAPIClient) CreateItem(token, workspaceID, displayName, itemType string
 func (RealAPIClient) UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error {
 	return fabric.UpdateItemDefinition(token, workspaceID, itemID, def)
 }
+func (RealAPIClient) UpdateItem(token, workspaceID, itemID, displayName, description string) error {
+	return fabric.UpdateItem(token, workspaceID, itemID, displayName, description)
+}
+func (RealAPIClient) DeleteItem(token, workspaceID, itemID string) error {
+	return fabric.DeleteItem(token, workspaceID, itemID)
+}
 func (RealAPIClient) RebindReport(token, workspaceID, reportID, datasetID string) error {
 	return fabric.RebindReport(token, workspaceID, reportID, datasetID)
 }
@@ -123,6 +135,12 @@ func (RealAPIClient) TriggerRefresh(token, workspaceID, datasetID string, tables
 }
 func (RealAPIClient) WaitForRefresh(token, workspaceID, datasetID, requestID string) (fabric.RefreshStatus, error) {
 	return fabric.WaitForRefresh(token, workspaceID, datasetID, requestID, 5*time.Second, 30*time.Minute)
+}
+func (RealAPIClient) GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, string, error) {
+	return fabric.GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID)
+}
+func (RealAPIClient) BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
+	return fabric.BulkImportDefinitions(token, workspaceID, parts, opts)
 }
 
 // DefaultAPI is what Run() uses when called from the main menu. Test code
@@ -293,11 +311,18 @@ func RunWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
+// jobPoller is the one-method slice of APIClient that pollJob needs, so
+// narrow fakes (and the post-deploy runner's notebookRunner) can be polled
+// without implementing the full client.
+type jobPoller interface {
+	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
+}
+
 // pollJob blocks until the job instance reaches a terminal state. Silent
 // by design — the caller runs it under a spinner, so status-transition
 // prints would mangle the animation. If you need per-status visibility
 // for debugging, use `cmd/fetch-nb -run` which prints each transition.
-func pollJob(client APIClient, token, instanceURL string) (fabric.JobInstanceStatus, error) {
+func pollJob(client jobPoller, token, instanceURL string) (fabric.JobInstanceStatus, error) {
 	const pollInterval = 5 * time.Second
 	const timeout = 2 * time.Hour
 

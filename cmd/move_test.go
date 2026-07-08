@@ -93,6 +93,8 @@ func (f *fakeMoveAPI) UpdateItemDefinition(_, _, itemID string, _ *fabric.Defini
 	f.lastUpdateItemID = itemID
 	return nil
 }
+func (f *fakeMoveAPI) UpdateItem(_, _, _, _, _ string) error { return nil }
+func (f *fakeMoveAPI) DeleteItem(_, _, _ string) error       { return nil }
 func (f *fakeMoveAPI) RebindReport(_, _, _, datasetID string) error {
 	f.rebindCalls++
 	f.lastRebindDataset = datasetID
@@ -113,6 +115,14 @@ func (f *fakeMoveAPI) TriggerRefresh(string, string, string, []string) (string, 
 }
 func (f *fakeMoveAPI) WaitForRefresh(string, string, string, string) (fabric.RefreshStatus, error) {
 	return fabric.RefreshStatus{}, errors.New("WaitForRefresh not used by move tests")
+}
+
+// Deploy flow methods — not used by move tests.
+func (f *fakeMoveAPI) GetLakehouseSqlEndpoint(string, string, string) (string, string, error) {
+	return "", "", errors.New("GetLakehouseSqlEndpoint not used by move tests")
+}
+func (f *fakeMoveAPI) BulkImportDefinitions(token, ws string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
+	return &fabric.BulkImportResult{}, nil
 }
 
 // withMovePickers installs deterministic pickers for the duration

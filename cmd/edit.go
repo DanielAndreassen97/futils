@@ -4,22 +4,32 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
+	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
 	"github.com/charmbracelet/huh"
 )
 
 const (
-	editActionAddEnv     = "__add_env"
-	editActionEditEnv    = "__edit_env:"
-	editActionBack       = "__back"
-	envActionAddWS       = "__add_ws"
-	envActionRemoveWS    = "__remove_ws"
-	envActionRenameAlias = "__rename_alias"
-	envActionDeleteEnv   = "__delete_env"
+	editActionAddEnv        = "__add_env"
+	editActionEditEnv       = "__edit_env:"
+	editActionBack          = "__back"
+	editActionRefOverrides  = "__ref_overrides"
+	editActionSetBaseline   = "__set_baseline"
+	editActionSubstitutions = "__substitutions"
+	editActionExcludeTypes  = "__exclude_types"
+	editActionDeployHistory = "__deploy_history"
+	editActionPostDeploy    = "__post_deploy_runs"
+	envActionAddWS          = "__add_ws"
+	envActionRemoveWS       = "__remove_ws"
+	envActionRenameAlias    = "__rename_alias"
+	envActionDeleteEnv      = "__delete_env"
+	envActionAddDeploy      = "__add_deploy"
+	envActionRemoveDeploy   = "__remove_deploy"
 )
 
 // Edit is the top-level customer editing flow. Drills down into a
@@ -88,6 +98,30 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 				}
 				return err
 			}
+		case action == editActionRefOverrides:
+			if err := manageReferenceOverrides(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionSubstitutions:
+			if err := manageSubstitutions(configPath, client, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionSetBaseline:
+			if err := setBaselineEnvironment(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionExcludeTypes:
+			if err := excludeItemTypes(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionPostDeploy:
+			if err := editPostDeployRuns(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionDeployHistory:
+			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -105,6 +139,11 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			fmt.Printf("  %-12s → %d workspace%s\n", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
 		}
 	}
+	if customer.BaselineEnvironment != "" {
+		fmt.Printf("  baseline environment: %s\n", customer.BaselineEnvironment)
+	} else {
+		fmt.Println("  baseline environment: (unset — auto-rebind disabled)")
+	}
 	fmt.Println()
 
 	options := make([]ui.MenuOption, 0, len(customer.Environments)+2)
@@ -114,6 +153,12 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
+		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
+		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
+		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
+		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
+		ui.MenuOption{Label: "Post-deploy runs", Value: editActionPostDeploy},
+		ui.MenuOption{Label: "Set deploy-history folder", Value: editActionDeployHistory},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -146,6 +191,12 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				fmt.Printf("  • %s\n", ws)
 			}
 		}
+		if len(env.Deployments) > 0 {
+			fmt.Println("  Deployments:")
+			for _, d := range env.Deployments {
+				fmt.Printf("    %s/ → %s\n", d.Folder, d.Workspace)
+			}
+		}
 		fmt.Println()
 
 		options := []ui.MenuOption{
@@ -153,6 +204,8 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 			{Label: "Remove workspace", Value: envActionRemoveWS},
 			{Label: "Rename alias", Value: envActionRenameAlias},
 			{Label: "Delete this environment", Value: envActionDeleteEnv},
+			{Label: "Add deployment mapping", Value: envActionAddDeploy},
+			{Label: "Remove deployment mapping", Value: envActionRemoveDeploy},
 			{Label: "Back", Value: editActionBack},
 		}
 		action, err := ui.NumberMenu("Action", options)
@@ -176,6 +229,10 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 			if err == nil {
 				alias = newAlias
 			}
+		case envActionAddDeploy:
+			err = addDeploymentMapping(configPath, customerName, alias, customer)
+		case envActionRemoveDeploy:
+			err = removeDeploymentMapping(configPath, customerName, alias, customer)
 		case envActionDeleteEnv:
 			ok, derr := ui.Confirm(fmt.Sprintf("Delete env %q and all its workspaces?", alias))
 			if derr != nil {
@@ -428,6 +485,505 @@ func validateNewAlias(alias string, existing []config.Environment) error {
 		if strings.EqualFold(e.Alias, alias) {
 			return fmt.Errorf("alias %q already exists", alias)
 		}
+	}
+	return nil
+}
+
+// addDeploymentMapping prompts for a repo subfolder and the workspace its items
+// should deploy to (chosen from the env's configured workspaces), then appends
+// a DeployMapping to the environment.
+func addDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
+	idx := findEnvIndex(customer, alias)
+	if idx < 0 {
+		return fmt.Errorf("env %q not found", alias)
+	}
+	env := customer.Environments[idx]
+	if len(env.Workspaces) == 0 {
+		fmt.Println("Add at least one workspace to this environment before mapping a folder to it.")
+		return nil
+	}
+
+	var folder string
+	if err := runFormStep(huh.NewInput().Title("Repo subfolder (e.g. Backend)").Value(&folder)); err != nil {
+		return err
+	}
+	folder = strings.Trim(strings.TrimSpace(folder), "/")
+	if folder == "" {
+		return fmt.Errorf("folder required")
+	}
+
+	wsOptions := make([]ui.MenuOption, len(env.Workspaces))
+	for i, ws := range env.Workspaces {
+		wsOptions[i] = ui.MenuOption{Label: ws, Value: ws}
+	}
+	workspace, err := ui.NumberMenu("Deploy this folder to which workspace?", wsOptions)
+	if err != nil {
+		return err
+	}
+
+	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments,
+		config.DeployMapping{Folder: folder, Workspace: workspace})
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+	return nil
+}
+
+// setBaseline sets (or, with an empty alias, clears) the customer's baseline
+// environment. Pure — the caller persists the result.
+func setBaseline(c config.Customer, alias string) config.Customer {
+	c.BaselineEnvironment = alias
+	return c
+}
+
+// setBaselineEnvironment lets the user choose which of the customer's
+// environments is the baseline (the env the git GUIDs belong to — the source
+// for GUID→name resolution during auto-rebind), or clear it. The picker offers
+// only the customer's own aliases, so the saved value is always a real env.
+func setBaselineEnvironment(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if len(customer.Environments) == 0 {
+		fmt.Println("Add an environment first, then set which one is the baseline.")
+		return nil
+	}
+	options := make([]ui.MenuOption, 0, len(customer.Environments)+1)
+	for _, e := range customer.Environments {
+		label := e.Alias
+		if e.Alias == customer.BaselineEnvironment {
+			label += " (current)"
+		}
+		options = append(options, ui.MenuOption{Label: label, Value: e.Alias})
+	}
+	options = append(options, ui.MenuOption{Label: "Clear (disable auto-rebind)", Value: ""})
+	chosen, err := ui.NumberMenu("Which environment do the git GUIDs belong to?", options)
+	if err != nil {
+		return err
+	}
+	customer = setBaseline(customer, chosen)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	if chosen == "" {
+		fmt.Println("Baseline environment cleared (auto-rebind disabled).")
+	} else {
+		fmt.Printf("Baseline environment set to %q.\n", chosen)
+	}
+	return nil
+}
+
+// removeOverride returns a copy of c with the ReferenceOverride for sourceGUID removed.
+func removeOverride(c config.Customer, sourceGUID string) config.Customer {
+	next := c.ReferenceOverrides[:0]
+	for _, o := range c.ReferenceOverrides {
+		if o.SourceGUID != sourceGUID {
+			next = append(next, o)
+		}
+	}
+	c.ReferenceOverrides = next
+	return c
+}
+
+// removeIgnored returns a copy of c with the given guid removed from IgnoredReferences.
+func removeIgnored(c config.Customer, guid string) config.Customer {
+	next := c.IgnoredReferences[:0]
+	for _, g := range c.IgnoredReferences {
+		if g != guid {
+			next = append(next, g)
+		}
+	}
+	c.IgnoredReferences = next
+	return c
+}
+
+// manageReferenceOverrides lists the customer's saved reference overrides and
+// ignored references and lets the user remove them. Adding overrides happens
+// inline during a dry-run (where futils knows the baseline GUIDs); this section
+// is for review and cleanup.
+func manageReferenceOverrides(configPath, customerName string) error {
+	for {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		customer, ok := cfg.Customers[customerName]
+		if !ok {
+			return fmt.Errorf("customer %q disappeared from config", customerName)
+		}
+		fmt.Printf("\nReference overrides for %s\n", customerName)
+		if len(customer.ReferenceOverrides) == 0 && len(customer.IgnoredReferences) == 0 {
+			fmt.Println("  (none — add them inline after a dry-run)")
+		}
+		var options []ui.MenuOption
+		for _, o := range customer.ReferenceOverrides {
+			label := fmt.Sprintf("Remove override: %s → %s %q", shortGUID(o.SourceGUID), o.ItemType, o.ItemName)
+			options = append(options, ui.MenuOption{Label: label, Value: "ovr:" + o.SourceGUID})
+		}
+		for _, g := range customer.IgnoredReferences {
+			options = append(options, ui.MenuOption{Label: "Un-ignore: " + shortGUID(g), Value: "ign:" + g})
+		}
+		options = append(options, ui.MenuOption{Label: "Back", Value: editActionBack})
+		choice, err := ui.NumberMenu("Action", options)
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				return nil
+			}
+			return err
+		}
+		switch {
+		case choice == editActionBack:
+			return nil
+		case strings.HasPrefix(choice, "ovr:"):
+			customer = removeOverride(customer, strings.TrimPrefix(choice, "ovr:"))
+		case strings.HasPrefix(choice, "ign:"):
+			customer = removeIgnored(customer, strings.TrimPrefix(choice, "ign:"))
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+	}
+}
+
+// addSubstitution returns a copy of c with s appended to Substitutions.
+// Copy-on-write: never mutates the caller's backing array.
+func addSubstitution(c config.Customer, s config.Substitution) config.Customer {
+	c.Substitutions = append(append([]config.Substitution{}, c.Substitutions...), s)
+	return c
+}
+
+// removeSubstitution returns a copy of c with the substitution at index i removed.
+// An out-of-range index is a no-op. Copy-on-write.
+func removeSubstitution(c config.Customer, i int) config.Customer {
+	if i < 0 || i >= len(c.Substitutions) {
+		return c
+	}
+	next := append([]config.Substitution{}, c.Substitutions[:i]...)
+	next = append(next, c.Substitutions[i+1:]...)
+	c.Substitutions = next
+	return c
+}
+
+// manageSubstitutions lists the customer's custom find→replace rules and lets
+// the user add or remove them. Adding: type the find string, then choose a
+// literal replacement or a target item resolved by name (pick workspace → item
+// → attribute). Follows the same loop conventions as manageReferenceOverrides.
+func manageSubstitutions(configPath string, client APIClient, customerName string) error {
+	for {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		customer, ok := cfg.Customers[customerName]
+		if !ok {
+			return fmt.Errorf("customer %q disappeared from config", customerName)
+		}
+		fmt.Printf("\nCustom substitutions for %s\n", customerName)
+		if len(customer.Substitutions) == 0 {
+			fmt.Println("  (none)")
+		}
+		var options []ui.MenuOption
+		for i, s := range customer.Substitutions {
+			repl := s.Literal
+			if s.TargetType != "" {
+				repl = fmt.Sprintf("%s %q.%s", s.TargetType, s.TargetName, attrOrID(s.Attr))
+			}
+			options = append(options, ui.MenuOption{
+				Label: fmt.Sprintf("Remove: %q → %s", s.FindValue, repl),
+				Value: fmt.Sprintf("rm:%d", i),
+			})
+		}
+		options = append(options,
+			ui.MenuOption{Label: "Add substitution", Value: "add"},
+			ui.MenuOption{Label: "Back", Value: editActionBack},
+		)
+		choice, err := ui.NumberMenu("Action", options)
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				return nil
+			}
+			return err
+		}
+		switch {
+		case choice == editActionBack:
+			return nil
+		case choice == "add":
+			sub, aerr := promptSubstitution(client, customerName)
+			if aerr != nil {
+				if errors.Is(aerr, ui.ErrGoBack) {
+					continue
+				}
+				return aerr
+			}
+			customer = addSubstitution(customer, sub)
+		case strings.HasPrefix(choice, "rm:"):
+			idx, _ := strconv.Atoi(strings.TrimPrefix(choice, "rm:"))
+			customer = removeSubstitution(customer, idx)
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+	}
+}
+
+// attrOrID returns the attr label, defaulting to "id".
+func attrOrID(attr string) string {
+	if attr == "" {
+		return "id"
+	}
+	return attr
+}
+
+// promptSubstitution gathers one substitution: a find string, then either a
+// literal replacement or a target item (pick workspace → item) + attribute.
+func promptSubstitution(client APIClient, customerName string) (config.Substitution, error) {
+	var find string
+	if err := runFormStep(huh.NewInput().Title("Find value (the string to replace)").Value(&find)); err != nil {
+		return config.Substitution{}, err
+	}
+	find = strings.TrimSpace(find)
+	if find == "" {
+		return config.Substitution{}, fmt.Errorf("find value required")
+	}
+	kind, err := ui.NumberMenu("Replace with", []ui.MenuOption{
+		{Label: "A target item resolved by name (id / sql endpoint)", Value: "target"},
+		{Label: "A literal value", Value: "literal"},
+	})
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	if kind == "literal" {
+		var lit string
+		if err := runFormStep(huh.NewInput().Title("Literal replacement value").Value(&lit)); err != nil {
+			return config.Substitution{}, err
+		}
+		return config.Substitution{FindValue: find, Literal: lit}, nil
+	}
+	token, err := client.GetAccessToken(customerName)
+	if err != nil {
+		return config.Substitution{}, fmt.Errorf("authentication failed: %w", err)
+	}
+	itemType, itemName, err := pickTargetItem(client, token, "")
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	attr, err := ui.NumberMenu("Which attribute of the target item?", []ui.MenuOption{
+		{Label: "Item GUID (id)", Value: "id"},
+		{Label: "SQL endpoint host", Value: "sqlendpoint"},
+		{Label: "SQL endpoint database id", Value: "sqlendpointid"},
+	})
+	if err != nil {
+		return config.Substitution{}, err
+	}
+	return config.Substitution{FindValue: find, TargetType: itemType, TargetName: itemName, Attr: attr}, nil
+}
+
+// removeDeploymentMapping lets the user drop a folder→workspace mapping from an
+// environment.
+func removeDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
+	idx := findEnvIndex(customer, alias)
+	if idx < 0 {
+		return fmt.Errorf("env %q not found", alias)
+	}
+	env := customer.Environments[idx]
+	if len(env.Deployments) == 0 {
+		fmt.Println("No deployment mappings to remove.")
+		return nil
+	}
+
+	options := make([]ui.MenuOption, len(env.Deployments))
+	for i, d := range env.Deployments {
+		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s/ → %s", d.Folder, d.Workspace), Value: fmt.Sprintf("%d", i)}
+	}
+	chosen, err := ui.NumberMenu("Select mapping to remove", options)
+	if err != nil {
+		return err
+	}
+
+	var keep []config.DeployMapping
+	for i, d := range env.Deployments {
+		if fmt.Sprintf("%d", i) != chosen {
+			keep = append(keep, d)
+		}
+	}
+	customer.Environments[idx].Deployments = keep
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	fmt.Printf("Removed mapping from env %q\n", alias)
+	return nil
+}
+
+// mergeSorted returns the sorted, de-duplicated union of two string slices.
+func mergeSorted(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, s := range a {
+		seen[s] = true
+	}
+	for _, s := range b {
+		seen[s] = true
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// excludeItemTypes lets the user pick which item types to skip when comparing.
+// The picker is populated from the item types actually present in the customer's
+// repo (a local scan). Selected = excluded; default nothing selected = compare
+// everything. Stored as Customer.ExcludedItemTypes.
+func excludeItemTypes(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if customer.RepoPath == "" {
+		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list item types."))
+		return ui.ErrGoBack
+	}
+	types, err := deploy.RepoItemTypes(customer.RepoPath)
+	if err != nil {
+		return fmt.Errorf("scan repo for item types: %w", err)
+	}
+	// Offer the union of what's in the repo now AND what's already excluded:
+	// MultiSelect only returns checked options that appear in the list, so a
+	// previously-excluded type missing from the current scan (folder renamed,
+	// not yet pulled, or temporarily removed) would be silently dropped on
+	// confirm. Keeping it in the list — pre-checked — preserves the choice.
+	options := mergeSorted(types, customer.ExcludedItemTypes)
+	if len(options) == 0 {
+		fmt.Println(infoStyle.Render("No Fabric items found under the repo path."))
+		return ui.ErrGoBack
+	}
+
+	chosen, err := ui.MultiSelect("Select item types to EXCLUDE from compare (none = compare all)", options, customer.ExcludedItemTypes)
+	if err != nil {
+		return err
+	}
+	if len(chosen) == 0 {
+		customer.ExcludedItemTypes = nil
+	} else {
+		customer.ExcludedItemTypes = chosen
+	}
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save excluded item types: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved excluded item types."))
+	return nil
+}
+
+// editPostDeployRuns lets the user pick which notebooks futils offers to run
+// after each deploy. Only notebooks actually deployed (created/updated) in a
+// given run are offered at deploy time; this list is the superset. The saved
+// JSON order is the run order — reorder in the config file if needed.
+func editPostDeployRuns(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	if customer.RepoPath == "" {
+		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list notebooks."))
+		return ui.ErrGoBack
+	}
+	names, err := deploy.RepoItemNames(customer.RepoPath, "Notebook")
+	if err != nil {
+		return fmt.Errorf("scan repo for notebooks: %w", err)
+	}
+	// Union of repo notebooks and already-registered names, so a registered
+	// notebook missing from the current scan isn't silently dropped on save.
+	options := mergeSorted(names, customer.PostDeployRuns)
+	if len(options) == 0 {
+		fmt.Println(infoStyle.Render("No notebooks found under the repo path."))
+		return ui.ErrGoBack
+	}
+
+	chosen, err := ui.MultiSelect("Select notebooks to offer as post-deploy runs (only deployed ones are offered per run)", options, customer.PostDeployRuns)
+	if err != nil {
+		return err
+	}
+	customer.PostDeployRuns = mergePostDeploySelection(customer.PostDeployRuns, chosen)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save post-deploy runs: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
+	return nil
+}
+
+// mergePostDeploySelection folds a fresh picker selection back into the
+// existing (user-controlled) run order. ui.MultiSelect returns checked items
+// in OPTIONS order (alphabetical via mergeSorted), so a plain assignment
+// would silently reset a hand-ordered list to that alphabetical order — and
+// list order IS the run order. Names still selected keep their existing
+// position; newly-added names are appended in the order chosen returns them.
+// Empty selection returns nil.
+func mergePostDeploySelection(existing, chosen []string) []string {
+	if len(chosen) == 0 {
+		return nil
+	}
+	chosenSet := make(map[string]bool, len(chosen))
+	for _, n := range chosen {
+		chosenSet[n] = true
+	}
+	var ordered []string
+	seen := make(map[string]bool, len(chosen))
+	for _, n := range existing {
+		if chosenSet[n] && !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	for _, n := range chosen {
+		if !seen[n] {
+			ordered = append(ordered, n)
+			seen[n] = true
+		}
+	}
+	return ordered
+}
+
+// setDeployHistoryPath sets the repo-relative folder where deploy reports are
+// written after each real deploy. Empty input turns history off. Pre-filled
+// with the current value.
+func setDeployHistoryPath(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	path := customer.DeployHistoryPath
+	if err := runFormStep(huh.NewInput().
+		Title("Deploy-history folder (relative to repo root; empty = off)").
+		Value(&path)); err != nil {
+		return err
+	}
+	customer.DeployHistoryPath = strings.TrimSpace(path)
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save deploy-history path: %w", err)
+	}
+	if customer.DeployHistoryPath == "" {
+		fmt.Println(infoStyle.Render("Deploy-history saving turned off."))
+	} else {
+		fmt.Println(infoStyle.Render("Saved deploy-history folder: " + customer.DeployHistoryPath))
 	}
 	return nil
 }

@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -161,8 +159,14 @@ func (m menuModel) View() string {
 		if i == m.cursor {
 			pointer = menuPointerStyle.Render("❯ ")
 		}
-		num := menuNumberStyle.Render(fmt.Sprintf("%d)", displayNum))
-		fmt.Fprintf(&b, "%s%s %s\n", pointer, num, opt.Label)
+		// Only 1-9 are digit-jumpable (Update handles a single keypress), so
+		// number just those; past the 9th, show a bullet instead of a fake "10)"
+		// number. The bullet is padded to the width of "N)" so labels stay aligned.
+		marker := " ·"
+		if displayNum <= 9 {
+			marker = fmt.Sprintf("%d)", displayNum)
+		}
+		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), opt.Label)
 	}
 
 	return b.String()
@@ -224,32 +228,94 @@ func NumberMenu(message string, options []MenuOption) (string, error) {
 	return result.selected, nil
 }
 
-// Confirm shows a yes/no prompt. Returns true for yes. Themed to the
-// accent colour for visual consistency with the rest of the UI.
-func Confirm(message string) (bool, error) {
-	var result bool
-	theme := huh.ThemeBase()
-	theme.Focused.FocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(AccentColor).Padding(0, 1)
-	theme.Focused.BlurredButton = lipgloss.NewStyle().Foreground(DimColor).Padding(0, 1)
-	theme.Focused.Title = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
+var (
+	confirmTitleStyle    = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
+	confirmFocusedButton = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(AccentColor).Padding(0, 1)
+	confirmBlurredButton = lipgloss.NewStyle().Foreground(DimColor).Padding(0, 1)
+	confirmSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
+	confirmHelpStyle     = lipgloss.NewStyle().Foreground(DimColor)
+)
 
-	km := huh.NewDefaultKeyMap()
-	km.Quit = key.NewBinding(key.WithKeys("ctrl+c", "esc"))
+// confirmModel is a yes/no prompt rendered with plain bubbletea on stdout —
+// the same stack as menuModel. It deliberately does NOT use huh: huh renders to
+// stderr and opens /dev/tty directly to issue cursor-position/background-colour
+// queries, and its inline renderer ghosts (stacks duplicate frames) when the
+// form runs in a short terminal after a screenful of stdout output. Owning the
+// model keeps the rendering consistent and ghost-free.
+type confirmModel struct {
+	message string
+	value   bool // current selection; true = Yes. Defaults to No (safe).
+	aborted bool // esc / ctrl+c
+	done    bool
+}
 
-	err := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(message).
-				Affirmative("Yes").
-				Negative("No").
-				Value(&result),
-		),
-	).WithTheme(theme).WithKeyMap(km).Run()
-	if err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return false, ErrGoBack
+func newConfirmModel(message string) confirmModel {
+	return confirmModel{message: message}
+}
+
+func (m confirmModel) Init() tea.Cmd { return nil }
+
+func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "left", "h":
+			m.value = true // Yes sits on the left
+		case "right", "l":
+			m.value = false
+		case "tab", "shift+tab":
+			m.value = !m.value
+		case "y", "Y":
+			m.value, m.done = true, true
+			return m, tea.Quit
+		case "n", "N":
+			m.value, m.done = false, true
+			return m, tea.Quit
+		case "enter":
+			m.done = true
+			return m, tea.Quit
+		case "esc", "ctrl+c":
+			m.aborted, m.done = true, true
+			return m, tea.Quit
 		}
+	}
+	return m, nil
+}
+
+func (m confirmModel) View() string {
+	if m.done {
+		if m.aborted {
+			return ""
+		}
+		ans := "No"
+		if m.value {
+			ans = "Yes"
+		}
+		return confirmSelectedStyle.Render(fmt.Sprintf("  %s %s", m.message, ans)) + "\n"
+	}
+
+	yes, no := confirmBlurredButton.Render("Yes"), confirmBlurredButton.Render("No")
+	if m.value {
+		yes = confirmFocusedButton.Render("Yes")
+	} else {
+		no = confirmFocusedButton.Render("No")
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s\n\n", confirmTitleStyle.Render(m.message))
+	fmt.Fprintf(&b, "  %s  %s\n\n", yes, no)
+	b.WriteString("  " + confirmHelpStyle.Render("←/→ toggle · enter submit · y Yes · n No"))
+	return b.String()
+}
+
+// Confirm shows a yes/no prompt and returns true for yes. Esc/Ctrl+C return
+// ErrGoBack so callers treat a cancel as "go back", matching the menus.
+func Confirm(message string) (bool, error) {
+	final, err := tea.NewProgram(newConfirmModel(message)).Run()
+	if err != nil {
 		return false, err
 	}
-	return result, nil
+	res := final.(confirmModel)
+	if res.aborted {
+		return false, ErrGoBack
+	}
+	return res.value, nil
 }

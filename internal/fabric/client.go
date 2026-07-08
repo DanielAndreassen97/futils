@@ -8,9 +8,12 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,9 +38,244 @@ const (
 	// maxResponseSize caps any single response read at 10 MB. Definition
 	// payloads are base64, so this is generous.
 	maxResponseSize = 10 << 20
+
+	// maxThrottleRetries caps 429 retries per request. The throttle backoff is
+	// min(Retry-After-or-60, 10·2^attempt) (front-loaded 10/20/40s) and 8 retries
+	// gives ≈7 min total under sustained throttling, close to fabric-cicd's 300s+
+	// budget, so a transiently-throttled deploy doesn't abort early.
+	maxThrottleRetries = 8
+	maxThrottleWait    = 60 * time.Second
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// retryTokenFn is the function used by doGet/doWrite to obtain a fresh token
+// after a 401. Defined as a variable so tests can inject a controlled value.
+var retryTokenFn = retryWithFreshToken
+
+// httpDebug logs every HTTP call (method, status, duration, path) so you can see
+// exactly what API work futils does during a run. Enable via FUTILS_DEBUG:
+//
+//	FUTILS_DEBUG=1                     → log to stderr (interleaves with the TUI)
+//	FUTILS_DEBUG=/tmp/futils-http.log  → log to that file (clean TUI, full log)
+var (
+	httpDebug bool
+	debugW    io.Writer = os.Stderr
+)
+
+func init() {
+	v := strings.TrimSpace(os.Getenv("FUTILS_DEBUG"))
+	if v == "" {
+		return
+	}
+	httpDebug = true
+	switch v {
+	case "1", "true", "yes", "stderr":
+		// debugW stays os.Stderr
+	default:
+		if f, err := os.Create(v); err == nil {
+			debugW = f
+		}
+	}
+}
+
+var httpCallCount int64
+
+// HTTPCallCount returns the number of HTTP requests issued this process.
+func HTTPCallCount() int64 { return atomic.LoadInt64(&httpCallCount) }
+
+// debugMu serializes writes to debugW: logHTTP fires from up to diffConcurrency
+// worker goroutines, and Fprintf isn't guaranteed atomic on a shared writer, so
+// without this the debug lines interleave byte-for-byte.
+var debugMu sync.Mutex
+
+func logHTTP(method string, status int, dur time.Duration, rawURL string) {
+	atomic.AddInt64(&httpCallCount, 1)
+	if !httpDebug {
+		return
+	}
+	path := strings.TrimPrefix(strings.TrimPrefix(rawURL, baseURL), powerBIBaseURL)
+	debugMu.Lock()
+	fmt.Fprintf(debugW, "[http] %-6s %3d %5dms  %s\n", method, status, dur.Milliseconds(), path)
+	debugMu.Unlock()
+}
+
+// throttleHits is the cumulative count of 429 backoffs since process start;
+// throttleActive is a gauge of requests currently sleeping on a 429. Together
+// they let a UI say "we're being rate-limited right now" (active) and "this run
+// hit limits N times" (cumulative) instead of showing a frozen spinner.
+var (
+	throttleHits   int64
+	throttleActive int64
+)
+
+// throttleSt is the mutex-guarded live backoff state. A single lock acquisition
+// across all three fields makes every snapshot torn-free: no reader can see
+// remaining > total even if a 429 lands between two separate reads.
+//
+// thrDeadline stores a Go time.Time so time.Until uses the monotonic clock,
+// immunising the countdown from wall-clock adjustments (NTP steps, DST changes).
+var (
+	throttleStMu sync.Mutex
+	thrDeadline  time.Time     // monotonic; zero when no backoff is active
+	thrTotal     time.Duration // duration of the current/longest backoff
+	thrAttempt   int           // 1-based attempt number of current/longest backoff
+)
+
+// ThrottleHits returns the running total of 429 backoffs. Callers typically
+// snapshot it before a batch and report the delta.
+func ThrottleHits() int64 { return atomic.LoadInt64(&throttleHits) }
+
+// ThrottleSnapshot returns a torn-free view of the live throttle state: active
+// (from the atomic gauge), remaining (time.Until the current deadline, ≥0),
+// total (the duration of the current/longest backoff), and attempt (1-based).
+// All three duration/attempt fields are read under a single lock acquisition so
+// the caller can never observe remaining > total.
+func ThrottleSnapshot() (active int, remaining, total time.Duration, attempt int) {
+	active = int(atomic.LoadInt64(&throttleActive))
+	throttleStMu.Lock()
+	if thrDeadline.IsZero() {
+		throttleStMu.Unlock()
+		return active, 0, 0, 0
+	}
+	rem := time.Until(thrDeadline)
+	if rem < 0 {
+		rem = 0
+	}
+	total = thrTotal
+	attempt = thrAttempt
+	throttleStMu.Unlock()
+	return active, rem, total, attempt
+}
+
+// MaxThrottleRetries returns the cap on 429 retries so a UI can show "retry N/M"
+// without hardcoding the constant.
+func MaxThrottleRetries() int { return maxThrottleRetries }
+
+// noteThrottle records the backoff deadline and metadata under the lock. It
+// keeps the LONGEST active deadline so a concurrent goroutine with a shorter
+// wait never clobbers a longer one already in flight.
+func noteThrottle(d time.Duration, attempt int) {
+	deadline := time.Now().Add(d)
+	throttleStMu.Lock()
+	if deadline.After(thrDeadline) {
+		thrDeadline = deadline
+		thrTotal = d
+		thrAttempt = attempt + 1
+	}
+	throttleStMu.Unlock()
+}
+
+// clearThrottleState zeros the shared backoff snapshot. Called when the last
+// active waiter finishes (throttleActive drops to 0) so the next 429 in a
+// later deploy group starts from a clean slate rather than inheriting an
+// already-expired deadline.
+//
+// The re-check of throttleActive under throttleStMu is intentional: between
+// the atomic.AddInt64 reaching 0 and this lock acquisition, a concurrent
+// worker may have started a new backoff (incrementing active and calling
+// noteThrottle, which also takes throttleStMu). By re-reading active while
+// holding the lock — serialized against noteThrottle — we avoid wiping a
+// freshly-set deadline.
+func clearThrottleState() {
+	throttleStMu.Lock()
+	if atomic.LoadInt64(&throttleActive) == 0 {
+		thrDeadline = time.Time{}
+		thrTotal = 0
+		thrAttempt = 0
+	}
+	throttleStMu.Unlock()
+}
+
+// firstThrottle captures the details of the first 429 seen since the last reset
+// so a UI can show WHY Fabric throttled — its own error body names the limit
+// that was hit, which beats guessing. A mutex (not sync.Once) guards it so the
+// compare can ResetThrottleFirst() per group: otherwise a later group's "first
+// 429" line would misattribute the very first 429 of the whole process.
+var (
+	firstThrottleMu  sync.Mutex
+	firstThrottle    string
+	firstThrottleSet bool
+)
+
+// FirstThrottle returns the first 429's "METHOD url — Retry-After=… — <body>"
+// since the last reset, or "" if none seen.
+func FirstThrottle() string {
+	firstThrottleMu.Lock()
+	defer firstThrottleMu.Unlock()
+	return firstThrottle
+}
+
+// ResetThrottleFirst clears the recorded first-429 detail so the next throttle
+// is attributed to the current batch. Callers that report a per-batch throttle
+// delta (the deploy compare, per group) reset before the batch starts.
+func ResetThrottleFirst() {
+	firstThrottleMu.Lock()
+	firstThrottle = ""
+	firstThrottleSet = false
+	firstThrottleMu.Unlock()
+}
+
+func recordThrottle(method, rawURL, retryAfter string, body []byte) {
+	firstThrottleMu.Lock()
+	defer firstThrottleMu.Unlock()
+	if firstThrottleSet {
+		return
+	}
+	firstThrottleSet = true
+	b := strings.TrimSpace(string(body))
+	if len(b) > 240 {
+		b = b[:240] + "…"
+	}
+	firstThrottle = fmt.Sprintf("%s %s — Retry-After=%q — %s", method, rawURL, retryAfter, b)
+}
+
+// ThrottleBackoff records one 429 and sleeps the computed backoff (Retry-After
+// bounded by the front-loaded exponential schedule — see throttleDelay). Shared
+// by this package's retry loops and exported for other Fabric-surface clients
+// (e.g. the OneLake Table API client) so every throttle feeds the same
+// counters, first-429 detail, and live snapshot the spinners render.
+func ThrottleBackoff(method, rawURL, retryAfter string, attempt int, body []byte) {
+	recordThrottle(method, rawURL, retryAfter, body)
+	atomic.AddInt64(&throttleHits, 1)
+	atomic.AddInt64(&throttleActive, 1)
+	d := throttleDelay(retryAfter, attempt)
+	noteThrottle(d, attempt)
+	time.Sleep(d)
+	if atomic.AddInt64(&throttleActive, -1) == 0 {
+		clearThrottleState()
+	}
+}
+
+// throttleDelay computes how long to wait before retrying a 429.
+// Formula: min(retryAfterSecs, 10·2^attempt), clamped to maxThrottleWait (60s).
+// This matches fabric-cicd's approach: front-load short waits so we never sit
+// idle at 60s on the first 429, while still respecting Retry-After when the
+// server sends a shorter deadline. If Retry-After is absent, invalid, or ≤0,
+// it defaults to 60s (the hard ceiling), so backoff drives the wait.
+//
+// Example delays (maxThrottleWait=60s):
+//
+//	No header:       attempt 0→10s, 1→20s, 2→40s, 3→60s, 4→60s
+//	Retry-After=5:   always 5s (5 < 10·2^attempt for any attempt ≥ 0)
+//	Retry-After=120: 10s, 20s, 40s, 60s (80 clamped), 60s
+func throttleDelay(retryAfter string, attempt int) time.Duration {
+	raDefault := int(maxThrottleWait.Seconds()) // 60
+	raSecs := raDefault
+	if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 {
+		raSecs = secs
+	}
+	backoffSecs := 10 << uint(attempt) // 10·2^attempt: 10, 20, 40, 80, …
+	delay := raSecs
+	if backoffSecs < delay {
+		delay = backoffSecs
+	}
+	d := time.Duration(delay) * time.Second
+	if d > maxThrottleWait {
+		return maxThrottleWait
+	}
+	return d
+}
 
 // Workspace is a minimal projection of the Fabric workspace resource.
 type Workspace struct {
@@ -195,6 +433,62 @@ func UpdateItemDefinition(token, workspaceID, itemID string, def *Definition) er
 	return err
 }
 
+// UpdateItem updates an item's metadata — displayName and description — via the
+// Core Items PATCH endpoint. The .platform metadata (which holds the description)
+// is never part of the published definition, so this is how a git description
+// reaches the workspace; mirrors fabric-cicd's separate metadata update. Unlike
+// the definition endpoints this is synchronous (200 OK), not an LRO.
+func UpdateItem(token, workspaceID, itemID, displayName, description string) error {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return err
+	}
+	body := struct {
+		DisplayName string `json:"displayName"`
+		Description string `json:"description"`
+	}{DisplayName: displayName, Description: description}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal update-item body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, itemID)
+	resp, respBody, err := doPatch(token, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("update item %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// DeleteItem removes an item from a workspace via the Core Items DELETE endpoint.
+// Synchronous (200 OK), like UpdateItem — not an LRO. Irreversible; callers must
+// confirm before invoking.
+func DeleteItem(token, workspaceID, itemID string) error {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, itemID)
+	resp, respBody, err := doDelete(token, url)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone — deletion is idempotent, the desired end-state holds
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("delete item %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // ListNotebooks returns all notebook items in a workspace.
 // Thin wrapper over ListItemsByType for backward compatibility.
 func ListNotebooks(token, workspaceID string) ([]Item, error) {
@@ -239,6 +533,70 @@ type DefinitionPart struct {
 	Path        string `json:"path"`
 	Payload     string `json:"payload"`
 	PayloadType string `json:"payloadType"`
+}
+
+// BulkImportOptions configures a bulkImportDefinitions request. AllowPairingByName
+// controls how an imported item WITHOUT a logicalId is matched against an existing
+// workspace item: true → pair by display name + type; false → name pairing is
+// disabled (a same-name/type item causes a duplication conflict). futils strips
+// logicalId from the .platform payload (see deploy.stripLogicalID) and sets this
+// true, so bulk pairs by name+type — matching the per-item backend's identity model.
+type BulkImportOptions struct {
+	AllowPairingByName bool `json:"allowPairingByName"`
+}
+
+// BulkImportDetail is one item's outcome in a bulk import result.
+type BulkImportDetail struct {
+	ItemID          string `json:"itemId"`
+	ItemDisplayName string `json:"itemDisplayName"`
+	ItemType        string `json:"itemType"`
+	ItemLogicalID   string `json:"itemLogicalId"`
+	OperationType   string `json:"operationType"`   // Create | Update
+	OperationStatus string `json:"operationStatus"` // Succeeded | Failed | SucceededDespiteFailures
+}
+
+// BulkImportResult is the bulkImportDefinitions response payload.
+type BulkImportResult struct {
+	Details []BulkImportDetail `json:"importItemDefinitionsDetails"`
+}
+
+// BulkImportDefinitions imports many item definitions into a workspace in one
+// request via the beta Bulk Import Item Definitions API. parts is the flat list
+// of ALL definition parts for ALL items (paths are workspace-absolute and
+// item-folder-scoped, e.g. "/Sales.Report/.platform"); Fabric resolves item
+// grouping and dependency order itself. The call is an LRO: doLRO returns the
+// result body on a synchronous 200 or after polling a 202 to completion, and
+// already applies the shared 429-throttle and 401-refresh handling.
+//
+// The ?beta=true query parameter is REQUIRED while the API is in beta; drop it
+// at GA.
+func BulkImportDefinitions(token, workspaceID string, parts []DefinitionPart, opts BulkImportOptions) (*BulkImportResult, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return nil, err
+	}
+	body := struct {
+		DefinitionParts []DefinitionPart  `json:"definitionParts"`
+		Options         BulkImportOptions `json:"options"`
+	}{DefinitionParts: parts, Options: opts}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal bulk import body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/bulkImportDefinitions?beta=true", baseURL, workspaceID)
+	resultBody, err := doLRO(token, url, bytes.NewReader(payload), 150)
+	if err != nil {
+		return nil, err
+	}
+	if len(resultBody) == 0 {
+		return nil, fmt.Errorf("bulk import returned empty body - operation may have completed but per-item results are unknown; check workspace %s manually", workspaceID)
+	}
+
+	var out BulkImportResult
+	if err := json.Unmarshal(resultBody, &out); err != nil {
+		return nil, fmt.Errorf("parse bulk import result: %w", err)
+	}
+	return &out, nil
 }
 
 // GetItemDefinition fetches the full definition of any Fabric item.
@@ -308,18 +666,53 @@ func ParseNotebookParameters(token, workspaceID, itemID string) ([]Parameter, er
 	return ParseParameters(ipynb)
 }
 
+const (
+	// minPollInterval matches the reference dry-run's steady 1s poll. Polling
+	// faster (we tried 250ms) front-loads operation-status requests and spikes
+	// the request rate past Fabric's limit, triggering 429s the 1s cadence avoids.
+	minPollInterval = 1 * time.Second
+	maxPollInterval = 2 * time.Second
+)
+
+// nextPollInterval grows the inter-poll delay from minPollInterval toward
+// maxPollInterval, so polling starts gentle (matching a known-safe cadence) and
+// a slow operation settles to the 2s cap — preserving the ~maxAttempts×2s budget.
+func nextPollInterval(prev time.Duration) time.Duration {
+	if prev <= 0 {
+		return minPollInterval
+	}
+	next := prev * 2
+	if next > maxPollInterval {
+		return maxPollInterval
+	}
+	return next
+}
+
 // pollOperation follows a Fabric long-running operation to
 // completion and returns the result body. maxAttempts caps the
-// number of poll cycles (each 2 seconds apart). Pass 0 to use the
-// default of 60 (≈2 minutes) — enough for getDefinition; CreateItem
-// uses a longer cap for large report definitions.
+// number of poll cycles. Pass 0 to use the default of 60 — enough for
+// getDefinition; CreateItem uses a longer cap for large report definitions.
+//
+// It sleeps BEFORE the first poll (never polls at t=0): a freshly-created
+// operation isn't ready yet, and polling it immediately — across many
+// concurrent workers — makes the upstream service reject the premature polls
+// with "RequestBlocked". Waiting one interval first (matching the reference
+// dry-run's `sleep(1); poll`) gives the operation time to be ready.
+// errOperationHasNoResult is the Fabric error code returned by
+// GET /operations/{id}/result for a succeeded LRO that produces no result
+// (e.g. updateDefinition). Per the LRO contract this means success, not failure.
+const errOperationHasNoResult = "OperationHasNoResult"
+
 func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) {
 	if maxAttempts <= 0 {
 		maxAttempts = 60
 	}
-	const pollInterval = 2 * time.Second
+	var interval time.Duration
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		interval = nextPollInterval(interval)
+		time.Sleep(interval)
+
 		data, err := doGet(token, operationURL)
 		if err != nil {
 			return nil, fmt.Errorf("poll: %w", err)
@@ -332,11 +725,20 @@ func pollOperation(token, operationURL string, maxAttempts int) ([]byte, error) 
 		}
 		switch op.Status {
 		case "Succeeded":
-			return doGet(token, operationURL+"/result")
+			result, err := doGet(token, operationURL+"/result")
+			if err != nil && strings.Contains(err.Error(), errOperationHasNoResult) {
+				// Per the Fabric LRO contract, "not all long running operations
+				// have a result" — updateDefinition succeeds but its /result
+				// endpoint returns 400 OperationHasNoResult. That's success with
+				// no body, not a failure. Callers that need a body (CreateItem,
+				// GetItemDefinition) target operations that DO produce one and so
+				// never reach this branch.
+				return nil, nil
+			}
+			return result, err
 		case "Failed":
 			return nil, fmt.Errorf("operation failed: %s", string(data))
 		}
-		time.Sleep(pollInterval)
 	}
 	return nil, fmt.Errorf("operation did not complete within %d attempts", maxAttempts)
 }
@@ -413,44 +815,53 @@ func doGet(token, rawURL string) ([]byte, error) {
 	if parsed, err := neturl.Parse(rawURL); err == nil {
 		rawURL = parsed.String()
 	}
-	body, status, err := doGetOnce(token, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	// On 401, the token captured at flow start has likely expired during
-	// a long-running poll. Mint a fresh one via cached/refresh-grant
-	// (browser auth is NOT triggered here — that requires interactive
-	// terminal context) and retry once.
-	if status == http.StatusUnauthorized {
-		if fresh, ok := retryWithFreshToken(); ok {
-			body, status, err = doGetOnce(fresh, rawURL)
-			if err != nil {
-				return nil, err
+	for attempt := 0; ; attempt++ {
+		body, status, retryAfter, err := doGetOnce(token, rawURL)
+		if err != nil {
+			return nil, err
+		}
+		// On 401, the token captured at flow start has likely expired during
+		// a long-running poll. Mint a fresh one via cached/refresh-grant
+		// (browser auth is NOT triggered here — that requires interactive
+		// terminal context) and retry once.
+		if status == http.StatusUnauthorized {
+			if fresh, ok := retryTokenFn(); ok {
+				token = fresh
+				body, status, retryAfter, err = doGetOnce(token, rawURL)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
+		if status == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			ThrottleBackoff("GET", rawURL, retryAfter, attempt, body)
+			continue
+		}
+		if status >= 400 {
+			return nil, fmt.Errorf("GET %s → %d: %s", rawURL, status, string(body))
+		}
+		return body, nil
 	}
-	if status >= 400 {
-		return nil, fmt.Errorf("GET %s → %d: %s", rawURL, status, string(body))
-	}
-	return body, nil
 }
 
-func doGetOnce(token, rawURL string) ([]byte, int, error) {
+func doGetOnce(token, rawURL string) ([]byte, int, string, error) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
-		return nil, 0, fmt.Errorf("invalid URL: %w", err)
+		return nil, 0, "", fmt.Errorf("invalid URL: %w", err)
 	}
 	req.Header = authHeader(token)
+	start := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
+	logHTTP("GET", resp.StatusCode, time.Since(start), rawURL)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read body: %w", err)
+		return nil, resp.StatusCode, "", fmt.Errorf("read body: %w", err)
 	}
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, resp.Header.Get("Retry-After"), nil
 }
 
 // doLRO is the long-running-operation primitive used by CreateItem,
@@ -479,7 +890,21 @@ func doLRO(token, rawURL string, reqBody io.Reader, maxAttempts int) ([]byte, er
 }
 
 func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
-	// Drain the body up front so the 401-retry path can replay it.
+	return doWrite("POST", token, rawURL, reqBody)
+}
+
+func doPatch(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
+	return doWrite("PATCH", token, rawURL, reqBody)
+}
+
+func doDelete(token, rawURL string) (*http.Response, []byte, error) {
+	return doWrite("DELETE", token, rawURL, nil)
+}
+
+// doWrite issues a body-bearing request (POST/PATCH) with the shared 401-refresh
+// and 429-throttle retry handling.
+func doWrite(method, token, rawURL string, reqBody io.Reader) (*http.Response, []byte, error) {
+	// Drain the body up front so the 401/429-retry path can replay it.
 	// All current callers pass either nil or a bytes.NewReader, so this
 	// is at worst a no-op copy.
 	var bodyBytes []byte
@@ -490,24 +915,34 @@ func doPost(token, rawURL string, reqBody io.Reader) (*http.Response, []byte, er
 			return nil, nil, fmt.Errorf("read request body: %w", err)
 		}
 	}
-	resp, body, err := doPostOnce(token, rawURL, bodyBytes)
-	if err != nil {
-		return resp, body, err
-	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		if fresh, ok := retryWithFreshToken(); ok {
-			resp, body, err = doPostOnce(fresh, rawURL, bodyBytes)
+	for attempt := 0; ; attempt++ {
+		resp, body, err := doWriteOnce(method, token, rawURL, bodyBytes)
+		if err != nil {
+			return resp, body, err
 		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			if fresh, ok := retryTokenFn(); ok {
+				token = fresh
+				resp, body, err = doWriteOnce(method, token, rawURL, bodyBytes)
+				if err != nil {
+					return resp, body, err
+				}
+			}
+		}
+		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxThrottleRetries {
+			ThrottleBackoff(method, rawURL, resp.Header.Get("Retry-After"), attempt, body)
+			continue
+		}
+		return resp, body, nil
 	}
-	return resp, body, err
 }
 
-func doPostOnce(token, rawURL string, bodyBytes []byte) (*http.Response, []byte, error) {
+func doWriteOnce(method, token, rawURL string, bodyBytes []byte) (*http.Response, []byte, error) {
 	var reader io.Reader
 	if bodyBytes != nil {
 		reader = bytes.NewReader(bodyBytes)
 	}
-	req, err := http.NewRequest("POST", rawURL, reader)
+	req, err := http.NewRequest(method, rawURL, reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid URL: %w", err)
 	}
@@ -515,11 +950,13 @@ func doPostOnce(token, rawURL string, bodyBytes []byte) (*http.Response, []byte,
 	if bodyBytes != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	start := time.Now()
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer resp.Body.Close()
+	logHTTP(method, resp.StatusCode, time.Since(start), rawURL)
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read body: %w", err)
@@ -689,6 +1126,44 @@ func GetJobInstance(token, instanceURL string) (JobInstanceStatus, error) {
 		return s, fmt.Errorf("parse job instance: %w", err)
 	}
 	return s, nil
+}
+
+// GetLakehouseSqlEndpoint returns the SQL analytics endpoint (host, id) of a
+// lakehouse. Used to resolve fabric-cicd's $sqlendpoint / $sqlendpointid
+// dynamic variables during deployment.
+func GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, string, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return "", "", err
+	}
+	if err := validateUUID(lakehouseID, "lakehouse ID"); err != nil {
+		return "", "", err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, lakehouseID)
+	body, err := doGet(token, url)
+	if err != nil {
+		return "", "", err
+	}
+	return parseLakehouseSqlEndpoint(body)
+}
+
+func parseLakehouseSqlEndpoint(body []byte) (string, string, error) {
+	var resp struct {
+		Properties struct {
+			SQLEndpointProperties struct {
+				ConnectionString string `json:"connectionString"`
+				ID               string `json:"id"`
+			} `json:"sqlEndpointProperties"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", "", fmt.Errorf("parse lakehouse: %w", err)
+	}
+	host := resp.Properties.SQLEndpointProperties.ConnectionString
+	id := resp.Properties.SQLEndpointProperties.ID
+	if host == "" {
+		return "", "", fmt.Errorf("lakehouse has no SQL endpoint yet (still provisioning?)")
+	}
+	return host, id, nil
 }
 
 // RebindReport repoints a Report at a different semantic model

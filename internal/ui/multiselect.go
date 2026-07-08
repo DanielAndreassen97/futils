@@ -26,8 +26,11 @@ var (
 const checkboxJumpSize = 5
 
 type checkboxItem struct {
-	label   string
-	checked bool
+	label    string
+	checked  bool
+	style    lipgloss.Style // when styled, the label's base style (class color)
+	styled   bool           // true for MultiSelectRich items; false keeps legacy rendering
+	skipBulk bool           // true = excluded from select-all (a); deliberate per-item only
 }
 
 type checkboxModel struct {
@@ -71,17 +74,22 @@ func (m checkboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// standard checkbox-toggle key in terminal UIs.
 			m.items[m.cursor].checked = !m.items[m.cursor].checked
 		case "a":
-			// Select all if anything is unchecked; otherwise uncheck all.
-			// Gives a one-keystroke "clear everything" when the list is
-			// already fully checked.
+			// Select all if any bulk-selectable row is unchecked; otherwise clear
+			// them. Rows flagged skipBulk (destructive deletes) are never touched.
 			allChecked := true
 			for _, it := range m.items {
+				if it.skipBulk {
+					continue
+				}
 				if !it.checked {
 					allChecked = false
 					break
 				}
 			}
 			for i := range m.items {
+				if m.items[i].skipBulk {
+					continue
+				}
 				m.items[i].checked = !allChecked
 			}
 		case "enter":
@@ -114,12 +122,24 @@ func (m checkboxModel) renderItem(i int) string {
 		box = checkboxCheckedBoxStyle.Render("■ ")
 	}
 
-	label := item.label
-	switch {
-	case isCursor:
-		label = checkboxCursorLabelStyle.Render(label)
-	case item.checked:
-		label = checkboxCheckedLabelStyle.Render(label)
+	var label string
+	if item.styled {
+		// Colored row (e.g. a class-colored deploy item): the style is the label's
+		// base so the color shows whether or not the row is checked — the ■ box is
+		// the checked indicator. The cursor row keeps the color, bolded.
+		s := item.style
+		if isCursor {
+			s = s.Bold(true)
+		}
+		label = s.Render(item.label)
+	} else {
+		label = item.label
+		switch {
+		case isCursor:
+			label = checkboxCursorLabelStyle.Render(label)
+		case item.checked:
+			label = checkboxCheckedLabelStyle.Render(label)
+		}
 	}
 
 	return fmt.Sprintf("%s%s%s", pointer, box, label)
@@ -133,6 +153,17 @@ func (m checkboxModel) countChecked() int {
 		}
 	}
 	return n
+}
+
+// checkedIndices returns the indices of the checked items, in list order.
+func (m checkboxModel) checkedIndices() []int {
+	var out []int
+	for i, it := range m.items {
+		if it.checked {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (m checkboxModel) View() string {
@@ -197,6 +228,46 @@ func (m checkboxModel) View() string {
 	}
 
 	return b.String()
+}
+
+// CheckItem is one row for MultiSelectRich: a display label, an optional lipgloss
+// style (zero value renders plain), and whether it starts checked.
+type CheckItem struct {
+	Label   string
+	Style   lipgloss.Style
+	Checked bool
+	// SkipBulkSelect excludes this row from the select-all (a) key — used for
+	// destructive (delete) rows so a bulk select never marks one.
+	SkipBulkSelect bool
+}
+
+func toCheckboxItems(items []CheckItem) []checkboxItem {
+	out := make([]checkboxItem, len(items))
+	for i, it := range items {
+		out[i] = checkboxItem{label: it.Label, checked: it.Checked, style: it.Style, styled: true, skipBulk: it.SkipBulkSelect}
+	}
+	return out
+}
+
+// MultiSelectRich shows an interactive checkbox list of styled items and returns
+// the indices of the checked items in list order. Unlike MultiSelect (which keys
+// on the label string), callers map the returned indices back to their own data,
+// so two rows with identical labels stay distinct. Returns ErrGoBack on esc,
+// ErrQuit on ctrl+c/q.
+func MultiSelectRich(title string, items []CheckItem) ([]int, error) {
+	model := checkboxModel{title: title, items: toCheckboxItems(items)}
+	final, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return nil, err
+	}
+	result := final.(checkboxModel)
+	if result.quit {
+		return nil, ErrQuit
+	}
+	if result.goBack {
+		return nil, ErrGoBack
+	}
+	return result.checkedIndices(), nil
 }
 
 // MultiSelect shows an interactive checkbox list. Items in `initial` are
