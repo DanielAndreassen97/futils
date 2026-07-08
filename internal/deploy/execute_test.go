@@ -646,6 +646,53 @@ func TestRebindReportsStructuredByConnectionCoDeployedBinds(t *testing.T) {
 	}
 }
 
+// TestRebindReportsByConnectionStaleCatalogPrefersBaseline pins the authoritative
+// precedence for byConnection co-deploy binding: the baseline-index name for the
+// reference's semanticmodelid GUID wins over a STALE "initial catalog" name in the
+// connectionString. A report whose cached connectionString still names the model
+// "HR_old" but whose GUID resolves (via the baseline index) to "HR" must bind to
+// the co-deployed "HR" model, never a same-run "HR_old" — mirroring
+// RebindReportConnection, which treats the GUID as authoritative so a stale catalog
+// string can't misbind. (Regression: the old AltNames path tried the flat name FIRST.)
+func TestRebindReportsByConnectionStaleCatalogPrefersBaseline(t *testing.T) {
+	dev := fabric.Workspace{ID: "ws-dev", DisplayName: "DEV"}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{dev, target},
+		itemsByWS: map[string][]fabric.Item{
+			"ws-dev":  {{ID: devHRModel, DisplayName: "HR", Type: "SemanticModel"}},
+			"ws-test": {}, // both models created this run
+		},
+	}}
+	rb, err := NewRebinder(rf, "tok", []fabric.Workspace{dev}, []fabric.Workspace{target}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+
+	// Stale catalog name "HR_old", but the semanticmodelid GUID maps to "HR".
+	stalePBIR := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR_old;integrated security=ClaimsToken;semanticmodelid=` + devHRModel + `"}}}`)
+	hr := LocalItem{Type: "SemanticModel", DisplayName: "HR", LogicalID: "lid-hr",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
+	hrOld := LocalItem{Type: "SemanticModel", DisplayName: "HR_old", LogicalID: "lid-old",
+		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table Y")}}}
+	report := LocalItem{Type: "Report", DisplayName: "StaleRep", LogicalID: "lid-r",
+		Parts: []Part{{Path: "definition.pbir", Content: stalePBIR}}}
+
+	modelsByWS := map[string]map[string]string{}
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{hr, hrOld, report}, nil), rb, modelsByWS, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	RebindReports(rf, "tok", modelsByWS, pending, true)
+
+	if !findRebind(rf, "ws-test", "StaleRep-newid", "HR-newid") {
+		t.Fatalf("stale-catalog byConnection report must bind to the baseline-resolved HR model, got rebinds=%v", rf.rebinds)
+	}
+	if findRebind(rf, "ws-test", "StaleRep-newid", "HR_old-newid") {
+		t.Fatal("report bound to the STALE catalog name HR_old — baseline GUID resolution must win")
+	}
+}
+
 // TestExecutePendingRebindUsesSubstitutedPBIR proves the pending ref is parsed
 // from the SUBSTITUTED pbir, not the raw part: a custom substitution rewrites
 // the model name to the target form, and the co-deployed model (published under

@@ -426,6 +426,26 @@ type canonicalByConnectionInner struct {
 // (connectionString null, pbiModelDatabaseName = target model GUID), so the
 // published payload binds the report to the target model in a single publish.
 // byPath and reference-less reports are returned unchanged.
+// resolveModelName maps a report's byConnection reference to its model display
+// name using the authoritative precedence: an override for the baseline GUID
+// wins, else the baseline-index name for that GUID, else the parsed
+// connectionString name candidate (used only when the GUID is unknown to the
+// baseline index — e.g. a flat string whose model isn't in the baseline). The
+// baseline GUID is authoritative so a stale 'initial catalog' string can't
+// misbind. Returns "" when nothing resolves. Shared by RebindReportConnection
+// (in-payload rewrite) and reportDatasetRef (post-deploy co-deploy match) so a
+// single resolution rule governs both.
+func (rb *Rebinder) resolveModelName(nameCandidate, baselineGUID string) string {
+	modelName := nameCandidate
+	if base, found := rb.baseline.ItemByGUID(baselineGUID); found {
+		modelName = base.Name
+	}
+	if ov, ok := rb.overrides[baselineGUID]; ok {
+		modelName = ov.ItemName
+	}
+	return modelName
+}
+
 func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]byte, RebindOutcome) {
 	var out RebindOutcome
 	var pbir map[string]json.RawMessage
@@ -455,17 +475,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		baselineGUID = ds.ByConnection.PbiModelDatabaseName
 	}
 
-	// The baseline semanticmodelid GUID is authoritative: reconcile the name
-	// against the baseline index so a stale 'initial catalog' string can't break
-	// resolution. Fall back to the parsed name candidate (flat shape) only when
-	// the GUID isn't in the baseline index.
-	modelName := nameCandidate
-	if base, found := rb.baseline.ItemByGUID(baselineGUID); found {
-		modelName = base.Name
-	}
-	if ov, ok := rb.overrides[baselineGUID]; ok {
-		modelName = ov.ItemName
-	}
+	modelName := rb.resolveModelName(nameCandidate, baselineGUID)
 	if modelName == "" {
 		out.Unresolved = append(out.Unresolved, UnresolvedRef{
 			GUID: baselineGUID, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: ReasonNameUnknown,

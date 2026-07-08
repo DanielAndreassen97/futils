@@ -32,31 +32,14 @@ const (
 )
 
 // datasetRef is the parsed result of a report's definition.pbir dataset
-// reference. ModelName is set for refByPath and for refByConnection (the flat
-// connectionString's model name when extractable); empty when the shape carries
-// no usable name. AltNames holds additional byConnection display-name
-// candidates recovered from the rebinder (override name, baseline-index name
-// for the reference's model GUID) so the structured shape — which carries no
-// name at all — can still match a co-deployed model.
+// reference. ModelName is the model's display name — resolved from the byPath
+// folder name, or (for byConnection) authoritatively from the reference's model
+// GUID via the rebinder (override > baseline-index > flat connectionString
+// name); empty when the shape carries no usable name. It is matched against
+// modelsByWS to bind a co-deployed model, identically for both shapes.
 type datasetRef struct {
 	Kind      refKind
 	ModelName string
-	AltNames  []string
-}
-
-// nameCandidates returns the model display-name candidates in match order
-// (primary first), with empties and duplicates of the primary skipped.
-func (r datasetRef) nameCandidates() []string {
-	out := make([]string, 0, 1+len(r.AltNames))
-	if r.ModelName != "" {
-		out = append(out, r.ModelName)
-	}
-	for _, n := range r.AltNames {
-		if n != "" && n != r.ModelName {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // PendingReportRebind defers a single report's rebind to the post-deploy pass.
@@ -226,14 +209,7 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 				})
 			}
 		case refByConnection:
-			var datasetID string
-			var found bool
-			for _, name := range pr.Ref.nameCandidates() {
-				if id, ok := modelsByWS[pr.WorkspaceID][name]; ok {
-					datasetID, found = id, true
-					break
-				}
-			}
+			datasetID, found := modelsByWS[pr.WorkspaceID][pr.Ref.ModelName]
 			if found {
 				// Model was created this run: the payload kept the baseline GUID
 				// because it wasn't in the pre-deploy target index at diff time.
@@ -289,10 +265,10 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 // the old "" that conflated byConnection with no-reference and silently skipped
 // both):
 //   - byPath → refByPath with the model display name (e.g. "../MyModel.SemanticModel" → "MyModel").
-//   - byConnection present → refByConnection, with ModelName recovered from the
-//     flat connectionString's "initial catalog" when extractable, and AltNames
-//     resolved from the reference's model GUID via the rebinder (override name,
-//     baseline-index name) — the structured shape carries no name of its own.
+//   - byConnection present → refByConnection, with ModelName resolved from the
+//     reference's model GUID via the rebinder (override > baseline-index > flat
+//     connectionString name) — the structured shape carries no name of its own,
+//     and the flat shape's "initial catalog" can be stale, so the GUID wins.
 //   - neither / no pbir / unparseable → refNone (nothing to rebind).
 //
 // parts, when non-nil, holds the SUBSTITUTED part bytes (from buildDefinition):
@@ -330,10 +306,11 @@ func pbirDatasetRef(content []byte, rb *Rebinder) datasetRef {
 		return datasetRef{Kind: refByPath, ModelName: strings.TrimSuffix(base, ".SemanticModel")}
 	}
 	if len(pbir.DatasetReference.ByConnection) > 0 && string(pbir.DatasetReference.ByConnection) != "null" {
-		// Recover model display-name candidates so the post-deploy pass can match
-		// a same-run-created model in modelsByWS (mirrors byPath). The flat
-		// connectionString carries a name directly; both shapes carry a model GUID
-		// the rebinder can translate to a name (override first, then baseline index).
+		// Resolve the model display name so the post-deploy pass can match a
+		// same-run-created model in modelsByWS (mirrors byPath). Both shapes carry
+		// a model GUID; the rebinder translates it authoritatively (override >
+		// baseline index > flat connectionString name). Without a rebinder only the
+		// flat connectionString name is available.
 		var bc struct {
 			ConnectionString     string `json:"connectionString"`
 			PbiModelDatabaseName string `json:"pbiModelDatabaseName"`
@@ -343,16 +320,11 @@ func pbirDatasetRef(content []byte, rb *Rebinder) datasetRef {
 		if guid == "" {
 			guid = bc.PbiModelDatabaseName
 		}
-		ref := datasetRef{Kind: refByConnection, ModelName: name}
-		if rb != nil && guid != "" {
-			if ov, ok := rb.overrides[guid]; ok {
-				ref.AltNames = append(ref.AltNames, ov.ItemName)
-			}
-			if base, ok := rb.baseline.ItemByGUID(guid); ok {
-				ref.AltNames = append(ref.AltNames, base.Name)
-			}
+		modelName := name
+		if rb != nil {
+			modelName = rb.resolveModelName(name, guid)
 		}
-		return ref
+		return datasetRef{Kind: refByConnection, ModelName: modelName}
 	}
 	return datasetRef{Kind: refNone}
 }
