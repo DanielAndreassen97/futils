@@ -131,19 +131,23 @@ func runPostDeployRuns(client notebookRunner, token string, runs []postDeployRun
 // postDeployDimStyle renders skipped-run lines muted, matching the hints.
 var postDeployDimStyle = lipgloss.NewStyle().Foreground(ui.DimColor)
 
+// distinctWorkspaces counts the distinct target workspaces the runs span —
+// the single fact both the picker labels and the picker title derive from.
+func distinctWorkspaces(runs []postDeployRun) int {
+	seen := map[string]bool{}
+	for _, r := range runs {
+		seen[r.WorkspaceID] = true
+	}
+	return len(seen)
+}
+
 // buildPostDeployPickItems renders candidates as pre-checked picker rows.
 // A workspace suffix is added only when the runs span >1 workspace.
 func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
 	if len(runs) == 0 {
 		return nil
 	}
-	multiWS := false
-	for _, r := range runs[1:] {
-		if r.WorkspaceID != runs[0].WorkspaceID {
-			multiWS = true
-			break
-		}
-	}
+	multiWS := distinctWorkspaces(runs) > 1
 	items := make([]ui.CheckItem, len(runs))
 	for i, r := range runs {
 		label := r.Name
@@ -163,14 +167,10 @@ func postDeployPickerTitle(runs []postDeployRun) string {
 	if len(runs) == 0 {
 		return "Post-deploy runs"
 	}
-	seen := map[string]bool{}
-	for _, r := range runs {
-		seen[r.WorkspaceID] = true
+	if n := distinctWorkspaces(runs); n > 1 {
+		return fmt.Sprintf("Post-deploy runs → %d workspaces", n)
 	}
-	if len(seen) <= 1 {
-		return "Post-deploy runs → " + runs[0].WorkspaceName
-	}
-	return fmt.Sprintf("Post-deploy runs → %d workspaces", len(seen))
+	return "Post-deploy runs → " + runs[0].WorkspaceName
 }
 
 // offerPostDeployRuns is the deploy-flow tail for post-deploy runs: intersect
@@ -189,24 +189,27 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 		return nil
 	}
 
-	checked, err := ui.MultiSelectRich(postDeployPickerTitle(runs), buildPostDeployPickItems(runs))
-	if err != nil {
-		// esc / quit = skip post-deploy entirely; the deploy already succeeded.
+	// skip bails out of the best-effort post-deploy phase without failing the
+	// deploy (which already succeeded) — used for esc/quit, empty selection,
+	// and a declined confirm.
+	skip := func() []postDeployOutcome {
 		fmt.Println(infoStyle.Render("Post-deploy runs skipped."))
 		return nil
 	}
+
+	checked, err := ui.MultiSelectRich(postDeployPickerTitle(runs), buildPostDeployPickItems(runs))
+	if err != nil {
+		return skip() // esc / quit
+	}
 	if len(checked) == 0 {
-		fmt.Println(infoStyle.Render("Post-deploy runs skipped."))
-		return nil
+		return skip()
 	}
 	picked := make([]postDeployRun, len(checked))
 	for i, k := range checked {
 		picked[i] = runs[k]
 	}
-	ok, cerr := ui.Confirm(fmt.Sprintf("Run %d notebook(s)?", len(picked)))
-	if cerr != nil || !ok {
-		fmt.Println(infoStyle.Render("Post-deploy runs skipped."))
-		return nil
+	if ok, cerr := ui.Confirm(fmt.Sprintf("Run %d notebook(s)?", len(picked))); cerr != nil || !ok {
+		return skip()
 	}
 
 	var sp *ui.Spinner

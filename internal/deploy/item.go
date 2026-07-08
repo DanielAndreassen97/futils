@@ -75,39 +75,15 @@ func parsePlatform(raw []byte) (platformMeta, error) {
 // the edit-customer "exclude item types" picker — a cheap local scan, no API.
 // A missing or empty repoPath yields an empty slice, not an error.
 func RepoItemTypes(repoPath string) ([]string, error) {
-	if repoPath == "" {
-		return nil, nil
-	}
 	seen := map[string]bool{}
-	err := filepath.WalkDir(repoPath, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		if d.IsDir() || d.Name() != ".platform" {
-			return nil
-		}
-		raw, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return rerr
-		}
-		meta, perr := parsePlatform(raw)
-		if perr == nil && meta.Type != "" {
+	if err := walkPlatforms(repoPath, func(meta platformMeta) {
+		if meta.Type != "" {
 			seen[meta.Type] = true
 		}
-		return nil // skip unparseable .platform, don't fail the whole scan
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, fmt.Errorf("scan repo item types: %w", err)
 	}
-	types := make([]string, 0, len(seen))
-	for t := range seen {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-	return types, nil
+	return sortedKeys(seen), nil
 }
 
 // RepoItemNames scans repoPath (the working tree) for Fabric items of the
@@ -115,11 +91,26 @@ func RepoItemTypes(repoPath string) ([]string, error) {
 // Mirrors RepoItemTypes: unparseable .platform files are skipped, a missing
 // path yields an empty result rather than an error.
 func RepoItemNames(repoPath, itemType string) ([]string, error) {
-	if repoPath == "" {
-		return nil, nil
-	}
 	seen := map[string]bool{}
-	err := filepath.WalkDir(repoPath, func(p string, d fs.DirEntry, err error) error {
+	if err := walkPlatforms(repoPath, func(meta platformMeta) {
+		if meta.Type == itemType && meta.DisplayName != "" {
+			seen[meta.DisplayName] = true
+		}
+	}); err != nil {
+		return nil, fmt.Errorf("scan repo item names: %w", err)
+	}
+	return sortedKeys(seen), nil
+}
+
+// walkPlatforms visits every parseable .platform file under repoPath, calling
+// visit with its metadata. It owns the shared scan semantics: an empty repoPath
+// is a no-op, a missing path is swallowed (not an error), and unparseable
+// .platform files are skipped rather than failing the whole scan.
+func walkPlatforms(repoPath string, visit func(meta platformMeta)) error {
+	if repoPath == "" {
+		return nil
+	}
+	return filepath.WalkDir(repoPath, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {
 				return nil
@@ -133,19 +124,23 @@ func RepoItemNames(repoPath, itemType string) ([]string, error) {
 		if rerr != nil {
 			return rerr
 		}
-		meta, perr := parsePlatform(raw)
-		if perr == nil && meta.Type == itemType && meta.DisplayName != "" {
-			seen[meta.DisplayName] = true
+		if meta, perr := parsePlatform(raw); perr == nil {
+			visit(meta)
 		}
 		return nil // skip unparseable .platform, don't fail the whole scan
 	})
-	if err != nil {
-		return nil, fmt.Errorf("scan repo item names: %w", err)
+}
+
+// sortedKeys returns the map's keys as a sorted slice, or nil when empty (so
+// an empty/missing repo scan yields nil, matching the callers' contract).
+func sortedKeys(m map[string]bool) []string {
+	if len(m) == 0 {
+		return nil
 	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	sort.Strings(names)
-	return names, nil
+	sort.Strings(out)
+	return out
 }
