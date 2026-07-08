@@ -13,6 +13,42 @@ import (
 	"strings"
 )
 
+// DeployMapping ties a repo subfolder to the workspace its items deploy to,
+// for one environment. Used only by the deploy flow; absent for customers
+// that don't deploy. The folder is repo-relative (e.g. "Backend").
+type DeployMapping struct {
+	Folder    string `json:"folder"`
+	Workspace string `json:"workspace"`
+}
+
+// ReferenceOverride maps a baseline-environment GUID baked in git to a target
+// item resolved by name. Unlike parameter.yml's per-env blocks it is
+// env-agnostic: the same entry resolves correctly for TEST and PROD because
+// ItemName is looked up in whichever target env the deploy targets.
+type ReferenceOverride struct {
+	SourceGUID string `json:"source_guid"`
+	ItemType   string `json:"item_type"`
+	ItemName   string `json:"item_name"`
+	Note       string `json:"note,omitempty"`
+}
+
+// Substitution is a futils-native find→replace rule — the config-managed
+// equivalent of a parameter.yml find_replace. The replacement is either a
+// literal (Literal) or the resolved attribute of a target item looked up BY
+// NAME in the target env (TargetType+TargetName+Attr), making it env-agnostic.
+// ItemType/ItemName/FilePath are optional filters (empty = apply everywhere).
+type Substitution struct {
+	FindValue  string `json:"find_value"`
+	IsRegex    bool   `json:"is_regex,omitempty"`
+	ItemType   string `json:"item_type,omitempty"`
+	ItemName   string `json:"item_name,omitempty"`
+	FilePath   string `json:"file_path,omitempty"`
+	TargetType string `json:"target_type,omitempty"`
+	TargetName string `json:"target_name,omitempty"`
+	Attr       string `json:"attr,omitempty"`
+	Literal    string `json:"literal,omitempty"`
+}
+
 // Environment pairs a user-chosen alias (menu label) with one or more
 // Fabric workspaces it resolves to. Multiple workspaces per alias is the
 // common case for real Fabric deployments — e.g. a "DEV" environment
@@ -20,16 +56,32 @@ import (
 // workspace (semantic models). Run / Refresh aggregate items across
 // every workspace under the chosen alias.
 type Environment struct {
-	Alias      string   `json:"alias"`
-	Workspaces []string `json:"workspaces"`
+	Alias       string          `json:"alias"`
+	Workspaces  []string        `json:"workspaces"`
+	Deployments []DeployMapping `json:"deployments,omitempty"`
 }
 
 // Customer groups one tenant's environments and notebook favourites.
 // A customer with zero Environments is valid — they just can't run
 // notebooks until they add at least one via `futils edit`.
 type Customer struct {
-	Environments []Environment      `json:"environments"`
-	Favorites    []NotebookFavorite `json:"favorites,omitempty"`
+	Environments        []Environment       `json:"environments"`
+	Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
+	RepoPath            string              `json:"repo_path,omitempty"`
+	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
+	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
+	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
+	Substitutions       []Substitution      `json:"substitutions,omitempty"`
+	// ExcludedItemTypes lists item types to skip when comparing/deploying.
+	// Empty/nil = include every discovered type (the default).
+	ExcludedItemTypes []string `json:"excluded_item_types,omitempty"`
+	// DeployHistoryPath is a repo-relative folder where a timestamped HTML
+	// deploy-report is written after each real deploy. Empty = history off.
+	DeployHistoryPath string `json:"deploy_history_path,omitempty"`
+	// PostDeployRuns lists notebook display names offered for execution after
+	// a successful deploy. Only those actually deployed (created/updated) in a
+	// run are offered. List order = run order.
+	PostDeployRuns []string `json:"post_deploy_runs,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -38,6 +90,30 @@ type Customer struct {
 type NotebookFavorite struct {
 	Name       string   `json:"name"`
 	Parameters []string `json:"parameters,omitempty"`
+}
+
+// AllWorkspaces returns every workspace this environment spans: the explicit
+// Workspaces (which may include reference-only workspaces such as a Data
+// workspace that is not a deploy target) unioned with every Deployment target,
+// de-duplicated, preserving first-seen order. Used to build the env-wide name
+// index for reference rebinding.
+func (e Environment) AllWorkspaces() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(w string) {
+		if w == "" || seen[w] {
+			return
+		}
+		seen[w] = true
+		out = append(out, w)
+	}
+	for _, w := range e.Workspaces {
+		add(w)
+	}
+	for _, d := range e.Deployments {
+		add(d.Workspace)
+	}
+	return out
 }
 
 // Workspaces returns the workspace display names mapped to an alias,
@@ -52,6 +128,51 @@ func (c Customer) Workspaces(alias string) ([]string, bool) {
 		}
 	}
 	return nil, false
+}
+
+// DeployMappings returns the folder→workspace mappings for an alias, plus a
+// bool indicating whether the alias was found. An env with no mappings returns
+// (nil, true).
+func (c Customer) DeployMappings(alias string) ([]DeployMapping, bool) {
+	for _, e := range c.Environments {
+		if e.Alias == alias {
+			return e.Deployments, true
+		}
+	}
+	return nil, false
+}
+
+// OverrideForGUID returns the reference override registered for a baseline
+// GUID, and whether one was found.
+func (c Customer) OverrideForGUID(guid string) (ReferenceOverride, bool) {
+	for _, o := range c.ReferenceOverrides {
+		if o.SourceGUID == guid {
+			return o, true
+		}
+	}
+	return ReferenceOverride{}, false
+}
+
+// IsIgnored reports whether a baseline reference GUID was marked ignore (left
+// as-is, suppressed from unresolved surfacing).
+func (c Customer) IsIgnored(guid string) bool {
+	for _, g := range c.IgnoredReferences {
+		if g == guid {
+			return true
+		}
+	}
+	return false
+}
+
+// EnvironmentByAlias returns the environment with the given alias, and whether
+// it was found. Used to resolve the baseline environment's full workspace set.
+func (c Customer) EnvironmentByAlias(alias string) (Environment, bool) {
+	for _, e := range c.Environments {
+		if e.Alias == alias {
+			return e, true
+		}
+	}
+	return Environment{}, false
 }
 
 // FavoriteFor returns the favourite entry for the given notebook name,
@@ -90,14 +211,30 @@ func (c Customer) FavoriteNames() []string {
 // the current shape and legacy fields disappear.
 func (c *Customer) UnmarshalJSON(data []byte) error {
 	aux := struct {
-		WorkspacePattern string             `json:"workspace_pattern"`
-		Environments     []json.RawMessage  `json:"environments"`
-		Favorites        []NotebookFavorite `json:"favorites,omitempty"`
+		WorkspacePattern    string              `json:"workspace_pattern"`
+		Environments        []json.RawMessage   `json:"environments"`
+		Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
+		RepoPath            string              `json:"repo_path,omitempty"`
+		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
+		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
+		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
+		Substitutions       []Substitution      `json:"substitutions,omitempty"`
+		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
+		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
+		PostDeployRuns      []string            `json:"post_deploy_runs,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	c.Favorites = aux.Favorites
+	c.RepoPath = aux.RepoPath
+	c.BaselineEnvironment = aux.BaselineEnvironment
+	c.ReferenceOverrides = aux.ReferenceOverrides
+	c.IgnoredReferences = aux.IgnoredReferences
+	c.Substitutions = aux.Substitutions
+	c.ExcludedItemTypes = aux.ExcludedItemTypes
+	c.DeployHistoryPath = aux.DeployHistoryPath
+	c.PostDeployRuns = aux.PostDeployRuns
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
@@ -125,14 +262,15 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	// Decode both fields; whichever is populated wins.
 	for _, raw := range aux.Environments {
 		var entry struct {
-			Alias         string   `json:"alias"`
-			WorkspaceName string   `json:"workspace_name"`
-			Workspaces    []string `json:"workspaces"`
+			Alias         string          `json:"alias"`
+			WorkspaceName string          `json:"workspace_name"`
+			Workspaces    []string        `json:"workspaces"`
+			Deployments   []DeployMapping `json:"deployments"`
 		}
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return fmt.Errorf("environments entry: %w", err)
 		}
-		env := Environment{Alias: entry.Alias, Workspaces: entry.Workspaces}
+		env := Environment{Alias: entry.Alias, Workspaces: entry.Workspaces, Deployments: entry.Deployments}
 		if len(env.Workspaces) == 0 && entry.WorkspaceName != "" {
 			env.Workspaces = []string{entry.WorkspaceName}
 		}

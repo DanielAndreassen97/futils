@@ -268,6 +268,86 @@ func TestSaveWritesNewShapeAfterMigration(t *testing.T) {
 // workspace_name: string}] — which gets folded into a one-element
 // Workspaces slice. Real user configs in the wild are on this shape
 // before the futils v0.1 → v0.2 upgrade, so the migration must hold.
+func TestCustomerRepoPathRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+
+	in := Config{Customers: map[string]Customer{
+		"acme": {RepoPath: "/home/dan/repos/acme"},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := out.Customers["acme"].RepoPath; got != "/home/dan/repos/acme" {
+		t.Errorf("RepoPath = %q, want %q", got, "/home/dan/repos/acme")
+	}
+}
+
+func TestCustomerWithoutRepoPathLoads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	// Legacy config with no repo_path field at all.
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if out.Customers["acme"].RepoPath != "" {
+		t.Errorf("RepoPath should default to empty, got %q", out.Customers["acme"].RepoPath)
+	}
+}
+
+func TestDeploymentsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {Environments: []Environment{{
+			Alias:      "DEV",
+			Workspaces: []string{"DP - DEV - Config", "DP - DEV - SemMod"},
+			Deployments: []DeployMapping{
+				{Folder: "Backend", Workspace: "DP - DEV - Config"},
+				{Folder: "Frontend", Workspace: "DP - DEV - SemMod"},
+			},
+		}}},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	maps, ok := out.Customers["acme"].DeployMappings("DEV")
+	if !ok || len(maps) != 2 {
+		t.Fatalf("DeployMappings = %v ok=%v", maps, ok)
+	}
+	if maps[0].Folder != "Backend" || maps[0].Workspace != "DP - DEV - Config" {
+		t.Errorf("maps[0] = %+v", maps[0])
+	}
+}
+
+func TestDeploymentsAbsentLegacyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	maps, ok := out.Customers["acme"].DeployMappings("DEV")
+	if !ok || len(maps) != 0 {
+		t.Errorf("expected env found with no deployments, got %v ok=%v", maps, ok)
+	}
+}
+
 func TestLoadMigratesSingleWorkspaceShape(t *testing.T) {
 	legacy := `{
 		"customers": {
@@ -293,5 +373,221 @@ func TestLoadMigratesSingleWorkspaceShape(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.Customers["Acme"].Environments, want) {
 		t.Errorf("environments = %#v, want %#v", cfg.Customers["Acme"].Environments, want)
+	}
+}
+
+func TestReferenceOverridesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:        []Environment{{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}}},
+			BaselineEnvironment: "DEV",
+			ReferenceOverrides: []ReferenceOverride{
+				{SourceGUID: "09bc360d-1111-2222-3333-444455556666", ItemType: "Lakehouse", ItemName: "LH_Silver", Note: "cross-workspace"},
+			},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := out.Customers["acme"]
+	if c.BaselineEnvironment != "DEV" {
+		t.Errorf("BaselineEnvironment = %q, want DEV", c.BaselineEnvironment)
+	}
+	if len(c.ReferenceOverrides) != 1 || c.ReferenceOverrides[0].ItemName != "LH_Silver" {
+		t.Fatalf("ReferenceOverrides = %#v", c.ReferenceOverrides)
+	}
+	if c.ReferenceOverrides[0].SourceGUID != "09bc360d-1111-2222-3333-444455556666" {
+		t.Errorf("SourceGUID = %q", c.ReferenceOverrides[0].SourceGUID)
+	}
+}
+
+func TestExcludedItemTypesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"WS"}}},
+			ExcludedItemTypes: []string{"Lakehouse", "Report"},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := out.Customers["acme"].ExcludedItemTypes
+	if len(got) != 2 || got[0] != "Lakehouse" || got[1] != "Report" {
+		t.Fatalf("ExcludedItemTypes = %#v, want [Lakehouse Report]", got)
+	}
+}
+
+func TestReferenceOverridesAbsentLegacyConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := out.Customers["acme"]
+	if c.BaselineEnvironment != "" {
+		t.Errorf("expected empty BaselineEnvironment, got %q", c.BaselineEnvironment)
+	}
+	if len(c.ReferenceOverrides) != 0 {
+		t.Errorf("expected no overrides, got %#v", c.ReferenceOverrides)
+	}
+}
+
+func TestAllWorkspacesUnionsAndDedupes(t *testing.T) {
+	e := Environment{
+		Alias:      "DEV",
+		Workspaces: []string{"DP - DEV - Config", "DP - DEV - Data"},
+		Deployments: []DeployMapping{
+			{Folder: "Backend", Workspace: "DP - DEV - Config"},  // dup of a Workspaces entry
+			{Folder: "Frontend", Workspace: "DP - DEV - SemMod"}, // new
+		},
+	}
+	got := e.AllWorkspaces()
+	want := []string{"DP - DEV - Config", "DP - DEV - Data", "DP - DEV - SemMod"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AllWorkspaces() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOverrideForGUID(t *testing.T) {
+	c := Customer{ReferenceOverrides: []ReferenceOverride{
+		{SourceGUID: "guid-a", ItemType: "Lakehouse", ItemName: "LH_Silver"},
+	}}
+	got, ok := c.OverrideForGUID("guid-a")
+	if !ok || got.ItemName != "LH_Silver" {
+		t.Fatalf("OverrideForGUID(guid-a) = %#v ok=%v", got, ok)
+	}
+	if _, ok := c.OverrideForGUID("missing"); ok {
+		t.Error("expected missing GUID to return ok=false")
+	}
+}
+
+func TestEnvironmentByAlias(t *testing.T) {
+	c := Customer{Environments: []Environment{
+		{Alias: "DEV", Workspaces: []string{"A"}},
+		{Alias: "PROD", Workspaces: []string{"B"}},
+	}}
+	got, ok := c.EnvironmentByAlias("PROD")
+	if !ok || len(got.Workspaces) != 1 || got.Workspaces[0] != "B" {
+		t.Fatalf("EnvironmentByAlias(PROD) = %#v ok=%v", got, ok)
+	}
+	if _, ok := c.EnvironmentByAlias("STAGE"); ok {
+		t.Error("expected unknown alias to return ok=false")
+	}
+}
+
+func TestIgnoredReferencesRoundTripAndLookup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"A"}}},
+			IgnoredReferences: []string{"guid-x", "guid-y"},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Load(path)
+	c := out.Customers["acme"]
+	if len(c.IgnoredReferences) != 2 {
+		t.Fatalf("IgnoredReferences = %#v", c.IgnoredReferences)
+	}
+	if !c.IsIgnored("guid-x") || c.IsIgnored("guid-z") {
+		t.Errorf("IsIgnored wrong: x=%v z=%v", c.IsIgnored("guid-x"), c.IsIgnored("guid-z"))
+	}
+}
+
+func TestIgnoredReferencesAbsentLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600)
+	out, _ := Load(path)
+	if len(out.Customers["acme"].IgnoredReferences) != 0 {
+		t.Error("expected no ignored references on legacy config")
+	}
+}
+
+func TestSubstitutionsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments: []Environment{{Alias: "DEV", Workspaces: []string{"A"}}},
+			Substitutions: []Substitution{
+				{FindValue: "dev-host.datawarehouse.fabric.microsoft.com", TargetType: "Lakehouse", TargetName: "LH_Config", Attr: "sqlendpoint"},
+				{FindValue: "literal-find", Literal: "literal-replace"},
+			},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := Load(path)
+	subs := out.Customers["acme"].Substitutions
+	if len(subs) != 2 {
+		t.Fatalf("Substitutions = %#v", subs)
+	}
+	if subs[0].TargetName != "LH_Config" || subs[0].Attr != "sqlendpoint" {
+		t.Errorf("subs[0] = %#v", subs[0])
+	}
+	if subs[1].Literal != "literal-replace" {
+		t.Errorf("subs[1] = %#v", subs[1])
+	}
+}
+
+func TestSubstitutionsAbsentLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(path, []byte(`{"customers":{"acme":{"environments":[{"alias":"DEV","workspaces":["A"]}]}}}`), 0o600)
+	out, _ := Load(path)
+	if len(out.Customers["acme"].Substitutions) != 0 {
+		t.Error("expected no substitutions on legacy config")
+	}
+}
+
+func TestDeployHistoryPathRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments:      []Environment{{Alias: "DEV", Workspaces: []string{"WS"}}},
+			DeployHistoryPath: "BackEnd/deploymenthistory",
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := out.Customers["acme"].DeployHistoryPath; got != "BackEnd/deploymenthistory" {
+		t.Fatalf("DeployHistoryPath = %q, want %q", got, "BackEnd/deploymenthistory")
+	}
+}
+
+// PostDeployRuns must survive a marshal→unmarshal round trip. Customer has a
+// custom UnmarshalJSON; a field missing from its aux struct silently drops.
+func TestCustomerPostDeployRunsRoundTrip(t *testing.T) {
+	in := Customer{PostDeployRuns: []string{"NB_Config", "NB_InsertScript_A"}}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Customer
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out.PostDeployRuns, in.PostDeployRuns) {
+		t.Fatalf("PostDeployRuns = %v, want %v", out.PostDeployRuns, in.PostDeployRuns)
 	}
 }

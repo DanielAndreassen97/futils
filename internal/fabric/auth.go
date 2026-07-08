@@ -131,6 +131,54 @@ func refreshAccessToken(profile string) (string, bool) {
 	return tr.AccessToken, true
 }
 
+// storageScope is the OneLake/Storage audience used for the OneLake Table API.
+// Distinct from the Fabric scope; minted from the same refresh token.
+const storageScope = "https://storage.azure.com/.default offline_access"
+
+// tokenPost is the seam for the token endpoint POST so tests can stub it.
+var tokenPost = func(endpoint string, data url.Values) (tokenResponse, error) {
+	resp, err := http.PostForm(endpoint, data)
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	defer resp.Body.Close()
+	var tr tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return tokenResponse{}, err
+	}
+	return tr, nil
+}
+
+// storageTokenGrant exchanges a refresh token for a Storage-audience access
+// token. It does NOT persist anything — persisting would overwrite the cached
+// Fabric access token/expiry and break the Fabric token cache.
+func storageTokenGrant(refreshToken string) (string, error) {
+	tr, err := tokenPost(tokenURL, url.Values{
+		"client_id":     {clientID},
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"scope":         {storageScope},
+	})
+	if err != nil {
+		return "", err
+	}
+	if tr.Error != "" || tr.AccessToken == "" {
+		return "", fmt.Errorf("storage token grant failed: %s — %s", tr.Error, tr.ErrorDesc)
+	}
+	return tr.AccessToken, nil
+}
+
+// GetStorageToken returns an access token for the OneLake Table API (Storage
+// audience). Requires a prior interactive Fabric sign-in (so a refresh token
+// exists in the keyring); callers should call GetAccessToken first.
+func GetStorageToken(profile string) (string, error) {
+	rt, err := keyring.Get(keyringService, keyFor(profile, "refresh_token"))
+	if err != nil || rt == "" {
+		return "", fmt.Errorf("no stored credentials for %q — sign in first", profile)
+	}
+	return storageTokenGrant(rt)
+}
+
 // GetAccessToken returns a Fabric access token for the given profile name,
 // using cached/refreshed tokens when possible, falling back to browser auth.
 // Pass "default" if you don't need multi-tenant support yet.

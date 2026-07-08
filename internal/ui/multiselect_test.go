@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // newTestModel mirrors what MultiSelect does internally, so tests can
@@ -112,5 +113,50 @@ func TestMultiSelect_CountCheckedAccurate(t *testing.T) {
 	m := newTestModel([]string{"a", "b", "c"}, []string{"a", "c"})
 	if got := m.countChecked(); got != 2 {
 		t.Errorf("expected 2 checked, got %d", got)
+	}
+}
+
+func TestCheckedIndices(t *testing.T) {
+	m := checkboxModel{items: []checkboxItem{
+		{label: "a", checked: true},
+		{label: "b", checked: false},
+		{label: "c", checked: true},
+	}}
+	got := m.checkedIndices()
+	if len(got) != 2 || got[0] != 0 || got[1] != 2 {
+		t.Errorf("checkedIndices = %v, want [0 2]", got)
+	}
+}
+
+func TestToCheckboxItemsThreadsFields(t *testing.T) {
+	red := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	in := []CheckItem{
+		{Label: "x", Style: red, Checked: true},
+		{Label: "y", Checked: false},
+	}
+	out := toCheckboxItems(in)
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	if out[0].label != "x" || !out[0].checked || !out[0].styled {
+		t.Errorf("item 0 = %+v, want label x, checked, styled", out[0])
+	}
+	if out[1].label != "y" || out[1].checked || !out[1].styled {
+		t.Errorf("item 1 = %+v, want label y, unchecked, styled", out[1])
+	}
+}
+
+func TestSelectAllSkipsBulkExcluded(t *testing.T) {
+	m := checkboxModel{items: []checkboxItem{
+		{label: "deploy1"},
+		{label: "delete1", skipBulk: true},
+		{label: "deploy2"},
+	}}
+	// Press 'a' — select-all must check only the non-skip rows.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	got := m2.(checkboxModel)
+	if !got.items[0].checked || got.items[1].checked || !got.items[2].checked {
+		t.Errorf("a should check only non-skip rows, got %v/%v/%v",
+			got.items[0].checked, got.items[1].checked, got.items[2].checked)
 	}
 }
