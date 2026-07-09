@@ -102,6 +102,37 @@ func RepoItemNames(repoPath, itemType string) ([]string, error) {
 	return sortedKeys(seen), nil
 }
 
+// RepoItemTypesMulti unions RepoItemTypes across several repos (empty paths and
+// missing paths skipped), sorted and de-duplicated.
+func RepoItemTypesMulti(repoPaths []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, p := range repoPaths {
+		if err := walkPlatforms(p, func(m platformMeta) {
+			if m.Type != "" {
+				seen[m.Type] = true
+			}
+		}); err != nil {
+			return nil, fmt.Errorf("scan repo item types: %w", err)
+		}
+	}
+	return sortedKeys(seen), nil
+}
+
+// RepoItemNamesMulti unions RepoItemNames of one type across several repos.
+func RepoItemNamesMulti(repoPaths []string, itemType string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, p := range repoPaths {
+		if err := walkPlatforms(p, func(m platformMeta) {
+			if m.Type == itemType && m.DisplayName != "" {
+				seen[m.DisplayName] = true
+			}
+		}); err != nil {
+			return nil, fmt.Errorf("scan repo item names: %w", err)
+		}
+	}
+	return sortedKeys(seen), nil
+}
+
 // walkPlatforms visits every parseable .platform file under repoPath, calling
 // visit with its metadata. It owns the shared scan semantics: an empty repoPath
 // is a no-op, a missing path is swallowed (not an error), and unparseable

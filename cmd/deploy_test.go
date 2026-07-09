@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -743,9 +744,10 @@ func TestBuildDeployGroupsReportUnresolvedCarriesItemName(t *testing.T) {
 		Parts: []deploy.Part{{Path: "definition.pbir",
 			Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DEV\";initial catalog=HR;semanticmodelid=99999999-9999-9999-9999-999999999999"}}}`)}}}
 
-	groups, err := buildDeployGroups(fake, "tok",
+	customer := config.Customer{RepoPath: "/repo"}
+	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
-		[]deploy.LocalItem{report}, fake.workspaces, rb, nil)
+		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, rb, nil)
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}
@@ -796,9 +798,10 @@ func TestBuildDeployGroupsExistingReportCustomSubUnresolvedSurfaces(t *testing.T
 		Parts: []deploy.Part{{Path: "definition.pbir",
 			Content: []byte(`{"datasetReference":{"byPath":{"path":"../M.SemanticModel"}}}`)}}}
 
-	groups, err := buildDeployGroups(fake, "tok",
+	customer := config.Customer{RepoPath: "/repo"}
+	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
-		[]deploy.LocalItem{report}, fake.workspaces, rb, nil)
+		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, rb, nil)
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}
@@ -1275,5 +1278,80 @@ func TestPrintReportBindingsSilentWhenEmpty(t *testing.T) {
 	out := captureStdout(t, func() { printReportBindings(nil) })
 	if out != "" {
 		t.Errorf("expected no output for no bindings, got %q", out)
+	}
+}
+
+func TestRepoInputsForAlias(t *testing.T) {
+	c := config.Customer{
+		RepoPath: "/repos/primary",
+		Environments: []config.Environment{{
+			Alias: "DEV",
+			Deployments: []config.DeployMapping{
+				{Folder: "FabricBackEnd", Workspace: "WS-A"},                  // primary
+				{Folder: "", Workspace: "WS-B", Repo: "/repos/frontend"},      // frontend
+				{Folder: "Extra", Workspace: "WS-C", Repo: "/repos/frontend"}, // dup frontend
+			},
+		}},
+	}
+	got := repoInputsForAlias(c, "DEV")
+	want := []string{"/repos/primary", "/repos/frontend"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repoInputsForAlias = %v, want %v", got, want)
+	}
+}
+
+func TestRepoInputsForAliasNoRepoPath(t *testing.T) {
+	// A customer with only explicit per-mapping repos (no primary set yet).
+	c := config.Customer{
+		Environments: []config.Environment{{
+			Alias:       "DEV",
+			Deployments: []config.DeployMapping{{Repo: "/repos/only", Workspace: "W"}},
+		}},
+	}
+	if got := repoInputsForAlias(c, "DEV"); !reflect.DeepEqual(got, []string{"/repos/only"}) {
+		t.Fatalf("got %v, want [/repos/only]", got)
+	}
+}
+
+// TestBuildDeployGroupsPerRepo proves each mapping pulls items from its own
+// repo (via customer.MappingRepo), not from a single shared slice — the
+// primary mapping (no Repo set) must only see items from the customer's
+// RepoPath, and a mapping with an explicit Repo must only see that repo's
+// items.
+func TestBuildDeployGroupsPerRepo(t *testing.T) {
+	nbA := deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Back", FolderPath: "", LogicalID: "lid-a"}
+	nbB := deploy.LocalItem{Type: "Notebook", DisplayName: "NB_Front", FolderPath: "", LogicalID: "lid-b"}
+	itemsByRepo := map[string][]deploy.LocalItem{
+		"/repos/backend":  {nbA},
+		"/repos/frontend": {nbB},
+	}
+	customer := config.Customer{
+		RepoPath: "/repos/backend",
+		Environments: []config.Environment{{Alias: "DEV",
+			Deployments: []config.DeployMapping{
+				{Folder: "", Workspace: "WS-Back"},                          // primary → backend
+				{Folder: "", Workspace: "WS-Front", Repo: "/repos/frontend"}, // frontend
+			}}},
+	}
+	mappings := customer.Environments[0].Deployments
+	ws := []fabric.Workspace{{ID: "WS-Back", DisplayName: "WS-Back"}, {ID: "WS-Front", DisplayName: "WS-Front"}}
+	rf := &deployFakeAPI{ /* itemsByWS empty: everything is New */ }
+
+	groups, err := buildDeployGroups(rf, "tok", customer, mappings, itemsByRepo, ws, nil, nil)
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+	// Group for WS-Back must contain NB_Back only; WS-Front must contain NB_Front only.
+	byWS := map[string][]string{}
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			byWS[g.Target.DisplayName] = append(byWS[g.Target.DisplayName], r.Name())
+		}
+	}
+	if !reflect.DeepEqual(byWS["WS-Back"], []string{"NB_Back"}) {
+		t.Fatalf("WS-Back rows = %v, want [NB_Back]", byWS["WS-Back"])
+	}
+	if !reflect.DeepEqual(byWS["WS-Front"], []string{"NB_Front"}) {
+		t.Fatalf("WS-Front rows = %v, want [NB_Front]", byWS["WS-Front"])
 	}
 }

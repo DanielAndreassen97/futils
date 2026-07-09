@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -503,6 +504,33 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 		return nil
 	}
 
+	// Which repo does this folder live in? Default is the customer's primary
+	// repo; "Another repo…" lets a customer deploy from a second git repo.
+	repoChoice := ""
+	if customer.RepoPath != "" {
+		const another = "__another_repo"
+		opts := []ui.MenuOption{
+			{Label: fmt.Sprintf("Primary repo (%s)", customer.RepoPath), Value: ""},
+			{Label: "Another repo…", Value: another},
+		}
+		chosen, err := ui.NumberMenu("Which repo is this folder in?", opts)
+		if err != nil {
+			return err
+		}
+		if chosen == another {
+			startDir, _ := os.UserHomeDir()
+			picked, perr := ui.PickDirectory("Select the other Fabric git repo", startDir)
+			if perr != nil {
+				return perr
+			}
+			src, serr := deploy.NewSource(picked)
+			if serr != nil {
+				return fmt.Errorf("not a usable git repo: %w", serr)
+			}
+			repoChoice = src.Repo()
+		}
+	}
+
 	var folder string
 	if err := runFormStep(huh.NewInput().Title("Repo subfolder (e.g. Backend)").Value(&folder)); err != nil {
 		return err
@@ -522,11 +550,15 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 	}
 
 	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments,
-		config.DeployMapping{Folder: folder, Workspace: workspace})
+		config.DeployMapping{Folder: folder, Workspace: workspace, Repo: repoChoice})
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save customer: %w", err)
 	}
-	fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+	if repoChoice != "" {
+		fmt.Printf("Mapped %s/ in %s → %s in env %q\n", folder, repoChoice, workspace, alias)
+	} else {
+		fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+	}
 	return nil
 }
 
@@ -837,10 +869,31 @@ func mergeSorted(a, b []string) []string {
 	return out
 }
 
+// customerRepos returns every distinct repo a customer references: the primary
+// RepoPath plus every per-mapping Repo across all environments, first-seen order.
+func customerRepos(c config.Customer) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(c.RepoPath)
+	for _, e := range c.Environments {
+		for _, m := range e.Deployments {
+			add(m.Repo)
+		}
+	}
+	return out
+}
+
 // excludeItemTypes lets the user pick which item types to skip when comparing.
-// The picker is populated from the item types actually present in the customer's
-// repo (a local scan). Selected = excluded; default nothing selected = compare
-// everything. Stored as Customer.ExcludedItemTypes.
+// The picker is populated from the item types actually present across all of
+// the customer's repos (a local scan). Selected = excluded; default nothing
+// selected = compare everything. Stored as Customer.ExcludedItemTypes.
 func excludeItemTypes(configPath, customerName string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -850,11 +903,12 @@ func excludeItemTypes(configPath, customerName string) error {
 	if !ok {
 		return fmt.Errorf("customer %q disappeared from config", customerName)
 	}
-	if customer.RepoPath == "" {
+	repos := customerRepos(customer)
+	if len(repos) == 0 {
 		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list item types."))
 		return ui.ErrGoBack
 	}
-	types, err := deploy.RepoItemTypes(customer.RepoPath)
+	types, err := deploy.RepoItemTypesMulti(repos)
 	if err != nil {
 		return fmt.Errorf("scan repo for item types: %w", err)
 	}
@@ -898,11 +952,12 @@ func editPostDeployRuns(configPath, customerName string) error {
 	if !ok {
 		return fmt.Errorf("customer %q disappeared from config", customerName)
 	}
-	if customer.RepoPath == "" {
+	repos := customerRepos(customer)
+	if len(repos) == 0 {
 		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list notebooks."))
 		return ui.ErrGoBack
 	}
-	names, err := deploy.RepoItemNames(customer.RepoPath, "Notebook")
+	names, err := deploy.RepoItemNamesMulti(repos, "Notebook")
 	if err != nil {
 		return fmt.Errorf("scan repo for notebooks: %w", err)
 	}
