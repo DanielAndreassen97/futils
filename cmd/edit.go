@@ -21,6 +21,7 @@ const (
 	editActionBack          = "__back"
 	editActionRefOverrides  = "__ref_overrides"
 	editActionSetBaseline   = "__set_baseline"
+	editActionSetRepo       = "__set_repo"
 	editActionSubstitutions = "__substitutions"
 	editActionExcludeTypes  = "__exclude_types"
 	editActionDeployHistory = "__deploy_history"
@@ -107,6 +108,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := manageSubstitutions(configPath, client, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionSetRepo:
+			if err := setRepoPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionSetBaseline:
 			if err := setBaselineEnvironment(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
@@ -152,14 +157,49 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		label := fmt.Sprintf("Edit %s (%d workspace%s)", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
 		options = append(options, ui.MenuOption{Label: label, Value: editActionEditEnv + e.Alias})
 	}
+	baselineBadge := ""
+	if customer.BaselineEnvironment == "" {
+		baselineBadge = "MUST SET"
+	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
-		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
-		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
-		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
-		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
-		ui.MenuOption{Label: "Post-deploy runs", Value: editActionPostDeploy},
-		ui.MenuOption{Label: "Set deploy-history folder", Value: editActionDeployHistory},
+		ui.MenuOption{
+			Label:       "Set repo path",
+			Value:       editActionSetRepo,
+			Description: "The Fabric git repo futils reads items from. Set it here so pickers work before your first deploy.",
+		},
+		ui.MenuOption{
+			Label:       "Set baseline environment",
+			Value:       editActionSetBaseline,
+			Description: "Which environment the git GUIDs belong to (usually DEV). Required for auto-rebind.",
+			Info:        "Baseline is the environment your repo represents. futils reads the GUIDs in git as baseline GUIDs, resolves them by name, and swaps to the target environment's GUIDs on deploy. Without a baseline, auto-rebind is off and references deploy unchanged.",
+			Badge:       baselineBadge,
+		},
+		ui.MenuOption{
+			Label:       "Reference overrides",
+			Value:       editActionRefOverrides,
+			Description: "Manual GUID→name overrides for references auto-rebind can't resolve.",
+		},
+		ui.MenuOption{
+			Label:       "Custom substitutions (find/replace)",
+			Value:       editActionSubstitutions,
+			Description: "Your own find/replace rules, resolved by name in the target or as a literal.",
+		},
+		ui.MenuOption{
+			Label:       "Exclude item types from compare",
+			Value:       editActionExcludeTypes,
+			Description: "Item types to skip when comparing/deploying.",
+		},
+		ui.MenuOption{
+			Label:       "Post-deploy runs",
+			Value:       editActionPostDeploy,
+			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
+		},
+		ui.MenuOption{
+			Label:       "Set deploy-history folder",
+			Value:       editActionDeployHistory,
+			Description: "Repo-relative folder where a timestamped HTML report is written per deploy.",
+		},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
@@ -1011,6 +1051,38 @@ func mergePostDeploySelection(existing, chosen []string) []string {
 		}
 	}
 	return ordered
+}
+
+// setRepoPath lets the user set the customer's primary Fabric git repo during
+// setup, so repo-dependent pickers (exclude types, post-deploy runs) work before
+// the first deploy — instead of RepoPath only being captured lazily at deploy time.
+func setRepoPath(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	startDir, _ := os.UserHomeDir()
+	if customer.RepoPath != "" {
+		startDir = customer.RepoPath
+	}
+	picked, err := ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
+	if err != nil {
+		return err
+	}
+	src, err := deploy.NewSource(picked)
+	if err != nil {
+		return fmt.Errorf("not a usable git repo: %w", err)
+	}
+	customer.RepoPath = src.Repo()
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save repo path: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved repo path: " + src.Repo()))
+	return nil
 }
 
 // setDeployHistoryPath sets the repo-relative folder where deploy reports are

@@ -14,6 +14,12 @@ var AccentColor = lipgloss.Color("#22c55e")
 // both light and dark backgrounds.
 var DimColor = lipgloss.Color("8")
 
+// WarnColor is the yellow used for "pay attention" tags like inline
+// badges. ANSI 3 stays within the terminal-adaptive 0-7 range, same
+// rationale as DimColor, so it reads as yellow on both light and dark
+// backgrounds instead of a fixed hex that could clash with either.
+var WarnColor = lipgloss.Color("3")
+
 // ItemTypeColor returns the lipgloss color used to render a Fabric
 // item type label in the move picker. Notebooks are accent green
 // (matching the brand), Reports are orange (matching the sibling
