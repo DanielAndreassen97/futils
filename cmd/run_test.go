@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -194,5 +196,80 @@ func TestResolveLakehouseOverride_NoLakehouseIsNoOp(t *testing.T) {
 	}
 	if lh != nil {
 		t.Errorf("expected no override when no lakehouse is pinned, got %#v", lh)
+	}
+}
+
+// pollFake replays a scripted sequence of GetJobInstance results (status or error).
+type pollResult struct {
+	status string
+	err    error
+}
+type pollFake struct {
+	results []pollResult
+	i       int
+}
+
+func (f *pollFake) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
+	r := f.results[f.i]
+	if f.i < len(f.results)-1 {
+		f.i++
+	}
+	return fabric.JobInstanceStatus{Status: r.status}, r.err
+}
+
+// TestPollJobToleratesTransientErrors: a couple of transient read failures
+// (e.g. connection reset mid-poll) must not abort the watch — the job runs on
+// server-side. Two errors then Completed → pollJob succeeds.
+func TestPollJobToleratesTransientErrors(t *testing.T) {
+	orig := pollInterval
+	t.Cleanup(func() { pollInterval = orig })
+	pollInterval = time.Millisecond
+
+	f := &pollFake{results: []pollResult{
+		{err: errors.New("read: connection reset by peer")},
+		{err: errors.New("read: connection reset by peer")},
+		{status: fabric.JobStatusCompleted},
+	}}
+	st, err := pollJob(f, "tok", "url")
+	if err != nil {
+		t.Fatalf("transient poll errors must not abort the watch, got: %v", err)
+	}
+	if st.Status != fabric.JobStatusCompleted {
+		t.Fatalf("status = %q, want Completed", st.Status)
+	}
+}
+
+// TestPollJobGivesUpAfterConsecutiveErrors: a persistent read failure is bounded —
+// pollJob returns an error after too many CONSECUTIVE failures rather than looping.
+func TestPollJobGivesUpAfterConsecutiveErrors(t *testing.T) {
+	orig := pollInterval
+	t.Cleanup(func() { pollInterval = orig })
+	pollInterval = time.Millisecond
+
+	f := &pollFake{results: []pollResult{{err: errors.New("read: connection reset by peer")}}} // always errors
+	if _, err := pollJob(f, "tok", "url"); err == nil {
+		t.Fatal("pollJob must give up after too many consecutive errors")
+	}
+}
+
+// TestPollJobErrorCounterResets: a successful poll between errors resets the
+// consecutive-failure counter, so intermittent blips never trip the give-up bound.
+func TestPollJobErrorCounterResets(t *testing.T) {
+	orig := pollInterval
+	t.Cleanup(func() { pollInterval = orig })
+	pollInterval = time.Millisecond
+
+	f := &pollFake{results: []pollResult{
+		{err: errors.New("e")}, {err: errors.New("e")}, {err: errors.New("e")},
+		{status: "InProgress"}, // non-terminal success → resets the counter
+		{err: errors.New("e")}, {err: errors.New("e")}, {err: errors.New("e")},
+		{status: fabric.JobStatusCompleted},
+	}}
+	st, err := pollJob(f, "tok", "url")
+	if err != nil {
+		t.Fatalf("counter must reset on a successful poll, got: %v", err)
+	}
+	if st.Status != fabric.JobStatusCompleted {
+		t.Fatalf("status = %q, want Completed", st.Status)
 	}
 }
