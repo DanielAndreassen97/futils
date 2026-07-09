@@ -322,22 +322,48 @@ type jobPoller interface {
 // by design — the caller runs it under a spinner, so status-transition
 // prints would mangle the animation. If you need per-status visibility
 // for debugging, use `cmd/fetch-nb -run` which prints each transition.
-func pollJob(client jobPoller, token, instanceURL string) (fabric.JobInstanceStatus, error) {
-	const pollInterval = 5 * time.Second
-	const timeout = 2 * time.Hour
+// pollInterval and pollTimeout are package vars (not consts) so tests can shrink
+// them; production keeps 5s ticks over a 2h ceiling.
+var (
+	pollInterval = 5 * time.Second
+	pollTimeout  = 2 * time.Hour
+)
 
-	deadline := time.Now().Add(timeout)
+// maxConsecutivePollErrors bounds how many back-to-back read failures pollJob
+// tolerates before giving up. A single connection reset mid-poll must not abort
+// a watch (the job runs server-side), but a genuinely dead connection should not
+// spin for the full timeout either.
+const maxConsecutivePollErrors = 5
+
+func pollJob(client jobPoller, token, instanceURL string) (fabric.JobInstanceStatus, error) {
+	deadline := time.Now().Add(pollTimeout)
+	consecutiveErrs := 0
+	var lastErr error
 	for time.Now().Before(deadline) {
 		status, err := client.GetJobInstance(token, instanceURL)
 		if err != nil {
-			return status, fmt.Errorf("poll job: %w", err)
+			// Transient read failure (e.g. connection reset mid-poll). The job keeps
+			// running on Fabric, so keep polling; give up only after several
+			// consecutive failures. doGet already retries transport blips internally,
+			// so reaching here means a longer outage.
+			consecutiveErrs++
+			lastErr = err
+			if consecutiveErrs >= maxConsecutivePollErrors {
+				return status, fmt.Errorf("poll job: %d consecutive failures, last: %w", consecutiveErrs, err)
+			}
+			time.Sleep(pollInterval)
+			continue
 		}
+		consecutiveErrs = 0
 		if status.IsTerminal() {
 			return status, nil
 		}
 		time.Sleep(pollInterval)
 	}
-	return fabric.JobInstanceStatus{}, fmt.Errorf("notebook did not complete within %s", timeout)
+	if lastErr != nil {
+		return fabric.JobInstanceStatus{}, fmt.Errorf("notebook did not complete within %s (last poll error: %w)", pollTimeout, lastErr)
+	}
+	return fabric.JobInstanceStatus{}, fmt.Errorf("notebook did not complete within %s", pollTimeout)
 }
 
 // selectCustomer auto-picks when only one customer exists, otherwise

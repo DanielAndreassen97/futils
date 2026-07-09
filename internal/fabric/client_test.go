@@ -2,6 +2,7 @@ package fabric
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -86,6 +87,7 @@ type seqResponse struct {
 	retryAfter string
 	location   string // sets the Location header (for 202 LRO responses)
 	body       string
+	err        error // when set, RoundTrip returns this transport error instead of a response
 }
 
 func (s *seqTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -102,6 +104,9 @@ func (s *seqTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		idx = len(s.responses) - 1
 	}
 	r := s.responses[idx]
+	if r.err != nil {
+		return nil, r.err
+	}
 	hdr := http.Header{}
 	if r.retryAfter != "" {
 		hdr.Set("Retry-After", r.retryAfter)
@@ -377,5 +382,50 @@ func TestUpdateItemDefinitionAsyncNoResult(t *testing.T) {
 	}
 	if !strings.HasSuffix(transport.urls[2], "/result") {
 		t.Errorf("third call should be the /result fetch, got %q", transport.urls[2])
+	}
+}
+
+// TestDoGetRetriesTransientNetworkError: GET is idempotent, so a transport-level
+// failure (e.g. "connection reset by peer" mid-poll) must be retried, not returned
+// fatally. Two resets then a 200 → doGet succeeds after 3 calls.
+func TestDoGetRetriesTransientNetworkError(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{err: errors.New("read: connection reset by peer")},
+		{err: errors.New("read: connection reset by peer")},
+		{status: http.StatusOK, body: `"ok"`},
+	}}
+	origClient, origSleep := httpClient, sleep
+	t.Cleanup(func() { httpClient = origClient; sleep = origSleep })
+	httpClient = &http.Client{Transport: transport}
+	sleep = func(time.Duration) {}
+
+	body, err := doGet("tok", "http://example.invalid/api")
+	if err != nil {
+		t.Fatalf("doGet should retry transient network errors, got: %v", err)
+	}
+	if string(body) != `"ok"` {
+		t.Fatalf("body = %q, want \"ok\"", string(body))
+	}
+	if len(transport.calls) != 3 {
+		t.Fatalf("expected 3 calls (2 retries then success), got %d", len(transport.calls))
+	}
+}
+
+// TestDoGetGivesUpAfterMaxNetRetries: a persistent transport error is retried a
+// bounded number of times, then returned — no infinite loop.
+func TestDoGetGivesUpAfterMaxNetRetries(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{err: errors.New("read: connection reset by peer")}, // repeats (last entry replays)
+	}}
+	origClient, origSleep := httpClient, sleep
+	t.Cleanup(func() { httpClient = origClient; sleep = origSleep })
+	httpClient = &http.Client{Transport: transport}
+	sleep = func(time.Duration) {}
+
+	if _, err := doGet("tok", "http://example.invalid/api"); err == nil {
+		t.Fatal("doGet should give up and return after maxNetRetries")
+	}
+	if len(transport.calls) != maxNetRetries+1 {
+		t.Fatalf("expected %d calls (initial + %d retries), got %d", maxNetRetries+1, maxNetRetries, len(transport.calls))
 	}
 }
