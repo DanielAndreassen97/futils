@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,9 +46,28 @@ const (
 	// budget, so a transiently-throttled deploy doesn't abort early.
 	maxThrottleRetries = 8
 	maxThrottleWait    = 60 * time.Second
+
+	// maxNetRetries caps retries of transport-level failures (connection reset,
+	// EOF, timeout) on idempotent GETs. A long-running poll loop is statistically
+	// certain to hit an occasional TCP reset; one blip must not abort the read.
+	maxNetRetries = 3
 )
 
 var httpClient = &http.Client{Timeout: 60 * time.Second}
+
+// sleep is the delay primitive used by the transient-network-error backoff.
+// A package var so tests can stub it to run without real delays.
+var sleep = time.Sleep
+
+// netBackoff is the delay before retrying a transient GET failure: 1s, 2s, 4s,
+// capped at 8s.
+func netBackoff(attempt int) time.Duration {
+	d := time.Second << attempt
+	if d > 8*time.Second {
+		d = 8 * time.Second
+	}
+	return d
+}
 
 // retryTokenFn is the function used by doGet/doWrite to obtain a fresh token
 // after a 401. Defined as a variable so tests can inject a controlled value.
@@ -818,6 +838,15 @@ func doGet(token, rawURL string) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
 		body, status, retryAfter, err := doGetOnce(token, rawURL)
 		if err != nil {
+			// GET is idempotent, so a transport-level failure (connection reset,
+			// EOF, timeout, refused) is safe to retry. http.Client.Do always wraps
+			// such errors in *url.Error; request-construction errors are excluded by
+			// doGetOnce returning before the call. Bounded retry with backoff.
+			var uerr *neturl.Error
+			if errors.As(err, &uerr) && attempt < maxNetRetries {
+				sleep(netBackoff(attempt))
+				continue
+			}
 			return nil, err
 		}
 		// On 401, the token captured at flow start has likely expired during
