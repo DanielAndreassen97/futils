@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func sendKey(m confirmModel, k tea.KeyMsg) confirmModel {
@@ -239,6 +240,38 @@ func TestMenuHeader_ViewRendersHeaderWithoutNumber(t *testing.T) {
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "Actions") && strings.Contains(line, ")") {
 			t.Errorf("header line should not contain ')': %q", line)
+		}
+	}
+}
+
+func TestMenuInfoBoxWrapsToWidth(t *testing.T) {
+	longInfo := "Baseline is the environment your repo represents. futils reads the GUIDs in git as baseline GUIDs, resolves them by name, and swaps to the target environment's GUIDs on deploy."
+	longDesc := "The Fabric git repo futils reads items from. Set it here so pickers work before your first deploy."
+	m := menuModel{
+		message:  "Action",
+		options:  []MenuOption{{Label: "Set baseline environment", Value: "b", Description: longDesc, Info: longInfo}},
+		cursor:   0,
+		showInfo: true,
+	}
+	// Feed a narrow terminal width through Update, the same path bubbletea uses.
+	// 60 cols is wide enough for the static hint line but forces the long info
+	// copy (170+ chars) to wrap across several lines.
+	const width = 60
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 24})
+	m = nm.(menuModel)
+
+	out := m.View()
+	if !strings.Contains(out, "Baseline is the environment") {
+		t.Fatal("info text must still render when wrapped")
+	}
+	// The info box must actually wrap (its raw text is far wider than 60).
+	if !strings.Contains(out, "on deploy") {
+		t.Fatal("end of the info text must survive wrapping, not be truncated")
+	}
+	// No rendered line may exceed the terminal width once wrapping is applied.
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("line exceeds terminal width %d (got %d): %q", width, w, line)
 		}
 	}
 }

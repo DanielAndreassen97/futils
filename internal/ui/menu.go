@@ -45,6 +45,7 @@ type menuModel struct {
 	quit     bool
 	done     bool
 	showInfo bool
+	width    int // terminal width from tea.WindowSizeMsg; 0 until first message
 }
 
 func (m menuModel) Init() tea.Cmd { return nil }
@@ -79,6 +80,8 @@ func (m menuModel) selectableIndices() []int {
 
 func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up", "k":
@@ -128,7 +131,10 @@ var (
 	menuSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
 	menuHeaderStyle   = lipgloss.NewStyle().Foreground(DimColor).Bold(true)
 	menuBadgeStyle    = lipgloss.NewStyle().Foreground(WarnColor)
-	menuInfoBoxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1).Width(72)
+	menuInfoBoxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1)
+	// The highlighted option's one-line Description renders in accent so it
+	// reads as content about the current row, not another dim key-hint.
+	menuDescStyle = lipgloss.NewStyle().Foreground(AccentColor).Italic(true)
 )
 
 func (m menuModel) selectedLabel() string {
@@ -208,11 +214,25 @@ func (m menuModel) View() string {
 		b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
 
 		if cur.Description != "" {
-			b.WriteString("  " + confirmHelpStyle.Render(cur.Description) + "\n")
+			// Wrap the description to the terminal width instead of running off the
+			// edge; PaddingLeft keeps the 2-space indent on wrapped lines. Width is
+			// the content area (subtract the 2-space indent). Unknown/tiny width → no wrap.
+			desc := menuDescStyle.PaddingLeft(2)
+			if m.width > 4 {
+				desc = desc.Width(m.width - 2)
+			}
+			b.WriteString(desc.Render(cur.Description) + "\n")
 		}
 
 		if m.showInfo && cur.Info != "" {
-			b.WriteString("\n" + menuInfoBoxStyle.Render(cur.Info) + "\n")
+			// Wrap the info text to the terminal width. Width() is the content area;
+			// the box's border (2) + horizontal padding (2) sit outside it, so
+			// subtract 4. Guard a not-yet-known/too-narrow terminal (→ no wrap).
+			box := menuInfoBoxStyle
+			if m.width > 6 {
+				box = box.Width(m.width - 4)
+			}
+			b.WriteString("\n" + box.Render(cur.Info) + "\n")
 		}
 	}
 

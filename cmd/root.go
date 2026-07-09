@@ -27,7 +27,6 @@ func MainMenu(configPath string) {
 			{Label: "Schema compare", Value: "schemacompare"},
 
 			{Label: "Settings", IsHeader: true},
-			{Label: "Manage favourites", Value: "favorites"},
 			{Label: "Manage customers", Value: "customers"},
 			{Label: "Clear cached credentials", Value: "logout"},
 
@@ -60,8 +59,6 @@ func MainMenu(configPath string) {
 			cmdErr = Deploy(configPath)
 		case "schemacompare":
 			cmdErr = SchemaCompare(configPath)
-		case "favorites":
-			cmdErr = Favorites(configPath)
 		case "customers":
 			cmdErr = customersSubmenu(configPath)
 		case "logout":

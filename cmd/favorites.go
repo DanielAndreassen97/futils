@@ -45,7 +45,14 @@ func FavoritesWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return err
 	}
+	return favoritesForCustomer(configPath, client, customerName, customer)
+}
 
+// favoritesForCustomer runs the favourites-pinning flow for an already-chosen
+// customer. Split out from FavoritesWithAPI so the edit-customer menu can reach
+// it with the customer already selected, while the standalone `futils
+// favourites` command (and its top-level customer picker) keeps working.
+func favoritesForCustomer(configPath string, client APIClient, customerName string, customer config.Customer) error {
 	// Favourites are per-customer, not per-environment — notebook names are
 	// the same across DEV/TEST/PROD. We pick the first env that has any
 	// workspaces; removing all workspaces from env[0] (now possible via
