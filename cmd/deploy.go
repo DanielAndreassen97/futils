@@ -933,6 +933,8 @@ func saveDeployHistory(customer config.Customer, groups []deployGroup, results [
 		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
 		return
 	}
+	// Relative history is anchored to the PRIMARY repo (customer.RepoPath) even
+	// when a deploy spans multiple repos; an absolute DeployHistoryPath is used verbatim.
 	dir := historyDir(customer.RepoPath, customer.DeployHistoryPath)
 	htmlDoc := renderDeployReport(groups, results, postRuns)
 	path, err := writeHistoryReport(dir, time.Now(), htmlDoc)
