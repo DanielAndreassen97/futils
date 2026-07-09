@@ -128,7 +128,7 @@ var (
 	menuSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
 	menuHeaderStyle   = lipgloss.NewStyle().Foreground(DimColor).Bold(true)
 	menuBadgeStyle    = lipgloss.NewStyle().Foreground(WarnColor)
-	menuInfoBoxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1)
+	menuInfoBoxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1).Width(72)
 )
 
 func (m menuModel) selectedLabel() string {
@@ -188,23 +188,32 @@ func (m menuModel) View() string {
 		cur = m.options[m.cursor]
 	}
 
-	// Key hints, plus a "? info" advertisement when the highlighted option
-	// carries a fuller Info text — advertising it on rows with no Info would
-	// be misleading since pressing ? there renders nothing. The cursor
-	// option's one-line Description (if any) prints on its own dim line
-	// right below.
-	hint := "↑/↓ move · enter select · esc back"
-	if cur.Info != "" {
-		hint += " · ? info"
+	// The help footer only renders for menus that actually use the inline-help
+	// fields — a plain Label/Value menu (every legacy call site) is left exactly
+	// as before, with no footer. Within a help-carrying menu: the nav hint, a
+	// "? info" advertisement when the highlighted option has fuller Info, the
+	// cursor option's one-line Description, and (on ?) the Info box.
+	anyRich := false
+	for _, o := range m.options {
+		if o.Description != "" || o.Info != "" || o.Badge != "" {
+			anyRich = true
+			break
+		}
 	}
-	b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
+	if anyRich {
+		hint := "↑/↓ move · enter select · esc back"
+		if cur.Info != "" {
+			hint += " · ? info"
+		}
+		b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
 
-	if cur.Description != "" {
-		b.WriteString("  " + confirmHelpStyle.Render(cur.Description) + "\n")
-	}
+		if cur.Description != "" {
+			b.WriteString("  " + confirmHelpStyle.Render(cur.Description) + "\n")
+		}
 
-	if m.showInfo && cur.Info != "" {
-		b.WriteString("\n" + menuInfoBoxStyle.Render(cur.Info) + "\n")
+		if m.showInfo && cur.Info != "" {
+			b.WriteString("\n" + menuInfoBoxStyle.Render(cur.Info) + "\n")
+		}
 	}
 
 	return b.String()
