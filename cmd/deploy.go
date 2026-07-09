@@ -53,6 +53,29 @@ func localTypeScope(items []deploy.LocalItem) map[string]bool {
 	return s
 }
 
+// repoInputsForAlias returns the distinct repo config-strings to discover for an
+// environment: the customer's primary RepoPath (when set) first, then every
+// distinct non-empty per-mapping Repo, in first-seen order. Empty strings are
+// dropped (a customer with no primary and mappings without a Repo yields nothing
+// — the caller still falls back to the interactive repo picker).
+func repoInputsForAlias(customer config.Customer, alias string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(s string) {
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	add(customer.RepoPath)
+	mappings, _ := customer.DeployMappings(alias)
+	for _, m := range mappings {
+		add(m.Repo)
+	}
+	return out
+}
+
 // deployGroup is one folder→workspace mapping resolved for a run: the items
 // discovered under that folder, the target workspace, the compare rows, and the
 // deployed item list (needed by BuildPlan).
@@ -105,53 +128,63 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return fmt.Errorf("customer %q has no environments — add one via Edit customer first", customerName)
 	}
 
-	repoPath := customer.RepoPath
-	pickedRepo := repoPath == ""
-	if pickedRepo {
-		startDir, _ := os.UserHomeDir()
-		repoPath, err = ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
-		if err != nil {
-			return err
-		}
-	}
-
-	src, err := deploy.NewSource(repoPath)
+	alias, err := pickEnvironment(customer)
 	if err != nil {
 		return err
 	}
-	// Remember the repo on the customer so the picker is skipped next time.
-	if pickedRepo {
+
+	// Discover items per repo the environment references. Empty repo list means a
+	// brand-new customer with no RepoPath and no per-mapping repos yet — fall back
+	// to the interactive picker and treat the chosen dir as the primary repo.
+	repoInputs := repoInputsForAlias(customer, alias)
+	if len(repoInputs) == 0 {
+		startDir, _ := os.UserHomeDir()
+		picked, perr := ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
+		if perr != nil {
+			return perr
+		}
+		src, serr := deploy.NewSource(picked)
+		if serr != nil {
+			return serr
+		}
 		customer.RepoPath = src.Repo()
 		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 			fmt.Println(warningStyle.Render("Couldn't save repo path: " + err.Error()))
 		} else {
 			fmt.Println(infoStyle.Render(fmt.Sprintf("Saved repo path for %s: %s", customerName, src.Repo())))
 		}
-	}
-	sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s...", src.Ref()))
-	sp.Start()
-	var all []deploy.LocalItem
-	var fetchErr, discErr error
-	func() {
-		defer sp.Stop()
-		if fetchErr = src.Fetch(); fetchErr != nil {
-			return
-		}
-		all, discErr = src.DiscoverItems()
-	}()
-	if fetchErr != nil {
-		return fetchErr
-	}
-	if discErr != nil {
-		return discErr
-	}
-	if len(all) == 0 {
-		return fmt.Errorf("no Fabric items found at %s", src.Ref())
+		repoInputs = []string{customer.RepoPath}
 	}
 
-	alias, err := pickEnvironment(customer)
-	if err != nil {
-		return err
+	itemsByRepo := make(map[string][]deploy.LocalItem, len(repoInputs))
+	totalItems := 0
+	for _, input := range repoInputs {
+		src, serr := deploy.NewSource(input)
+		if serr != nil {
+			return fmt.Errorf("repo %q: %w", input, serr)
+		}
+		sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s (%s)...", input, src.Ref()))
+		sp.Start()
+		var items []deploy.LocalItem
+		var fetchErr, discErr error
+		func() {
+			defer sp.Stop()
+			if fetchErr = src.Fetch(); fetchErr != nil {
+				return
+			}
+			items, discErr = src.DiscoverItems()
+		}()
+		if fetchErr != nil {
+			return fmt.Errorf("repo %q: %w", input, fetchErr)
+		}
+		if discErr != nil {
+			return fmt.Errorf("repo %q: %w", input, discErr)
+		}
+		itemsByRepo[input] = items
+		totalItems += len(items)
+	}
+	if totalItems == 0 {
+		return fmt.Errorf("no Fabric items found across %d repo(s)", len(repoInputs))
 	}
 
 	token, err := client.GetAccessToken(customerName)
@@ -173,7 +206,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	mappings, _ := customer.DeployMappings(alias)
 	if len(mappings) == 0 {
-		mappings, err = setupDeployMappings(all, workspaces)
+		// TODO(Task 3): setupDeployMappings will take itemsByRepo directly. Until
+		// then, keep this single-repo (primary repo's items only).
+		mappings, err = setupDeployMappings(itemsByRepo[customer.RepoPath], workspaces)
 		if err != nil {
 			return err
 		}
@@ -205,7 +240,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(shown, ", ")))
 	}
 
-	groups, err := buildDeployGroups(client, token, mappings, all, workspaces, rebinder, excluded)
+	// TODO(Task 3): buildDeployGroups will resolve each mapping's items from
+	// itemsByRepo via customer.MappingRepo. Until then, keep this single-repo.
+	groups, err := buildDeployGroups(client, token, mappings, itemsByRepo[customer.RepoPath], workspaces, rebinder, excluded)
 	if err != nil {
 		return err
 	}

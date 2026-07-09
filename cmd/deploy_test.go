@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1275,5 +1276,37 @@ func TestPrintReportBindingsSilentWhenEmpty(t *testing.T) {
 	out := captureStdout(t, func() { printReportBindings(nil) })
 	if out != "" {
 		t.Errorf("expected no output for no bindings, got %q", out)
+	}
+}
+
+func TestRepoInputsForAlias(t *testing.T) {
+	c := config.Customer{
+		RepoPath: "/repos/primary",
+		Environments: []config.Environment{{
+			Alias: "DEV",
+			Deployments: []config.DeployMapping{
+				{Folder: "FabricBackEnd", Workspace: "WS-A"},                  // primary
+				{Folder: "", Workspace: "WS-B", Repo: "/repos/frontend"},      // frontend
+				{Folder: "Extra", Workspace: "WS-C", Repo: "/repos/frontend"}, // dup frontend
+			},
+		}},
+	}
+	got := repoInputsForAlias(c, "DEV")
+	want := []string{"/repos/primary", "/repos/frontend"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("repoInputsForAlias = %v, want %v", got, want)
+	}
+}
+
+func TestRepoInputsForAliasNoRepoPath(t *testing.T) {
+	// A customer with only explicit per-mapping repos (no primary set yet).
+	c := config.Customer{
+		Environments: []config.Environment{{
+			Alias:       "DEV",
+			Deployments: []config.DeployMapping{{Repo: "/repos/only", Workspace: "W"}},
+		}},
+	}
+	if got := repoInputsForAlias(c, "DEV"); !reflect.DeepEqual(got, []string{"/repos/only"}) {
+		t.Fatalf("got %v, want [/repos/only]", got)
 	}
 }
