@@ -333,7 +333,14 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
 
-		repoItems := itemsByRepo[customer.MappingRepo(m)]
+		repoKey := customer.MappingRepo(m)
+		repoItems, ok := itemsByRepo[repoKey]
+		if !ok {
+			// The mapping points at a repo the discovery step never scanned (e.g. a
+			// hand-edited config, or a customer with no primary repo and a mapping
+			// that omits Repo). Warn instead of silently deploying an empty set.
+			fmt.Println(warningStyle.Render(fmt.Sprintf("Mapping %q→%q references repo %q, which wasn't discovered — deploying nothing for it. Check the customer's repo config with `futils edit`.", m.Folder, m.Workspace, repoKey)))
+		}
 		items := filterExcludedTypes(deploy.ItemsInFolder(repoItems, m.Folder), excluded)
 		deployed, err := client.ListItems(token, target.ID)
 		if err != nil {
@@ -929,8 +936,14 @@ func saveDeployHistory(customer config.Customer, groups []deployGroup, results [
 	if len(results) == 0 {
 		return // nothing was published — no report to write
 	}
-	if customer.DeployHistoryPath == "" || customer.RepoPath == "" {
+	if customer.DeployHistoryPath == "" {
 		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
+		return
+	}
+	if customer.RepoPath == "" {
+		// A relative DeployHistoryPath is anchored to the primary repo; without one
+		// there's nothing to anchor to, so the report is skipped even though a path is set.
+		fmt.Println(infoStyle.Render("Deploy history needs a primary repo to anchor relative paths — this customer has none, so skipping report."))
 		return
 	}
 	// Relative history is anchored to the PRIMARY repo (customer.RepoPath) even
