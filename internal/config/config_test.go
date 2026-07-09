@@ -591,3 +591,40 @@ func TestCustomerPostDeployRunsRoundTrip(t *testing.T) {
 		t.Fatalf("PostDeployRuns = %v, want %v", out.PostDeployRuns, in.PostDeployRuns)
 	}
 }
+
+// A per-mapping Repo must survive a Customer marshal→unmarshal round trip
+// (Deployments decode through the custom UnmarshalJSON's environments path).
+func TestDeployMappingRepoRoundTrip(t *testing.T) {
+	in := Customer{
+		RepoPath: "/repos/primary",
+		Environments: []Environment{{
+			Alias:      "DEV",
+			Workspaces: []string{"WS-A", "WS-B"},
+			Deployments: []DeployMapping{
+				{Folder: "FabricBackEnd", Workspace: "WS-A"},             // no Repo → primary
+				{Folder: "", Workspace: "WS-B", Repo: "/repos/frontend"}, // explicit repo
+			},
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Customer
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out.Environments, in.Environments) {
+		t.Fatalf("Deployments round-trip mismatch:\n got %+v\nwant %+v", out.Environments, in.Environments)
+	}
+}
+
+func TestMappingRepoFallback(t *testing.T) {
+	c := Customer{RepoPath: "/repos/primary"}
+	if got := c.MappingRepo(DeployMapping{Folder: "X", Workspace: "W"}); got != "/repos/primary" {
+		t.Fatalf("empty Repo must fall back to RepoPath, got %q", got)
+	}
+	if got := c.MappingRepo(DeployMapping{Repo: "/repos/frontend"}); got != "/repos/frontend" {
+		t.Fatalf("explicit Repo must win, got %q", got)
+	}
+}
