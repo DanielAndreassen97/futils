@@ -127,11 +127,8 @@ var (
 	menuNumberStyle   = lipgloss.NewStyle().Foreground(DimColor)
 	menuSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
 	menuHeaderStyle   = lipgloss.NewStyle().Foreground(DimColor).Bold(true)
-	menuHelpStyle     = lipgloss.NewStyle().Foreground(DimColor)
-	// theme.go has no dedicated warn color; a yellow-ish tag reads as "pay
-	// attention" without adding a new theme-wide color for one badge.
-	menuBadgeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	menuInfoBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1)
+	menuBadgeStyle    = lipgloss.NewStyle().Foreground(WarnColor)
+	menuInfoBoxStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1)
 )
 
 func (m menuModel) selectedLabel() string {
@@ -186,28 +183,24 @@ func (m menuModel) View() string {
 		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), label)
 	}
 
-	// Key hints, plus a "? info" advertisement when any option carries a
-	// fuller Info text. The cursor option's one-line Description (if any)
-	// prints on its own dim line right below.
-	anyInfo := false
-	for _, opt := range m.options {
-		if opt.Info != "" {
-			anyInfo = true
-			break
-		}
-	}
-	hint := "↑/↓ move · enter select · esc back"
-	if anyInfo {
-		hint += " · ? info"
-	}
-	b.WriteString("\n  " + menuHelpStyle.Render(hint) + "\n")
-
 	var cur MenuOption
 	if m.cursor >= 0 && m.cursor < len(m.options) {
 		cur = m.options[m.cursor]
 	}
+
+	// Key hints, plus a "? info" advertisement when the highlighted option
+	// carries a fuller Info text — advertising it on rows with no Info would
+	// be misleading since pressing ? there renders nothing. The cursor
+	// option's one-line Description (if any) prints on its own dim line
+	// right below.
+	hint := "↑/↓ move · enter select · esc back"
+	if cur.Info != "" {
+		hint += " · ? info"
+	}
+	b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
+
 	if cur.Description != "" {
-		b.WriteString("  " + menuHelpStyle.Render(cur.Description) + "\n")
+		b.WriteString("  " + confirmHelpStyle.Render(cur.Description) + "\n")
 	}
 
 	if m.showInfo && cur.Info != "" {
