@@ -19,6 +19,9 @@ import (
 type DeployMapping struct {
 	Folder    string `json:"folder"`
 	Workspace string `json:"workspace"`
+	// Repo is the repo this folder lives in, when the customer deploys from more
+	// than one git repo. Empty = the customer's primary RepoPath (the common case).
+	Repo string `json:"repo,omitempty"`
 }
 
 // ReferenceOverride maps a baseline-environment GUID baked in git to a target
@@ -140,6 +143,15 @@ func (c Customer) DeployMappings(alias string) ([]DeployMapping, bool) {
 		}
 	}
 	return nil, false
+}
+
+// MappingRepo resolves which repo a deployment mapping's folder lives in: the
+// mapping's own Repo when set, otherwise the customer's primary RepoPath.
+func (c Customer) MappingRepo(m DeployMapping) string {
+	if m.Repo != "" {
+		return m.Repo
+	}
+	return c.RepoPath
 }
 
 // OverrideForGUID returns the reference override registered for a baseline
