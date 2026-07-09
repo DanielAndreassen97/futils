@@ -26,6 +26,7 @@ const (
 	editActionExcludeTypes  = "__exclude_types"
 	editActionDeployHistory = "__deploy_history"
 	editActionPostDeploy    = "__post_deploy_runs"
+	editActionFavorites     = "__favorites"
 	envActionAddWS          = "__add_ws"
 	envActionRemoveWS       = "__remove_ws"
 	envActionRenameAlias    = "__rename_alias"
@@ -128,6 +129,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionFavorites:
+			if err := favoritesForCustomer(configPath, client, customerName, customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		}
 	}
 }
@@ -137,43 +142,46 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 // label includes its workspace count so the user gets a quick sense of
 // where multi-workspace setup is missing.
 func editCustomerMenu(customerName string, customer config.Customer) (string, error) {
+	// The menu below now conveys the env list (as "Edit <alias> (N workspace)"
+	// rows under the Environments header) and baseline status (via the badge),
+	// so the pre-print is just the customer title for context.
 	fmt.Printf("\nEditing: %s\n", customerName)
-	if len(customer.Environments) == 0 {
-		fmt.Println("  (no environments yet)")
-	} else {
-		for _, e := range customer.Environments {
-			fmt.Printf("  %-12s → %d workspace%s\n", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
-		}
-	}
-	if customer.BaselineEnvironment != "" {
-		fmt.Printf("  baseline environment: %s\n", customer.BaselineEnvironment)
-	} else {
-		fmt.Println("  baseline environment: (unset — auto-rebind disabled)")
-	}
-	fmt.Println()
 
-	options := make([]ui.MenuOption, 0, len(customer.Environments)+2)
-	for _, e := range customer.Environments {
-		label := fmt.Sprintf("Edit %s (%d workspace%s)", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
-		options = append(options, ui.MenuOption{Label: label, Value: editActionEditEnv + e.Alias})
-	}
 	baselineBadge := ""
 	if customer.BaselineEnvironment == "" {
 		baselineBadge = "MUST SET"
 	}
+
+	// Grouped under section headers so the menu scans as three concerns:
+	// the environments themselves, one-time deploy configuration, and what
+	// runs after a deploy. Labels are terse — the footer Description carries
+	// the detail — so rows stay short and the headers do the explaining.
+	options := make([]ui.MenuOption, 0, len(customer.Environments)+12)
+	options = append(options, ui.MenuOption{Label: "Environments", IsHeader: true})
+	for _, e := range customer.Environments {
+		label := fmt.Sprintf("Edit %s (%d workspace%s)", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
+		options = append(options, ui.MenuOption{Label: label, Value: editActionEditEnv + e.Alias})
+	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
+
+		ui.MenuOption{Label: "Deploy setup", IsHeader: true},
 		ui.MenuOption{
-			Label:       "Set repo path",
+			Label:       "Repo path",
 			Value:       editActionSetRepo,
 			Description: "The Fabric git repo futils reads items from. Set it here so pickers work before your first deploy.",
 		},
 		ui.MenuOption{
-			Label:       "Set baseline environment",
+			Label:       "Baseline environment",
 			Value:       editActionSetBaseline,
 			Description: "Which environment the git GUIDs belong to (usually DEV). Required for auto-rebind.",
 			Info:        "Baseline is the environment your repo represents. futils reads the GUIDs in git as baseline GUIDs, resolves them by name, and swaps to the target environment's GUIDs on deploy. Without a baseline, auto-rebind is off and references deploy unchanged.",
 			Badge:       baselineBadge,
+		},
+		ui.MenuOption{
+			Label:       "Exclude item types",
+			Value:       editActionExcludeTypes,
+			Description: "Item types to skip when comparing/deploying.",
 		},
 		ui.MenuOption{
 			Label:       "Reference overrides",
@@ -181,25 +189,30 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Description: "Manual GUID→name overrides for references auto-rebind can't resolve.",
 		},
 		ui.MenuOption{
-			Label:       "Custom substitutions (find/replace)",
+			Label:       "Custom substitutions",
 			Value:       editActionSubstitutions,
 			Description: "Your own find/replace rules, resolved by name in the target or as a literal.",
 		},
-		ui.MenuOption{
-			Label:       "Exclude item types from compare",
-			Value:       editActionExcludeTypes,
-			Description: "Item types to skip when comparing/deploying.",
-		},
+
+		ui.MenuOption{Label: "After deploy", IsHeader: true},
 		ui.MenuOption{
 			Label:       "Post-deploy runs",
 			Value:       editActionPostDeploy,
 			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
 		},
 		ui.MenuOption{
-			Label:       "Set deploy-history folder",
+			Label:       "Deploy-history folder",
 			Value:       editActionDeployHistory,
 			Description: "Repo-relative folder where a timestamped HTML report is written per deploy.",
 		},
+
+		ui.MenuOption{Label: "Notebooks", IsHeader: true},
+		ui.MenuOption{
+			Label:       "Favourites",
+			Value:       editActionFavorites,
+			Description: "Pin notebooks (and their preferred parameters) for quicker run/refresh.",
+		},
+
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
