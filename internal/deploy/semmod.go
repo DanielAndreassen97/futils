@@ -20,35 +20,6 @@ const guidPat = `[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
 // workspaces are GUIDs; test fixtures may use readable IDs).
 var onelakeRe = regexp.MustCompile(`onelake\.dfs\.fabric\.microsoft\.com/([^/"]+)/(` + guidPat + `)`)
 
-// ensureBaseEndpoints lazily builds baseline { SQL-endpoint id -> lakehouse }
-// by querying GetLakehouseSqlEndpoint for every baseline lakehouse. Lakehouses
-// whose endpoint can't be fetched (e.g. still provisioning) are skipped.
-// Caller must hold rb.mu.
-func (rb *Rebinder) ensureBaseEndpoints() {
-	if rb.baseEndpoints != nil {
-		return
-	}
-	rb.baseEndpoints = map[string]IndexedItem{}
-	for _, lake := range rb.baseline.ItemsOfType("Lakehouse") {
-		_, id, err := rb.client.GetLakehouseSqlEndpoint(rb.token, lake.WorkspaceID, lake.GUID)
-		if err != nil || id == "" {
-			continue
-		}
-		rb.baseEndpoints[id] = lake
-	}
-}
-
-// baseEndpointLookup returns the baseline lakehouse for a SQL-endpoint id,
-// populating the cache on first use. Guards the lazy fill + read so it's safe
-// to call from concurrent compare workers.
-func (rb *Rebinder) baseEndpointLookup(id string) (IndexedItem, bool) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	rb.ensureBaseEndpoints()
-	lake, ok := rb.baseEndpoints[id]
-	return lake, ok
-}
-
 // targetEndpointFor returns the target lakehouse's SQL endpoint (host, id),
 // cached by lakehouse GUID. The lock spans the check-and-fill so two workers
 // can't both populate the cache; the memoClient dedups the underlying call.
@@ -70,21 +41,24 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 }
 
 // rebindSQLSources rewrites every Direct Lake on SQL data-source expression in
-// s: it maps the baked endpoint id to its baseline lakehouse, resolves the
-// same-named target lakehouse, fetches that lakehouse's target endpoint, and
-// replaces both host and id. Unresolvable endpoints are left unchanged and
-// surfaced. Returns the rewritten string.
+// s: it looks up the baked endpoint id in the baseline name index (the baked
+// GUID equals its parent lakehouse's sqlEndpointProperties.id, so it is
+// indexed alongside every other item type — including SQLEndpoint items that
+// aren't Lakehouses themselves), resolves the same-named target lakehouse,
+// fetches that lakehouse's target endpoint, and replaces both host and id.
+// Unresolvable endpoints are left unchanged and surfaced. Returns the
+// rewritten string.
 func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 	seen := map[string]bool{}
 	sqlStart := len(out.Changes)
 	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
 		host, id := m[1], m[2]
-		lake, ok := rb.baseEndpointLookup(id)
+		base, ok := rb.baseline.ItemByGUID(id)
 		if !ok {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNameUnknown})
 			continue
 		}
-		tgt, st := rb.target.LookupName(lake.Name, "Lakehouse")
+		tgt, st := rb.target.LookupName(base.Name, "Lakehouse")
 		if st != LookupFound {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reasonForStatus(st)})
 			continue
