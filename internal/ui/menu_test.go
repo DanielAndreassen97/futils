@@ -193,6 +193,29 @@ func TestMenuInfoBoxToggle(t *testing.T) {
 	}
 }
 
+func TestMenuUpdate_CursorMoveResetsShowInfo(t *testing.T) {
+	m := menuModel{
+		message: "Action",
+		options: []MenuOption{
+			{Label: "First", Value: "first", Info: "First option info."},
+			{Label: "Second", Value: "second", Info: "Second option info."},
+		},
+		cursor: 0,
+	}
+
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	m = nm.(menuModel)
+	if !m.showInfo {
+		t.Fatal("'?' must set showInfo=true")
+	}
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(menuModel)
+	if m.showInfo {
+		t.Fatal("moving the cursor down must reset showInfo=false")
+	}
+}
+
 func TestMenuHeader_ViewRendersHeaderWithoutNumber(t *testing.T) {
 	m := menuModel{
 		message: "Pick one",
