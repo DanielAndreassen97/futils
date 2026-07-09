@@ -104,7 +104,7 @@ func newSemmodSQLRebinder(t *testing.T) *Rebinder {
 			{ID: "test-config", DisplayName: "DP - TEST - Config"},
 		},
 		itemsByWS: map[string][]fabric.Item{
-			"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+			"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}, {ID: "dev-ep-id", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}},
 			"test-config": {{ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 		},
 		sqlByLH: map[string][2]string{
@@ -191,6 +191,35 @@ func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 	out2, outcome2 := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "P"}, "pipeline-content.json", plain)
 	if string(out2) != string(plain) || len(outcome2.Changes) != 0 {
 		t.Error("non-semmod/non-notebook part should be untouched")
+	}
+}
+
+// The baked GUID is a SQLEndpoint item (indexed by name), not a Lakehouse — the
+// old baseEndpoints probe missed it; ItemByGUID must resolve it by name.
+func TestRebindSQLViaNameIndex(t *testing.T) {
+	dev := fabric.Workspace{ID: "ws-dev", DisplayName: "DEV"}
+	tgt := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{dev, tgt},
+		itemsByWS: map[string][]fabric.Item{
+			"ws-dev":  {{ID: "dev-ep", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+			"ws-test": {{ID: "test-ep", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+		},
+		// GetLakehouseSqlEndpoint returns (host,id) per lakehouse id (host from the parent lakehouse).
+		sqlByLH: map[string][2]string{"test-lh": {"test-host", "test-ep"}},
+	}}
+	rb, err := NewRebinder(rf, "tok", []fabric.Workspace{dev}, []fabric.Workspace{tgt}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `database = Sql.Database("dev-host", "dev-ep")`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if len(out.Unresolved) != 0 {
+		t.Fatalf("must resolve via NameIndex, got unresolved %+v", out.Unresolved)
+	}
+	if !strings.Contains(got, `"test-host"`) || !strings.Contains(got, `"test-ep"`) {
+		t.Fatalf("rewrite = %q, want test-host/test-ep", got)
 	}
 }
 

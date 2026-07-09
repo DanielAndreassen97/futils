@@ -10,10 +10,10 @@ import (
 
 // concurrencyFixture builds a Resolver and a Rebinder that SHARE the same fake
 // client and that several goroutines hit at once, so their lazy caches
-// (Resolver.wsByName/itemsWS, Rebinder.baseEndpoints/targetEndpoint) are
-// populated under contention. The baseline and target both expose the same
-// lakehouse name (LH_Silver) with a SQL endpoint, so every worker drives the
-// same baseEndpointLookup + targetEndpointFor fill.
+// (Resolver.wsByName/itemsWS, Rebinder.targetEndpoint) are populated under
+// contention. The baseline and target both expose the same lakehouse name
+// (LH_Silver) with a SQL endpoint, so every worker drives the same
+// ItemByGUID + targetEndpointFor fill.
 func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 	t.Helper()
 	f := &fakeFabric{
@@ -22,11 +22,13 @@ func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 			{ID: "test-data", DisplayName: "DP - TEST - Data"},
 		},
 		itemsByWS: map[string][]fabric.Item{
-			"dev-data":  {{ID: "dev-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}},
+			// dev-ep is the baked SQL-endpoint item (indexed by name, resolved via
+			// ItemByGUID) for the parent lakehouse dev-silver-lh.
+			"dev-data":  {{ID: "dev-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}, {ID: "dev-ep", DisplayName: "LH_Silver", Type: "SQLEndpoint"}},
 			"test-data": {{ID: "test-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}},
 		},
-		// Both lakehouses expose SQL endpoints so the SQL rebind path populates
-		// baseEndpoints (baseline) and targetEndpoint (target).
+		// The target lakehouse exposes its SQL endpoint so the SQL rebind path
+		// populates the Rebinder's targetEndpoint cache.
 		sqlByLH: map[string][2]string{
 			"dev-silver-lh":  {"dev-silver.datawarehouse.fabric.microsoft.com", "dev-ep"},
 			"test-silver-lh": {"test-silver.datawarehouse.fabric.microsoft.com", "test-ep"},
@@ -52,15 +54,16 @@ func semModelWithSQLSource() []byte {
 
 // TestSubstitutePartsConcurrentSharedCaches drives SubstituteParts from many
 // goroutines against one shared Resolver and Rebinder, with items that exercise
-// BOTH lazy caches at once:
-//   - a semantic-model part whose SQL source forces baseEndpointLookup +
-//     targetEndpointFor (Rebinder caches), and
+// the shared lazy cache at once:
+//   - a semantic-model part whose SQL source resolves the baked endpoint via
+//     ItemByGUID (read-only, build-once) and then targetEndpointFor (the
+//     Rebinder's one remaining lazy cache), and
 //   - a custom substitution that uses the Rebinder's target-attribute lookup
-//     (sqlendpoint), forcing the Rebinder's targetEndpoint cache fill.
+//     (sqlendpoint), forcing the same targetEndpoint cache fill.
 //
-// Run under `go test -race`. Before the mutexes were added this reliably
-// tripped the race detector (concurrent map writes to the lazy caches); with
-// the guards it must be clean. A non-concurrent cache fill would prove nothing,
+// Run under `go test -race`. Before the mutex was added this reliably
+// tripped the race detector (concurrent map writes to the lazy cache); with
+// the guard it must be clean. A non-concurrent cache fill would prove nothing,
 // so every worker hits the SAME workspace/endpoint lookups.
 func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 	resolver, rb := concurrencyFixture(t)
@@ -110,9 +113,9 @@ func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 }
 
 // TestRebinderConcurrentEndpointCaches hammers RebindSemanticModel from many
-// goroutines so the Rebinder's baseEndpoints + targetEndpoint maps are filled
-// concurrently. Under -race this must be clean, and every worker must produce
-// the same target-endpoint rewrite.
+// goroutines so the Rebinder's targetEndpoint map is filled concurrently.
+// Under -race this must be clean, and every worker must produce the same
+// target-endpoint rewrite.
 func TestRebinderConcurrentEndpointCaches(t *testing.T) {
 	_, rb := concurrencyFixture(t)
 

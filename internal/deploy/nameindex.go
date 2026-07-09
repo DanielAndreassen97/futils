@@ -70,8 +70,7 @@ func (i *NameIndex) ItemByGUID(guid string) (IndexedItem, bool) {
 }
 
 // ItemsOfType returns every indexed item of the given type. Order is
-// unspecified (map iteration). Used to enumerate baseline lakehouses when
-// building the SQL-endpoint map.
+// unspecified (map iteration).
 func (i *NameIndex) ItemsOfType(typ string) []IndexedItem {
 	var out []IndexedItem
 	for _, it := range i.byGUID {
