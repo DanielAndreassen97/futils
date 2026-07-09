@@ -138,12 +138,58 @@ func TestMenuNumbersOnlyFirstNineSelectable(t *testing.T) {
 	if strings.Contains(out, "10)") || strings.Contains(out, "11)") {
 		t.Errorf("rows past 9 must not be numbered (misleading), got:\n%s", out)
 	}
-	if n := strings.Count(out, "·"); n != 2 {
-		t.Errorf("expected 2 bullet markers for rows 10-11, got %d:\n%s", n, out)
+	// Count only row-marker bullets (lines that start with "·" once
+	// leading whitespace is trimmed) — the footer hint line also uses "·"
+	// as a phrase separator (e.g. "move · enter select"), so a raw
+	// document-wide count would double-count that unrelated usage.
+	bulletRows := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "·") {
+			bulletRows++
+		}
+	}
+	if bulletRows != 2 {
+		t.Errorf("expected 2 bullet markers for rows 10-11, got %d:\n%s", bulletRows, out)
 	}
 	// The unnumbered rows must still be present (selectable via arrows).
 	if !strings.Contains(out, "j") || !strings.Contains(out, "k") {
 		t.Errorf("rows 10-11 (j, k) must still render, got:\n%s", out)
+	}
+}
+
+func TestMenuRendersBadgeAndFooterHint(t *testing.T) {
+	m := menuModel{
+		message: "Action",
+		options: []MenuOption{
+			{Label: "Set baseline environment", Value: "b", Description: "Which env the git GUIDs belong to — required for auto-rebind.", Info: "Baseline is the environment your repo represents...", Badge: "MUST SET"},
+			{Label: "Back", Value: "back"},
+		},
+		cursor: 0,
+	}
+	out := m.View()
+	if !strings.Contains(out, "MUST SET") {
+		t.Fatal("badge must render on the row")
+	}
+	if !strings.Contains(out, "Which env the git GUIDs belong to") {
+		t.Fatal("cursor option's Description must show in the footer hint")
+	}
+	if strings.Contains(out, "Baseline is the environment") {
+		t.Fatal("full Info must NOT show until ? is pressed")
+	}
+	if !strings.Contains(out, "? info") {
+		t.Fatal("help line must advertise ? when an option has Info")
+	}
+}
+
+func TestMenuInfoBoxToggle(t *testing.T) {
+	m := menuModel{
+		message:  "Action",
+		options:  []MenuOption{{Label: "Set baseline environment", Value: "b", Info: "Baseline is the environment your repo represents."}},
+		cursor:   0,
+		showInfo: true,
+	}
+	if !strings.Contains(m.View(), "Baseline is the environment your repo represents.") {
+		t.Fatal("Info must render when showInfo is true")
 	}
 }
 

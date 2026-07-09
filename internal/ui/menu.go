@@ -28,9 +28,12 @@ var ErrQuit = errors.New("quit")
 // independently so "1, 2, 3" stays sane even when headers sit between
 // them.
 type MenuOption struct {
-	Label    string
-	Value    string
-	IsHeader bool
+	Label       string
+	Value       string
+	IsHeader    bool
+	Description string // one-line footer hint shown when this option is highlighted
+	Info        string // fuller text shown in a box when the user presses ?
+	Badge       string // short inline tag, e.g. "MUST SET" (rendered accent/warn)
 }
 
 type menuModel struct {
@@ -41,6 +44,7 @@ type menuModel struct {
 	goBack   bool
 	quit     bool
 	done     bool
+	showInfo bool
 }
 
 func (m menuModel) Init() tea.Cmd { return nil }
@@ -79,8 +83,12 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "up", "k":
 			m.stepCursor(-1)
+			m.showInfo = false
 		case "down", "j":
 			m.stepCursor(1)
+			m.showInfo = false
+		case "?":
+			m.showInfo = !m.showInfo
 		case "enter":
 			if len(m.options) == 0 || m.options[m.cursor].IsHeader {
 				break
@@ -119,6 +127,11 @@ var (
 	menuNumberStyle   = lipgloss.NewStyle().Foreground(DimColor)
 	menuSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
 	menuHeaderStyle   = lipgloss.NewStyle().Foreground(DimColor).Bold(true)
+	menuHelpStyle     = lipgloss.NewStyle().Foreground(DimColor)
+	// theme.go has no dedicated warn color; a yellow-ish tag reads as "pay
+	// attention" without adding a new theme-wide color for one badge.
+	menuBadgeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	menuInfoBoxStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(DimColor).Padding(0, 1)
 )
 
 func (m menuModel) selectedLabel() string {
@@ -166,7 +179,39 @@ func (m menuModel) View() string {
 		if displayNum <= 9 {
 			marker = fmt.Sprintf("%d)", displayNum)
 		}
-		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), opt.Label)
+		label := opt.Label
+		if opt.Badge != "" {
+			label += " " + menuBadgeStyle.Render("["+opt.Badge+"]")
+		}
+		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), label)
+	}
+
+	// Key hints, plus a "? info" advertisement when any option carries a
+	// fuller Info text. The cursor option's one-line Description (if any)
+	// prints on its own dim line right below.
+	anyInfo := false
+	for _, opt := range m.options {
+		if opt.Info != "" {
+			anyInfo = true
+			break
+		}
+	}
+	hint := "↑/↓ move · enter select · esc back"
+	if anyInfo {
+		hint += " · ? info"
+	}
+	b.WriteString("\n  " + menuHelpStyle.Render(hint) + "\n")
+
+	var cur MenuOption
+	if m.cursor >= 0 && m.cursor < len(m.options) {
+		cur = m.options[m.cursor]
+	}
+	if cur.Description != "" {
+		b.WriteString("  " + menuHelpStyle.Render(cur.Description) + "\n")
+	}
+
+	if m.showInfo && cur.Info != "" {
+		b.WriteString("\n" + menuInfoBoxStyle.Render(cur.Info) + "\n")
 	}
 
 	return b.String()
