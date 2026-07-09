@@ -151,14 +151,44 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		label := fmt.Sprintf("Edit %s (%d workspace%s)", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
 		options = append(options, ui.MenuOption{Label: label, Value: editActionEditEnv + e.Alias})
 	}
+	baselineBadge := ""
+	if customer.BaselineEnvironment == "" {
+		baselineBadge = "MUST SET"
+	}
 	options = append(options,
 		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
-		ui.MenuOption{Label: "Set baseline environment", Value: editActionSetBaseline},
-		ui.MenuOption{Label: "Reference overrides", Value: editActionRefOverrides},
-		ui.MenuOption{Label: "Custom substitutions (find/replace)", Value: editActionSubstitutions},
-		ui.MenuOption{Label: "Exclude item types from compare", Value: editActionExcludeTypes},
-		ui.MenuOption{Label: "Post-deploy runs", Value: editActionPostDeploy},
-		ui.MenuOption{Label: "Set deploy-history folder", Value: editActionDeployHistory},
+		ui.MenuOption{
+			Label:       "Set baseline environment",
+			Value:       editActionSetBaseline,
+			Description: "Which environment the git GUIDs belong to (usually DEV). Required for auto-rebind.",
+			Info:        "Baseline is the environment your repo represents. futils reads the GUIDs in git as baseline GUIDs, resolves them by name, and swaps to the target environment's GUIDs on deploy. Without a baseline, auto-rebind is off and references deploy unchanged.",
+			Badge:       baselineBadge,
+		},
+		ui.MenuOption{
+			Label:       "Reference overrides",
+			Value:       editActionRefOverrides,
+			Description: "Manual GUID→name overrides for references auto-rebind can't resolve.",
+		},
+		ui.MenuOption{
+			Label:       "Custom substitutions (find/replace)",
+			Value:       editActionSubstitutions,
+			Description: "Your own find/replace rules, resolved by name in the target or as a literal.",
+		},
+		ui.MenuOption{
+			Label:       "Exclude item types from compare",
+			Value:       editActionExcludeTypes,
+			Description: "Item types to skip when comparing/deploying.",
+		},
+		ui.MenuOption{
+			Label:       "Post-deploy runs",
+			Value:       editActionPostDeploy,
+			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
+		},
+		ui.MenuOption{
+			Label:       "Set deploy-history folder",
+			Value:       editActionDeployHistory,
+			Description: "Repo-relative folder where a timestamped HTML report is written per deploy.",
+		},
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
 	return ui.NumberMenu("Action", options)
