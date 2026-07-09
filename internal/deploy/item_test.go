@@ -107,3 +107,29 @@ func TestRepoItemNamesEmptyPath(t *testing.T) {
 		t.Fatalf("got (%v, %v), want (nil, nil)", names, err)
 	}
 }
+
+func TestRepoItemNamesMultiUnions(t *testing.T) {
+	r1, r2 := t.TempDir(), t.TempDir()
+	writeTestPlatform(t, r1, "NB_A.Notebook", "Notebook", "NB_A")
+	writeTestPlatform(t, r2, "NB_B.Notebook", "Notebook", "NB_B")
+	writeTestPlatform(t, r2, "NB_A.Notebook", "Notebook", "NB_A") // dup across repos
+	got, err := RepoItemNamesMulti([]string{r1, r2}, "Notebook")
+	if err != nil {
+		t.Fatalf("RepoItemNamesMulti: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"NB_A", "NB_B"}) {
+		t.Fatalf("got %v, want [NB_A NB_B]", got)
+	}
+}
+
+func TestRepoItemTypesMultiSkipsEmpty(t *testing.T) {
+	r1 := t.TempDir()
+	writeTestPlatform(t, r1, "LH.Lakehouse", "Lakehouse", "LH")
+	got, err := RepoItemTypesMulti([]string{"", r1, ""}) // empty paths skipped, not errors
+	if err != nil {
+		t.Fatalf("RepoItemTypesMulti: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"Lakehouse"}) {
+		t.Fatalf("got %v, want [Lakehouse]", got)
+	}
+}
