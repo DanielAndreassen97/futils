@@ -170,6 +170,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Repo path",
 			Value:       editActionSetRepo,
 			Description: "The Fabric git repo futils reads items from. Set it here so pickers work before your first deploy.",
+			Info:        "futils reads your Fabric items from this repo's origin/<default-branch> (never the working tree) when it compares and deploys. Setting it here also lets the Exclude-item-types and Post-deploy pickers scan the repo right away — otherwise the path is only captured the first time you run a deploy, and those pickers can't work until then.",
 		},
 		ui.MenuOption{
 			Label:       "Baseline environment",
@@ -182,16 +183,19 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Exclude item types",
 			Value:       editActionExcludeTypes,
 			Description: "Item types to skip when comparing/deploying.",
+			Info:        "Some item types round-trip through Fabric with cosmetic reformatting that shows as a phantom 'Changed' on every deploy, and some you simply never deploy from this repo. List those types here and futils leaves them out of both the compare and the deploy.",
 		},
 		ui.MenuOption{
 			Label:       "Reference overrides",
 			Value:       editActionRefOverrides,
 			Description: "Manual GUID→name overrides for references auto-rebind can't resolve.",
+			Info:        "Auto-rebind resolves cross-environment references by matching item names between your baseline and the target. When one can't be resolved by name — an unknown GUID, a connection carrying no name, or an ambiguous match — register an override here that maps the source GUID to a target item by name explicitly. You can also un-ignore references you previously chose to skip.",
 		},
 		ui.MenuOption{
 			Label:       "Custom substitutions",
 			Value:       editActionSubstitutions,
 			Description: "Your own find/replace rules, resolved by name in the target or as a literal.",
+			Info:        "Find/replace rules applied to item content before deploy — the futils replacement for parameter.yml's find_replace. Each rule finds a value and swaps it for either a literal or an item resolved by name in the target environment (its id, SQL endpoint host, or endpoint id). Use it for references auto-rebind doesn't cover on its own.",
 		},
 
 		ui.MenuOption{Label: "After deploy", IsHeader: true},
@@ -199,11 +203,13 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Post-deploy runs",
 			Value:       editActionPostDeploy,
 			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
+			Info:        "After a successful deploy, futils offers to run the notebooks you register here — but only the ones actually created or updated in that run — sequentially, stopping at the first failure. Handy for re-seeding config or running smoke tests in the target without doing it by hand.",
 		},
 		ui.MenuOption{
 			Label:       "Deploy-history folder",
 			Value:       editActionDeployHistory,
 			Description: "Repo-relative folder where a timestamped HTML report is written per deploy.",
+			Info:        "A repo-relative folder where futils writes a timestamped, self-contained HTML report after each real deploy — what was compared, deployed, rebound, and any post-deploy runs. The saved path is clickable in the terminal. Leave empty to turn history off.",
 		},
 
 		ui.MenuOption{Label: "Notebooks", IsHeader: true},
@@ -211,6 +217,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Favourites",
 			Value:       editActionFavorites,
 			Description: "Pin notebooks (and their preferred parameters) for quicker run/refresh.",
+			Info:        "Pin the notebooks you run most, optionally with their preferred parameters, so `futils run` and `futils refresh` show a short curated list first instead of every notebook in the workspace.",
 		},
 
 		ui.MenuOption{Label: "Back", Value: editActionBack},
@@ -254,12 +261,38 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 		fmt.Println()
 
 		options := []ui.MenuOption{
-			{Label: "Add workspace", Value: envActionAddWS},
-			{Label: "Remove workspace", Value: envActionRemoveWS},
-			{Label: "Rename alias", Value: envActionRenameAlias},
-			{Label: "Delete this environment", Value: envActionDeleteEnv},
-			{Label: "Add deployment mapping", Value: envActionAddDeploy},
-			{Label: "Remove deployment mapping", Value: envActionRemoveDeploy},
+			{
+				Label:       "Add workspace",
+				Value:       envActionAddWS,
+				Description: "Attach a Fabric workspace to this environment.",
+				Info:        "An environment is a named set of Fabric workspaces (e.g. DEV = 'DP - DEV - Config' + 'DP - DEV - SemMod'). Auto-rebind enumerates every workspace here to build the name index it resolves references against, so add all workspaces this env spans — including reference-only ones you don't deploy to directly.",
+			},
+			{
+				Label:       "Remove workspace",
+				Value:       envActionRemoveWS,
+				Description: "Detach a workspace from this environment.",
+			},
+			{
+				Label:       "Rename alias",
+				Value:       envActionRenameAlias,
+				Description: "Change this environment's alias (e.g. DEV, TEST, PROD).",
+			},
+			{
+				Label:       "Delete this environment",
+				Value:       envActionDeleteEnv,
+				Description: "Remove this environment and its deployment mappings.",
+			},
+			{
+				Label:       "Add deployment mapping",
+				Value:       envActionAddDeploy,
+				Description: "Map a repo folder to a target workspace in this environment.",
+				Info:        "A deployment mapping says 'deploy this repo folder to this workspace' for this environment — e.g. FabricBackEnd/ → 'DP - DEV - Config'. You can point a folder at a second git repo, so a customer with separate backend and frontend repos deploys both in one run. A folder that is the whole repo maps as an empty folder.",
+			},
+			{
+				Label:       "Remove deployment mapping",
+				Value:       envActionRemoveDeploy,
+				Description: "Delete one of this environment's folder→workspace mappings.",
+			},
 			{Label: "Back", Value: editActionBack},
 		}
 		action, err := ui.NumberMenu("Action", options)
