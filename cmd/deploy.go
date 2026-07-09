@@ -206,8 +206,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	mappings, _ := customer.DeployMappings(alias)
 	if len(mappings) == 0 {
-		// TODO(Task 3): setupDeployMappings will take itemsByRepo directly. Until
-		// then, keep this single-repo (primary repo's items only).
+		// Auto-setup only runs before any mappings exist, so it always offers
+		// the primary repo's items (customers with extra per-mapping repos add
+		// those manually afterward).
 		mappings, err = setupDeployMappings(itemsByRepo[customer.RepoPath], workspaces)
 		if err != nil {
 			return err
@@ -240,9 +241,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(shown, ", ")))
 	}
 
-	// TODO(Task 3): buildDeployGroups will resolve each mapping's items from
-	// itemsByRepo via customer.MappingRepo. Until then, keep this single-repo.
-	groups, err := buildDeployGroups(client, token, mappings, itemsByRepo[customer.RepoPath], workspaces, rebinder, excluded)
+	groups, err := buildDeployGroups(client, token, customer, mappings, itemsByRepo, workspaces, rebinder, excluded)
 	if err != nil {
 		return err
 	}
@@ -326,7 +325,7 @@ const diffConcurrency = 16
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, mappings []config.DeployMapping, all []deploy.LocalItem, workspaces []fabric.Workspace, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, customer config.Customer, mappings []config.DeployMapping, itemsByRepo map[string][]deploy.LocalItem, workspaces []fabric.Workspace, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
@@ -334,7 +333,8 @@ func buildDeployGroups(client APIClient, token string, mappings []config.DeployM
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
 
-		items := filterExcludedTypes(deploy.ItemsInFolder(all, m.Folder), excluded)
+		repoItems := itemsByRepo[customer.MappingRepo(m)]
+		items := filterExcludedTypes(deploy.ItemsInFolder(repoItems, m.Folder), excluded)
 		deployed, err := client.ListItems(token, target.ID)
 		if err != nil {
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
