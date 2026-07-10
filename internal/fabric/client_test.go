@@ -72,6 +72,30 @@ func TestParseLakehouseSqlEndpointMissing(t *testing.T) {
 	}
 }
 
+func TestGetLakehouseSqlEndpointUsesLakehouseAPI(t *testing.T) {
+	// The generic /items/{id} GET returns only the common item envelope —
+	// sqlEndpointProperties comes back empty and every lakehouse looks
+	// "still provisioning". The lookup must target /lakehouses/{id}.
+	transport := &seqTransport{responses: []seqResponse{{status: 200, body: `{
+	  "id": "lh-1",
+	  "properties": {"sqlEndpointProperties": {"connectionString": "abc.datawarehouse.fabric.microsoft.com", "id": "ep-123"}}
+	}`}}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	host, id, err := GetLakehouseSqlEndpoint("tok", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222")
+	if err != nil {
+		t.Fatalf("GetLakehouseSqlEndpoint: %v", err)
+	}
+	if host != "abc.datawarehouse.fabric.microsoft.com" || id != "ep-123" {
+		t.Errorf("host=%q id=%q", host, id)
+	}
+	if len(transport.urls) != 1 || !strings.Contains(transport.urls[0], "/lakehouses/22222222-2222-2222-2222-222222222222") {
+		t.Errorf("expected lakehouse-specific URL, got %v", transport.urls)
+	}
+}
+
 // seqTransport replays a fixed sequence of HTTP responses. Each call to
 // RoundTrip returns the next response in the list; if the sequence is
 // exhausted it returns the last entry repeatedly.
