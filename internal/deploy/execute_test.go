@@ -277,12 +277,12 @@ func byPathPBIR(modelName string) []byte {
 }
 
 func byConnectionPBIR() []byte {
-	return []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR;integrated security=ClaimsToken;semanticmodelid=ffff1111-2222-3333-4444-555566667777"}}}`)
+	return []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DW - DEV - SemMod\";initial catalog=HR;integrated security=ClaimsToken;semanticmodelid=ffff1111-2222-3333-4444-555566667777"}}}`)
 }
 
 func TestReportDatasetRefFlatByConnection(t *testing.T) {
 	item := LocalItem{Type: "Report", Parts: []Part{
-		{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR;semanticmodelid=ffff1111-2222-3333-4444-555566667777"}}}`)},
+		{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DW - DEV - SemMod\";initial catalog=HR;semanticmodelid=ffff1111-2222-3333-4444-555566667777"}}}`)},
 	}}
 	if got := reportDatasetRef(item, nil, nil); got.Kind != refByConnection {
 		t.Errorf("flat connectionString should classify as refByConnection, got %v", got.Kind)
@@ -670,7 +670,7 @@ func TestRebindReportsByConnectionStaleCatalogPrefersBaseline(t *testing.T) {
 	}
 
 	// Stale catalog name "HR_old", but the semanticmodelid GUID maps to "HR".
-	stalePBIR := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=HR_old;integrated security=ClaimsToken;semanticmodelid=` + devHRModel + `"}}}`)
+	stalePBIR := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DW - DEV - SemMod\";initial catalog=HR_old;integrated security=ClaimsToken;semanticmodelid=` + devHRModel + `"}}}`)
 	hr := LocalItem{Type: "SemanticModel", DisplayName: "HR", LogicalID: "lid-hr",
 		Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("table X")}}}
 	hrOld := LocalItem{Type: "SemanticModel", DisplayName: "HR_old", LogicalID: "lid-old",

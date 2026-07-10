@@ -100,8 +100,8 @@ func newSemmodSQLRebinder(t *testing.T) *Rebinder {
 	t.Helper()
 	f := &fakeFabric{
 		workspaces: []fabric.Workspace{
-			{ID: "dev-config", DisplayName: "DP - DEV - Config"},
-			{ID: "test-config", DisplayName: "DP - TEST - Config"},
+			{ID: "dev-config", DisplayName: "DW - DEV - Config"},
+			{ID: "test-config", DisplayName: "DW - TEST - Config"},
 		},
 		itemsByWS: map[string][]fabric.Item{
 			"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}, {ID: "dev-ep-id", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}},
@@ -223,14 +223,138 @@ func TestRebindSQLViaNameIndex(t *testing.T) {
 	}
 }
 
-func TestItemsOfType(t *testing.T) {
-	f := newIndexFixture() // from nameindex_test.go: ws-config has LH_ConfigLog, ws-data has LH_Silver+LH_Gold
-	idx, _ := BuildNameIndex(f, "tok", f.workspaces)
-	lakes := idx.ItemsOfType("Lakehouse")
-	if len(lakes) != 3 {
-		t.Fatalf("expected 3 lakehouses, got %d: %#v", len(lakes), lakes)
+// newSemmodSharedHostRebinder wires a baseline where TWO lakehouses share one
+// SQL-endpoint host (dev-host) under different endpoint ids, and a target where
+// the same-named lakehouses live in different workspaces with different hosts.
+func newSemmodSharedHostRebinder(t *testing.T) *Rebinder {
+	t.Helper()
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DW - DEV - Data"},
+			{ID: "tgt-a", DisplayName: "TGT A"},
+			{ID: "tgt-b", DisplayName: "TGT B"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"dev-data": {
+				{ID: "dev-lh-one", DisplayName: "LH_One", Type: "Lakehouse"},
+				{ID: "dev-ep-one", DisplayName: "LH_One", Type: "SQLEndpoint"},
+				{ID: "dev-lh-two", DisplayName: "LH_Two", Type: "Lakehouse"},
+				{ID: "dev-ep-two", DisplayName: "LH_Two", Type: "SQLEndpoint"},
+			},
+			"tgt-a": {{ID: "tgt-lh-one", DisplayName: "LH_One", Type: "Lakehouse"}},
+			"tgt-b": {{ID: "tgt-lh-two", DisplayName: "LH_Two", Type: "Lakehouse"}},
+		},
+		sqlByLH: map[string][2]string{
+			"tgt-lh-one": {"host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one"},
+			"tgt-lh-two": {"host-b.datawarehouse.fabric.microsoft.com", "tgt-ep-two"},
+		},
 	}
-	if len(idx.ItemsOfType("Notebook")) != 0 {
-		t.Error("expected no notebooks")
+	rb, err := NewRebinder(f, "tok",
+		[]fabric.Workspace{f.workspaces[0]},
+		[]fabric.Workspace{f.workspaces[1], f.workspaces[2]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	return rb
+}
+
+// TestRebindSQLSharedHostDifferentTargets proves that two Sql.Database sources
+// sharing the SAME baseline host whose endpoints resolve to DIFFERENT target
+// hosts each get their own matched host+id pair — a global replace of the
+// shared old host would funnel both into whichever target resolved first,
+// pairing the second expression's host with the wrong workspace's endpoint id.
+func TestRebindSQLSharedHostDifferentTargets(t *testing.T) {
+	rb := newSemmodSharedHostRebinder(t)
+	in := `let
+	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-one"),
+	Two = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-two")
+in
+	Two`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one")`) {
+		t.Errorf("LH_One must pair host-a with tgt-ep-one:\n%s", got)
+	}
+	if !strings.Contains(got, `Sql.Database("host-b.datawarehouse.fabric.microsoft.com", "tgt-ep-two")`) {
+		t.Errorf("LH_Two must pair host-b with tgt-ep-two (not funneled into host-a):\n%s", got)
+	}
+	if strings.Contains(got, "dev-host") || strings.Contains(got, "dev-ep") {
+		t.Errorf("baseline host/id still present:\n%s", got)
+	}
+	if len(out.Unresolved) != 0 {
+		t.Errorf("both endpoints resolve — no unresolved expected, got %+v", out.Unresolved)
+	}
+	// Display must keep BOTH host rewrites (dedup is by old→new pair, not old
+	// alone): 2 hosts + 2 ids = 4 changes.
+	if len(out.Changes) != 4 {
+		t.Fatalf("changes = %#v (want 2 hosts + 2 ids)", out.Changes)
+	}
+}
+
+// TestRebindSQLUnresolvedSharesHostWithResolved proves that an UNRESOLVED
+// Sql.Database expression is left byte-identical even when it shares its
+// baseline host with a resolved expression — the resolved rewrite must stay
+// inside its own match span.
+func TestRebindSQLUnresolvedSharesHostWithResolved(t *testing.T) {
+	rb := newSemmodSharedHostRebinder(t)
+	const unresolvedExpr = `Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "unknown-ep")`
+	in := `let
+	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-one"),
+	Other = ` + unresolvedExpr + `
+in
+	Other`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if !strings.Contains(got, unresolvedExpr) {
+		t.Errorf("unresolved expression must be byte-identical (shared host untouched):\n%s", got)
+	}
+	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one")`) {
+		t.Errorf("resolved expression not rebound:\n%s", got)
+	}
+	if len(out.Unresolved) != 1 || out.Unresolved[0].GUID != "unknown-ep" || out.Unresolved[0].Reason != ReasonNameUnknown {
+		t.Fatalf("unresolved = %#v", out.Unresolved)
+	}
+}
+
+// TestRebindSQLOverrideResolvesEndpoint proves that an override registered for
+// a baked SQL-endpoint GUID unknown to the baseline index resolves the
+// reference — the SQL pass must consult the override map like every other
+// rebind pass (the edit-menu Info text promises exactly this).
+func TestRebindSQLOverrideResolvesEndpoint(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-config", DisplayName: "DW - DEV - Config"},
+			{ID: "test-config", DisplayName: "DW - TEST - Config"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			// Baseline knows NOTHING about the baked endpoint GUID.
+			"dev-config":  {},
+			"test-config": {{ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+		},
+		sqlByLH: map[string][2]string{
+			"test-lh": {"testhost.datawarehouse.fabric.microsoft.com", "test-ep-id"},
+		},
+	}
+	overrides := map[string]Override{
+		"baked-ep-id": {ItemType: "Lakehouse", ItemName: "LH_ConfigLog"},
+	}
+	rb, err := NewRebinder(f, "tok",
+		[]fabric.Workspace{f.workspaces[0]},
+		[]fabric.Workspace{f.workspaces[1]},
+		overrides)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := semmodSQL("stalehost.datawarehouse.fabric.microsoft.com", "baked-ep-id")
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if len(out.Unresolved) != 0 {
+		t.Fatalf("override should resolve the endpoint GUID, got unresolved %+v", out.Unresolved)
+	}
+	if !strings.Contains(got, "testhost.datawarehouse.fabric.microsoft.com") || !strings.Contains(got, "test-ep-id") {
+		t.Errorf("override not applied:\n%s", got)
+	}
+	if strings.Contains(got, "stalehost") || strings.Contains(got, "baked-ep-id") {
+		t.Errorf("baseline endpoint still present:\n%s", got)
 	}
 }

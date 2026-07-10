@@ -158,6 +158,28 @@ func TestMenuNumbersOnlyFirstNineSelectable(t *testing.T) {
 	}
 }
 
+func TestMenuPlainOptions_StillShowsNavHint(t *testing.T) {
+	// Regression test: a plain Label/Value menu (main menu, customer picker,
+	// favourites drill-down, ...) with no Description/Info/Badge on any
+	// option must still show the keybinding legend. It was dropped entirely
+	// when the footer got wrapped in a since-removed "anyRich" gate.
+	m := menuModel{
+		message: "Pick",
+		options: []MenuOption{
+			{Label: "First", Value: "first"},
+			{Label: "Second", Value: "second"},
+		},
+		cursor: 0,
+	}
+	out := m.View()
+	if !strings.Contains(out, "↑/↓ move · enter select · esc back") {
+		t.Errorf("plain menu must show the nav hint, got:\n%s", out)
+	}
+	if strings.Contains(out, "? info") {
+		t.Errorf("plain menu must NOT advertise ? info when no option has Info, got:\n%s", out)
+	}
+}
+
 func TestMenuRendersBadgeAndFooterHint(t *testing.T) {
 	m := menuModel{
 		message: "Action",

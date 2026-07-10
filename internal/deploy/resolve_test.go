@@ -47,9 +47,9 @@ func (f *fakeFabric) BulkImportDefinitions(token, ws string, parts []fabric.Defi
 }
 
 func newResolverFixture() *Resolver {
-	target := fabric.Workspace{ID: "ws-test", DisplayName: "DP - TEST - Config"}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "DW - TEST - Config"}
 	f := &fakeFabric{
-		workspaces: []fabric.Workspace{target, {ID: "ws-data", DisplayName: "DP - TEST - Data"}},
+		workspaces: []fabric.Workspace{target, {ID: "ws-data", DisplayName: "DW - TEST - Data"}},
 		itemsByWS: map[string][]fabric.Item{
 			"ws-test": {{ID: "lh-1", DisplayName: "LH_Config", Type: "Lakehouse"}},
 			"ws-data": {{ID: "lh-2", DisplayName: "LH_Silver", Type: "Lakehouse"}},
@@ -77,7 +77,7 @@ func TestResolveItemId(t *testing.T) {
 
 func TestResolveNamedWorkspaceId(t *testing.T) {
 	r := newResolverFixture()
-	got, err := r.Resolve("$workspace.DP - TEST - Data.$id")
+	got, err := r.Resolve("$workspace.DW - TEST - Data.$id")
 	if err != nil || got != "ws-data" {
 		t.Fatalf("got %q err %v", got, err)
 	}
@@ -105,7 +105,7 @@ func TestResolvePassThrough(t *testing.T) {
 
 func TestResolveCrossWorkspaceItemId(t *testing.T) {
 	r := newResolverFixture()
-	got, err := r.Resolve("$workspace.DP - TEST - Data.$items.Lakehouse.LH_Silver.$id")
+	got, err := r.Resolve("$workspace.DW - TEST - Data.$items.Lakehouse.LH_Silver.$id")
 	if err != nil || got != "lh-2" {
 		t.Fatalf("got %q err %v", got, err)
 	}

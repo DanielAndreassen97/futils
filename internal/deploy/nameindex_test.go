@@ -9,8 +9,8 @@ import (
 func newIndexFixture() *fakeFabric {
 	return &fakeFabric{
 		workspaces: []fabric.Workspace{
-			{ID: "ws-config", DisplayName: "DP - TEST - Config"},
-			{ID: "ws-data", DisplayName: "DP - TEST - Data"},
+			{ID: "ws-config", DisplayName: "DW - TEST - Config"},
+			{ID: "ws-data", DisplayName: "DW - TEST - Data"},
 		},
 		itemsByWS: map[string][]fabric.Item{
 			"ws-config": {{ID: "lh-config", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},

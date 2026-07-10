@@ -131,7 +131,12 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			}
 		case action == editActionFavorites:
 			if err := favoritesForCustomer(configPath, client, customerName, customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
-				return err
+				// Soft-fail: e.g. "no environments configured" when the customer
+				// has none yet. A plain return would eject the user from the
+				// edit-customer menu they'd need to add one from — print and
+				// stay in the loop instead, same as the other in-loop notices
+				// below (repo path, deploy failures, etc.) use warningStyle for.
+				fmt.Println(warningStyle.Render(err.Error()))
 			}
 		}
 	}
@@ -147,9 +152,12 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	// so the pre-print is just the customer title for context.
 	fmt.Printf("\nEditing: %s\n", customerName)
 
-	baselineBadge := ""
-	if customer.BaselineEnvironment == "" {
-		baselineBadge = "MUST SET"
+	// Surface the configured baseline's name right on the row — not just
+	// whether one is set — so the user can confirm which env auto-rebind
+	// treats as the source of truth without pressing ? for the Info box.
+	baselineBadge := "MUST SET"
+	if customer.BaselineEnvironment != "" {
+		baselineBadge = customer.BaselineEnvironment
 	}
 
 	// Grouped under section headers so the menu scans as three concerns:
@@ -265,7 +273,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				Label:       "Add workspace",
 				Value:       envActionAddWS,
 				Description: "Attach a Fabric workspace to this environment.",
-				Info:        "An environment is a named set of Fabric workspaces (e.g. DEV = 'DP - DEV - Config' + 'DP - DEV - SemMod'). Auto-rebind enumerates every workspace here to build the name index it resolves references against, so add all workspaces this env spans — including reference-only ones you don't deploy to directly.",
+				Info:        "An environment is a named set of Fabric workspaces (e.g. DEV = 'DW - DEV - Config' + 'DW - DEV - SemMod'). Auto-rebind enumerates every workspace here to build the name index it resolves references against, so add all workspaces this env spans — including reference-only ones you don't deploy to directly.",
 			},
 			{
 				Label:       "Remove workspace",
@@ -286,7 +294,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				Label:       "Add deployment mapping",
 				Value:       envActionAddDeploy,
 				Description: "Map a repo folder to a target workspace in this environment.",
-				Info:        "A deployment mapping says 'deploy this repo folder to this workspace' for this environment — e.g. FabricBackEnd/ → 'DP - DEV - Config'. You can point a folder at a second git repo, so a customer with separate backend and frontend repos deploys both in one run. A folder that is the whole repo maps as an empty folder.",
+				Info:        "A deployment mapping says 'deploy this repo folder to this workspace' for this environment — e.g. FabricBackEnd/ → 'DW - DEV - Config'. You can point a folder at a second git repo, so a customer with separate backend and frontend repos deploys both in one run. A folder that is the whole repo maps as an empty folder.",
 			},
 			{
 				Label:       "Remove deployment mapping",

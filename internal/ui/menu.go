@@ -194,46 +194,37 @@ func (m menuModel) View() string {
 		cur = m.options[m.cursor]
 	}
 
-	// The help footer only renders for menus that actually use the inline-help
-	// fields — a plain Label/Value menu (every legacy call site) is left exactly
-	// as before, with no footer. Within a help-carrying menu: the nav hint, a
-	// "? info" advertisement when the highlighted option has fuller Info, the
-	// cursor option's one-line Description, and (on ?) the Info box.
-	anyRich := false
-	for _, o := range m.options {
-		if o.Description != "" || o.Info != "" || o.Badge != "" {
-			anyRich = true
-			break
-		}
+	// The nav hint renders for every menu, plain or rich. The "? info"
+	// advertisement, the cursor option's one-line Description, and (on ?)
+	// the Info box are the rich extras — they render on their own whenever
+	// the highlighted option happens to carry that field, so no separate
+	// gate is needed to keep plain Label/Value menus free of empty output.
+	hint := "↑/↓ move · enter select · esc back"
+	if cur.Info != "" {
+		hint += " · ? info"
 	}
-	if anyRich {
-		hint := "↑/↓ move · enter select · esc back"
-		if cur.Info != "" {
-			hint += " · ? info"
-		}
-		b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
+	b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
 
-		if cur.Description != "" {
-			// Wrap the description to the terminal width instead of running off the
-			// edge; PaddingLeft keeps the 2-space indent on wrapped lines. Width is
-			// the content area (subtract the 2-space indent). Unknown/tiny width → no wrap.
-			desc := menuDescStyle.PaddingLeft(2)
-			if m.width > 4 {
-				desc = desc.Width(m.width - 2)
-			}
-			b.WriteString(desc.Render(cur.Description) + "\n")
+	if cur.Description != "" {
+		// Wrap the description to the terminal width instead of running off the
+		// edge; PaddingLeft keeps the 2-space indent on wrapped lines. Width is
+		// the content area (subtract the 2-space indent). Unknown/tiny width → no wrap.
+		desc := menuDescStyle.PaddingLeft(2)
+		if m.width > 4 {
+			desc = desc.Width(m.width - 2)
 		}
+		b.WriteString(desc.Render(cur.Description) + "\n")
+	}
 
-		if m.showInfo && cur.Info != "" {
-			// Wrap the info text to the terminal width. Width() is the content area;
-			// the box's border (2) + horizontal padding (2) sit outside it, so
-			// subtract 4. Guard a not-yet-known/too-narrow terminal (→ no wrap).
-			box := menuInfoBoxStyle
-			if m.width > 6 {
-				box = box.Width(m.width - 4)
-			}
-			b.WriteString("\n" + box.Render(cur.Info) + "\n")
+	if m.showInfo && cur.Info != "" {
+		// Wrap the info text to the terminal width. Width() is the content area;
+		// the box's border (2) + horizontal padding (2) sit outside it, so
+		// subtract 4. Guard a not-yet-known/too-narrow terminal (→ no wrap).
+		box := menuInfoBoxStyle
+		if m.width > 6 {
+			box = box.Width(m.width - 4)
 		}
+		b.WriteString("\n" + box.Render(cur.Info) + "\n")
 	}
 
 	return b.String()
