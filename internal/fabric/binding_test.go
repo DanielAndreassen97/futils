@@ -13,7 +13,7 @@ const brokenBindingIpynb = `{
   "metadata": {
     "dependencies": {
       "lakehouse": {
-        "default_lakehouse": "18fbaeb6-b04f-429b-880a-5c97deb912bd",
+        "default_lakehouse": "eeeeeeee-1111-2222-3333-444444444444",
         "default_lakehouse_name": "",
         "default_lakehouse_workspace_id": ""
       }
@@ -26,9 +26,9 @@ const completeBindingIpynb = `{
   "metadata": {
     "dependencies": {
       "lakehouse": {
-        "default_lakehouse": "18fbaeb6-b04f-429b-880a-5c97deb912bd",
+        "default_lakehouse": "eeeeeeee-1111-2222-3333-444444444444",
         "default_lakehouse_name": "LH_ConfigLog",
-        "default_lakehouse_workspace_id": "8ce92b5f-826e-4602-b7f4-43dfa9098ec0"
+        "default_lakehouse_workspace_id": "dddddddd-1111-2222-3333-444444444444"
       }
     }
   },
@@ -40,7 +40,7 @@ func TestParseLakehouseBinding_Broken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if b.LakehouseID != "18fbaeb6-b04f-429b-880a-5c97deb912bd" {
+	if b.LakehouseID != "eeeeeeee-1111-2222-3333-444444444444" {
 		t.Errorf("LakehouseID = %q", b.LakehouseID)
 	}
 	if b.WorkspaceID != "" {
@@ -87,7 +87,7 @@ func TestParseLakehouseBinding_MalformedJSON(t *testing.T) {
 }
 
 func TestBuildRunBody_WithLakehouseOverride(t *testing.T) {
-	lh := &DefaultLakehouse{Name: "LH_ConfigLog", ID: "18fbaeb6", WorkspaceID: "8ce92b5f"}
+	lh := &DefaultLakehouse{Name: "LH_ConfigLog", ID: "eeeeeeee", WorkspaceID: "dddddddd"}
 	raw, err := buildRunBody([]JobInput{{Name: "rewrite_table", Value: true, Type: TypeBool}}, lh)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -109,7 +109,7 @@ func TestBuildRunBody_WithLakehouseOverride(t *testing.T) {
 	if dl == nil {
 		t.Fatalf("defaultLakehouse missing from payload: %s", raw)
 	}
-	if dl.ID != "18fbaeb6" || dl.WorkspaceID != "8ce92b5f" || dl.Name != "LH_ConfigLog" {
+	if dl.ID != "eeeeeeee" || dl.WorkspaceID != "dddddddd" || dl.Name != "LH_ConfigLog" {
 		t.Errorf("defaultLakehouse = %#v", dl)
 	}
 	if _, ok := got.ExecutionData.Parameters["rewrite_table"]; !ok {

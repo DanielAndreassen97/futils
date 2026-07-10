@@ -13,7 +13,7 @@ const (
 	devConfigLH = "11111111-1111-1111-1111-111111111111"
 	devConfigWS = "22222222-2222-2222-2222-222222222222"
 	devSilverLH = "33333333-3333-3333-3333-333333333333"
-	devHRModel  = "12995bce-ace2-401b-a5fb-6b8dd6a45ead"
+	devHRModel  = "ffff1111-2222-3333-4444-555566667777"
 )
 
 func rebindNotebook(defaultLH, defaultWS, defaultName, knownID string) []byte {
@@ -42,12 +42,12 @@ func newRebindFixture(t *testing.T, overrides map[string]Override) *Rebinder {
 	t.Helper()
 	f := &fakeFabric{
 		workspaces: []fabric.Workspace{
-			{ID: "dev-config", DisplayName: "DP - DEV - Config"},
-			{ID: "dev-data", DisplayName: "DP - DEV - Data"},
-			{ID: "dev-semmod", DisplayName: "DP - DEV - SemMod"},
-			{ID: "test-config", DisplayName: "DP - TEST - Config"},
-			{ID: "test-data", DisplayName: "DP - TEST - Data"},
-			{ID: "test-semmod", DisplayName: "DP - TEST - SemMod"},
+			{ID: "dev-config", DisplayName: "DW - DEV - Config"},
+			{ID: "dev-data", DisplayName: "DW - DEV - Data"},
+			{ID: "dev-semmod", DisplayName: "DW - DEV - SemMod"},
+			{ID: "test-config", DisplayName: "DW - TEST - Config"},
+			{ID: "test-data", DisplayName: "DW - TEST - Data"},
+			{ID: "test-semmod", DisplayName: "DW - TEST - SemMod"},
 		},
 		itemsByWS: map[string][]fabric.Item{
 			"dev-config":  {{ID: devConfigLH, DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
@@ -226,7 +226,7 @@ func TestRebindNotebookChangesCarryNames(t *testing.T) {
 		if c.Kind == "Lakehouse" && c.Old == devConfigLH && c.Name == "LH_ConfigLog" {
 			lhNamed = true
 		}
-		if c.Kind == "Workspace" && c.Name == "DP - TEST - Config" {
+		if c.Kind == "Workspace" && c.Name == "DW - TEST - Config" {
 			wsNamed = true
 		}
 	}
@@ -234,7 +234,7 @@ func TestRebindNotebookChangesCarryNames(t *testing.T) {
 		t.Errorf("Lakehouse change missing Name %q: %#v", "LH_ConfigLog", outcome.Changes)
 	}
 	if !wsNamed {
-		t.Errorf("Workspace change missing Name %q: %#v", "DP - TEST - Config", outcome.Changes)
+		t.Errorf("Workspace change missing Name %q: %#v", "DW - TEST - Config", outcome.Changes)
 	}
 }
 
@@ -325,7 +325,7 @@ func pbirSchema(t *testing.T, content []byte) string {
 func TestRebindReportConnectionFlatResolves(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
-	out, outcome := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+	out, outcome := rb.RebindReportConnection(item, flatPBIR("DW - DEV - SemMod", "HR", devHRModel))
 
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Errorf("bound model GUID = %q, want test-hr-model", got)
@@ -334,7 +334,7 @@ func TestRebindReportConnectionFlatResolves(t *testing.T) {
 		t.Fatalf("want 1 ReportBinding, got %d", len(outcome.ReportBindings))
 	}
 	b := outcome.ReportBindings[0]
-	if b.Report != "Daniel - Testing" || b.Model != "HR" || b.Workspace != "DP - TEST - SemMod" {
+	if b.Report != "Daniel - Testing" || b.Model != "HR" || b.Workspace != "DW - TEST - SemMod" {
 		t.Errorf("ReportBinding = %+v", b)
 	}
 	// Report rebinds must not appear in the generic rebind summary.
@@ -369,7 +369,7 @@ func TestRebindReportConnectionOverrideWins(t *testing.T) {
 		"99999999-9999-9999-9999-999999999999": {ItemType: "SemanticModel", ItemName: "HR"},
 	})
 	item := LocalItem{Type: "Report", DisplayName: "R"}
-	out, _ := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "Unknown", "99999999-9999-9999-9999-999999999999"))
+	out, _ := rb.RebindReportConnection(item, flatPBIR("DW - DEV - SemMod", "Unknown", "99999999-9999-9999-9999-999999999999"))
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Errorf("override should resolve to HR target GUID, got %q", got)
 	}
@@ -380,7 +380,7 @@ func TestRebindReportConnectionUnresolved(t *testing.T) {
 	item := LocalItem{Type: "Report", DisplayName: "R"}
 	// GUID not in baseline, catalog name not in target → not-in-target unresolved.
 	unknownGUID := "77777777-0000-0000-0000-000000000000"
-	in := flatPBIR("DP - DEV - SemMod", "NoSuchModel", unknownGUID)
+	in := flatPBIR("DW - DEV - SemMod", "NoSuchModel", unknownGUID)
 	out, outcome := rb.RebindReportConnection(item, in)
 	if string(out) != string(in) {
 		t.Errorf("unresolved binding must leave content unchanged")
@@ -427,7 +427,7 @@ func TestRebindReportConnectionByPathUntouched(t *testing.T) {
 func TestRebindPartDispatchesReport(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
-	out, outcome := rb.RebindPart(item, "definition.pbir", flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+	out, outcome := rb.RebindPart(item, "definition.pbir", flatPBIR("DW - DEV - SemMod", "HR", devHRModel))
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Errorf("RebindPart did not rebind report binding, model GUID = %q", got)
 	}
@@ -450,7 +450,7 @@ func TestRebindReportConnectionStaleCatalogUsesGUID(t *testing.T) {
 	// Connection string carries a STALE catalog name but the correct baseline GUID.
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "R"}
-	out, outcome := rb.RebindReportConnection(item, flatPBIR("DP - DEV - SemMod", "OldNameBeforeRename", devHRModel))
+	out, outcome := rb.RebindReportConnection(item, flatPBIR("DW - DEV - SemMod", "OldNameBeforeRename", devHRModel))
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Errorf("should resolve via semanticmodelid baseline GUID despite stale catalog, got %q", got)
 	}
@@ -464,7 +464,7 @@ func TestRebindReportConnectionNoRebindChange(t *testing.T) {
 	// only in out.ReportBindings.
 	rb := newRebindFixture(t, nil)
 	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"},
-		flatPBIR("DP - DEV - SemMod", "HR", devHRModel))
+		flatPBIR("DW - DEV - SemMod", "HR", devHRModel))
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Fatalf("expected rebind to target, got %q", got)
 	}
@@ -479,7 +479,7 @@ func TestRebindReportConnectionNoRebindChange(t *testing.T) {
 func TestRebindReportConnectionCatalogGUIDNoBaselineMiss(t *testing.T) {
 	// Flat shape, no semanticmodelid, catalog is a GUID NOT in the baseline index.
 	rb := newRebindFixture(t, nil)
-	in := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DP - DEV - SemMod\";initial catalog=aaaaaaaa-0000-0000-0000-000000000000"}}}`)
+	in := []byte(`{"datasetReference":{"byConnection":{"connectionString":"Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DW - DEV - SemMod\";initial catalog=aaaaaaaa-0000-0000-0000-000000000000"}}}`)
 	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"}, in)
 	if string(out) != string(in) {
 		t.Errorf("unresolvable catalog-GUID must leave content unchanged")

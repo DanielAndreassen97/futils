@@ -48,16 +48,16 @@ func TestApplyRefActionIgnore(t *testing.T) {
 
 func TestApplyRefActionRegister(t *testing.T) {
 	c := config.Customer{Environments: []config.Environment{
-		{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}},
+		{Alias: "TEST", Workspaces: []string{"DW - TEST - Config"}},
 	}}
 	ref := deploy.UnresolvedRef{GUID: "dev-guid"}
-	out := applyRefAction(c, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	out := applyRefAction(c, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DW - TEST - Data"})
 	ws := out.Environments[0].Workspaces
-	if len(ws) != 2 || ws[1] != "DP - TEST - Data" {
+	if len(ws) != 2 || ws[1] != "DW - TEST - Data" {
 		t.Fatalf("register didn't add workspace: %#v", ws)
 	}
 	// Idempotent: registering the same workspace twice doesn't duplicate.
-	out = applyRefAction(out, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
+	out = applyRefAction(out, ref, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DW - TEST - Data"})
 	if len(out.Environments[0].Workspaces) != 2 {
 		t.Errorf("register not idempotent: %#v", out.Environments[0].Workspaces)
 	}
@@ -97,10 +97,10 @@ func TestApplyRefActionSkipNoChange(t *testing.T) {
 
 func TestApplyRefActionRegisterDoesNotMutateInput(t *testing.T) {
 	ws := make([]string, 1, 4) // spare capacity → append would mutate in place if aliased
-	ws[0] = "DP - TEST - Config"
+	ws[0] = "DW - TEST - Config"
 	c := config.Customer{Environments: []config.Environment{{Alias: "TEST", Workspaces: ws}}}
-	_ = applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DP - TEST - Data"})
-	if len(c.Environments[0].Workspaces) != 1 || c.Environments[0].Workspaces[0] != "DP - TEST - Config" {
+	_ = applyRefAction(c, deploy.UnresolvedRef{GUID: "g"}, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: "DW - TEST - Data"})
+	if len(c.Environments[0].Workspaces) != 1 || c.Environments[0].Workspaces[0] != "DW - TEST - Config" {
 		t.Errorf("applyRefAction register mutated the caller's customer: %#v", c.Environments[0].Workspaces)
 	}
 }

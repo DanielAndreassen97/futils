@@ -11,7 +11,7 @@ import (
 
 func TestBuildRebinderDisabledWithoutBaseline(t *testing.T) {
 	customer := config.Customer{
-		Environments: []config.Environment{{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}}},
+		Environments: []config.Environment{{Alias: "TEST", Workspaces: []string{"DW - TEST - Config"}}},
 	}
 	rb, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "TEST", nil)
 	if err != nil {
@@ -26,13 +26,13 @@ func TestBuildRebinderResolvesEnvWorkspaces(t *testing.T) {
 	customer := config.Customer{
 		BaselineEnvironment: "DEV",
 		Environments: []config.Environment{
-			{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}},
-			{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}},
+			{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}},
+			{Alias: "TEST", Workspaces: []string{"DW - TEST - Config"}},
 		},
 	}
 	workspaces := []fabric.Workspace{
-		{ID: "dev-config", DisplayName: "DP - DEV - Config"},
-		{ID: "test-config", DisplayName: "DP - TEST - Config"},
+		{ID: "dev-config", DisplayName: "DW - DEV - Config"},
+		{ID: "test-config", DisplayName: "DW - TEST - Config"},
 	}
 	api := &deployFakeAPI{items: map[string][]fabric.Item{
 		"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
@@ -64,7 +64,7 @@ func TestBuildRebinderResolvesEnvWorkspaces(t *testing.T) {
 func TestBuildRebinderUnknownBaselineEnvErrors(t *testing.T) {
 	customer := config.Customer{
 		BaselineEnvironment: "GHOST",
-		Environments:        []config.Environment{{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}}},
+		Environments:        []config.Environment{{Alias: "TEST", Workspaces: []string{"DW - TEST - Config"}}},
 	}
 	if _, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "TEST", nil); err == nil {
 		t.Error("expected error when BaselineEnvironment names no known environment")
@@ -75,7 +75,7 @@ func TestBuildRebinderUnknownTargetEnvErrors(t *testing.T) {
 	customer := config.Customer{
 		BaselineEnvironment: "DEV",
 		Environments: []config.Environment{
-			{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}},
+			{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}},
 		},
 	}
 	if _, err := buildRebinder(&deployFakeAPI{}, "tok", customer, "GHOST", nil); err == nil {
@@ -86,10 +86,10 @@ func TestBuildRebinderUnknownTargetEnvErrors(t *testing.T) {
 func TestBuildRebinderWithSubstitutionsNoBaseline(t *testing.T) {
 	customer := config.Customer{
 		// No BaselineEnvironment, but a substitution is defined.
-		Environments:  []config.Environment{{Alias: "TEST", Workspaces: []string{"DP - TEST - Config"}}},
+		Environments:  []config.Environment{{Alias: "TEST", Workspaces: []string{"DW - TEST - Config"}}},
 		Substitutions: []config.Substitution{{FindValue: "x", Literal: "y"}},
 	}
-	workspaces := []fabric.Workspace{{ID: "test-config", DisplayName: "DP - TEST - Config"}}
+	workspaces := []fabric.Workspace{{ID: "test-config", DisplayName: "DW - TEST - Config"}}
 	api := &deployFakeAPI{items: map[string][]fabric.Item{"test-config": {}}}
 	rb, err := buildRebinder(api, "tok", customer, "TEST", workspaces)
 	if err != nil {

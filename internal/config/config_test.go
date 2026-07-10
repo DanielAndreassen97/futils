@@ -309,10 +309,10 @@ func TestDeploymentsRoundTrip(t *testing.T) {
 	in := Config{Customers: map[string]Customer{
 		"acme": {Environments: []Environment{{
 			Alias:      "DEV",
-			Workspaces: []string{"DP - DEV - Config", "DP - DEV - SemMod"},
+			Workspaces: []string{"DW - DEV - Config", "DW - DEV - SemMod"},
 			Deployments: []DeployMapping{
-				{Folder: "Backend", Workspace: "DP - DEV - Config"},
-				{Folder: "Frontend", Workspace: "DP - DEV - SemMod"},
+				{Folder: "Backend", Workspace: "DW - DEV - Config"},
+				{Folder: "Frontend", Workspace: "DW - DEV - SemMod"},
 			},
 		}}},
 	}}
@@ -327,7 +327,7 @@ func TestDeploymentsRoundTrip(t *testing.T) {
 	if !ok || len(maps) != 2 {
 		t.Fatalf("DeployMappings = %v ok=%v", maps, ok)
 	}
-	if maps[0].Folder != "Backend" || maps[0].Workspace != "DP - DEV - Config" {
+	if maps[0].Folder != "Backend" || maps[0].Workspace != "DW - DEV - Config" {
 		t.Errorf("maps[0] = %+v", maps[0])
 	}
 }
@@ -381,10 +381,10 @@ func TestReferenceOverridesRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	in := Config{Customers: map[string]Customer{
 		"acme": {
-			Environments:        []Environment{{Alias: "DEV", Workspaces: []string{"DP - DEV - Config"}}},
+			Environments:        []Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}}},
 			BaselineEnvironment: "DEV",
 			ReferenceOverrides: []ReferenceOverride{
-				{SourceGUID: "09bc360d-1111-2222-3333-444455556666", ItemType: "Lakehouse", ItemName: "LH_Silver", Note: "cross-workspace"},
+				{SourceGUID: "0b0b0b0b-1111-2222-3333-444455556666", ItemType: "Lakehouse", ItemName: "LH_Silver", Note: "cross-workspace"},
 			},
 		},
 	}}
@@ -402,7 +402,7 @@ func TestReferenceOverridesRoundTrip(t *testing.T) {
 	if len(c.ReferenceOverrides) != 1 || c.ReferenceOverrides[0].ItemName != "LH_Silver" {
 		t.Fatalf("ReferenceOverrides = %#v", c.ReferenceOverrides)
 	}
-	if c.ReferenceOverrides[0].SourceGUID != "09bc360d-1111-2222-3333-444455556666" {
+	if c.ReferenceOverrides[0].SourceGUID != "0b0b0b0b-1111-2222-3333-444455556666" {
 		t.Errorf("SourceGUID = %q", c.ReferenceOverrides[0].SourceGUID)
 	}
 }
@@ -449,14 +449,14 @@ func TestReferenceOverridesAbsentLegacyConfig(t *testing.T) {
 func TestAllWorkspacesUnionsAndDedupes(t *testing.T) {
 	e := Environment{
 		Alias:      "DEV",
-		Workspaces: []string{"DP - DEV - Config", "DP - DEV - Data"},
+		Workspaces: []string{"DW - DEV - Config", "DW - DEV - Data"},
 		Deployments: []DeployMapping{
-			{Folder: "Backend", Workspace: "DP - DEV - Config"},  // dup of a Workspaces entry
-			{Folder: "Frontend", Workspace: "DP - DEV - SemMod"}, // new
+			{Folder: "Backend", Workspace: "DW - DEV - Config"},  // dup of a Workspaces entry
+			{Folder: "Frontend", Workspace: "DW - DEV - SemMod"}, // new
 		},
 	}
 	got := e.AllWorkspaces()
-	want := []string{"DP - DEV - Config", "DP - DEV - Data", "DP - DEV - SemMod"}
+	want := []string{"DW - DEV - Config", "DW - DEV - Data", "DW - DEV - SemMod"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AllWorkspaces() = %#v, want %#v", got, want)
 	}

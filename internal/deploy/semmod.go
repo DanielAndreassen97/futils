@@ -41,26 +41,39 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 }
 
 // rebindSQLSources rewrites every Direct Lake on SQL data-source expression in
-// s: it looks up the baked endpoint id in the baseline name index (the baked
-// GUID equals its parent lakehouse's sqlEndpointProperties.id, so it is
-// indexed alongside every other item type — including SQLEndpoint items that
-// aren't Lakehouses themselves), resolves the same-named target lakehouse,
-// fetches that lakehouse's target endpoint, and replaces both host and id.
-// Unresolvable endpoints are left unchanged and surfaced. Returns the
-// rewritten string.
+// s: it resolves the baked endpoint id (the baked GUID equals its parent
+// lakehouse's sqlEndpointProperties.id, so it is indexed alongside every other
+// item type — including SQLEndpoint items that aren't Lakehouses themselves)
+// through resolveGUIDReason with target type "Lakehouse" — that consults
+// rb.overrides FIRST, exactly like every other rebind pass, so a customer can
+// register an override for a SQL-endpoint GUID that the baseline index can't
+// otherwise place — fetches the resolved lakehouse's target endpoint, and
+// replaces both host and id.
+//
+// Like rebindOneLakeSources, each match is rewritten by byte SPAN, not by a
+// global ReplaceAll of the extracted host/id values: two Sql.Database(...)
+// expressions can share one baseline HOST but resolve to two different target
+// hosts (their ids differ, so their spans differ too), and a global replace of
+// the shared old host would funnel both into whichever target resolved first.
+// Rewriting per-match span means only that expression's own host/id substrings
+// are touched; an unresolved expression's span is copied through untouched
+// even if it happens to share a host with a resolved one.
 func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
-	seen := map[string]bool{}
-	sqlStart := len(out.Changes)
-	for _, m := range sqlDbRe.FindAllStringSubmatch(s, -1) {
-		host, id := m[1], m[2]
-		base, ok := rb.baseline.ItemByGUID(id)
+	locs := sqlDbRe.FindAllStringSubmatchIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	seenChange := map[string]bool{}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		hostStart, hostEnd := loc[2], loc[3]
+		idStart, idEnd := loc[4], loc[5]
+		host, id := s[hostStart:hostEnd], s[idStart:idEnd]
+
+		tgt, ok, reason := rb.resolveGUIDReason(id, "Lakehouse")
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNameUnknown})
-			continue
-		}
-		tgt, st := rb.target.LookupName(base.Name, "Lakehouse")
-		if st != LookupFound {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reasonForStatus(st)})
+			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reason})
 			continue
 		}
 		newHost, newID, ok := rb.targetEndpointFor(tgt)
@@ -68,14 +81,18 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNotInTarget})
 			continue
 		}
-		addChange(out, seen, "SQL endpoint", tgt.Name, host, newHost)
-		addChange(out, seen, "SQL endpoint", tgt.Name, id, newID)
+
+		b.WriteString(s[last:hostStart])
+		b.WriteString(newHost)
+		b.WriteString(s[hostEnd:idStart])
+		b.WriteString(newID)
+		last = idEnd
+
+		recordChangePair(out, seenChange, "SQL endpoint", tgt.Name, host, newHost)
+		recordChangePair(out, seenChange, "SQL endpoint", tgt.Name, id, newID)
 	}
-	// Apply only THIS pass's changes: the OneLake pass rewrites per-URL, so its
-	// recorded (display) changes must not be re-applied globally here — a
-	// baseline workspace GUID can map to different targets per lakehouse, and a
-	// global replace would also corrupt URLs left intact as unresolved.
-	return applyChanges(s, out.Changes[sqlStart:])
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // RebindSemanticModel rewrites a Direct Lake semantic model part's data-source
@@ -104,21 +121,13 @@ func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 	seenURL := map[string]bool{}
 	seenChange := map[string]bool{}
 	rewrites := map[string]string{} // full matched URL -> rewritten URL
-	record := func(kind, name, oldV, newV string) {
-		key := oldV + "\x00" + newV
-		if oldV == "" || oldV == newV || seenChange[key] {
-			return
-		}
-		seenChange[key] = true
-		out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
-	}
 	for _, m := range onelakeRe.FindAllStringSubmatch(s, -1) {
 		full, wsGUID, lhGUID := m[0], m[1], m[2]
 		if seenURL[full] {
 			continue
 		}
 		seenURL[full] = true
-		it, ok, reason := rb.resolveGUIDReason(lhGUID)
+		it, ok, reason := rb.resolveGUIDReason(lhGUID, "")
 		if !ok {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
 			continue
@@ -130,9 +139,9 @@ func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 		if newURL := "onelake.dfs.fabric.microsoft.com/" + newWS + "/" + it.GUID; newURL != full {
 			rewrites[full] = newURL
 		}
-		record("Lakehouse", it.Name, lhGUID, it.GUID)
+		recordChangePair(out, seenChange, "Lakehouse", it.Name, lhGUID, it.GUID)
 		if it.WorkspaceID != "" {
-			record("Workspace", rb.workspaceName(it.WorkspaceID), wsGUID, it.WorkspaceID)
+			recordChangePair(out, seenChange, "Workspace", rb.workspaceName(it.WorkspaceID), wsGUID, it.WorkspaceID)
 		}
 	}
 	for oldURL, newURL := range rewrites {

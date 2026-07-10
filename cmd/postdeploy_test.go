@@ -11,7 +11,7 @@ import (
 )
 
 func TestPostDeployCandidates(t *testing.T) {
-	wsNames := map[string]string{"ws-1": "DP - TEST - Config", "ws-2": "DP - TEST - Data"}
+	wsNames := map[string]string{"ws-1": "DW - TEST - Config", "ws-2": "DW - TEST - Data"}
 	results := []deploy.Result{
 		{Name: "NB_B", Type: "Notebook", Action: deploy.ActionUpdate, ID: "id-b", WorkspaceID: "ws-1"},
 		{Name: "NB_A", Type: "Notebook", Action: deploy.ActionCreate, ID: "id-a", WorkspaceID: "ws-1"},
@@ -25,8 +25,8 @@ func TestPostDeployCandidates(t *testing.T) {
 
 	got := postDeployCandidates(registered, results, wsNames)
 	want := []postDeployRun{
-		{Name: "NB_A", ItemID: "id-a", WorkspaceID: "ws-1", WorkspaceName: "DP - TEST - Config"},
-		{Name: "NB_B", ItemID: "id-b", WorkspaceID: "ws-1", WorkspaceName: "DP - TEST - Config"},
+		{Name: "NB_A", ItemID: "id-a", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
+		{Name: "NB_B", ItemID: "id-b", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %+v, want %+v", got, want)

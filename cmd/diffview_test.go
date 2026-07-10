@@ -62,7 +62,7 @@ func TestUnifiedLineDiffAddedAndRemoved(t *testing.T) {
 
 func TestRenderDeployDiffHTMLEscapesAndIncludesItems(t *testing.T) {
 	groups := []deployGroup{{
-		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
 		Diffs: []ItemDiff{{
 			Name: "NB_Config", Type: "Notebook",
 			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "lh = \"DEV\"\n<script>", New: "lh = \"TEST\"\n<script>"}},
@@ -347,7 +347,7 @@ func TestCappedLineDiffNormalInputStillDiffs(t *testing.T) {
 
 func TestRenderDeployReportIncludesResults(t *testing.T) {
 	groups := []deployGroup{{
-		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
 		Diffs: []ItemDiff{{
 			Name: "NB_Config", Type: "Notebook",
 			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "a", New: "b"}},

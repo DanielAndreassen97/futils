@@ -100,7 +100,7 @@ func (f *deployFakeAPI) BulkImportDefinitions(token, ws string, parts []fabric.D
 
 // APIClient stubs not exercised by deploy tests — present so deployFakeAPI can
 // be handed to buildDeployGroups, which takes the full APIClient.
-func (f *deployFakeAPI) GetAccessToken(string) (string, error)          { return "tok", nil }
+func (f *deployFakeAPI) GetAccessToken(string) (string, error)         { return "tok", nil }
 func (f *deployFakeAPI) GetWorkspaceID(_, name string) (string, error) { return name, nil }
 func (f *deployFakeAPI) ListNotebooks(_, ws string) ([]fabric.Item, error) {
 	return f.ListItemsByType("", ws, "Notebook")
@@ -844,13 +844,13 @@ func TestTerminalLinkWrapsOSC8(t *testing.T) {
 func TestPrintUnresolvedListsRefs(t *testing.T) {
 	groups := []deployGroup{{
 		Folder: "Backend",
-		Target: fabric.Workspace{DisplayName: "DP - TEST - Config"},
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
 		Unresolved: []deploy.UnresolvedRef{
-			{GUID: "09bc360d-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
+			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
 		},
 	}}
 	out := captureStdout(t, func() { printUnresolved(groups) })
-	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, "09bc360d") {
+	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, "0b0b0b0b") {
 		t.Errorf("unresolved output missing context:\n%s", out)
 	}
 	if !strings.Contains(out, "Lakehouse") {
@@ -1263,13 +1263,13 @@ func TestRunDeployBulkBackendCallsBulkImport(t *testing.T) {
 func TestPrintReportBindingsRendersResolved(t *testing.T) {
 	groups := []deployGroup{{
 		ReportBindings: []deploy.ReportBinding{
-			{Report: "Daniel - Testing", Model: "HR", Workspace: "DP - TEST - SemMod"},
+			{Report: "Daniel - Testing", Model: "HR", Workspace: "DW - TEST - SemMod"},
 		},
 	}}
 	out := captureStdout(t, func() { printReportBindings(groups) })
 	if !strings.Contains(out, "Daniel - Testing") ||
 		!strings.Contains(out, "HR") ||
-		!strings.Contains(out, "DP - TEST - SemMod") {
+		!strings.Contains(out, "DW - TEST - SemMod") {
 		t.Errorf("report binding line missing detail:\n%s", out)
 	}
 }
@@ -1329,7 +1329,7 @@ func TestBuildDeployGroupsPerRepo(t *testing.T) {
 		RepoPath: "/repos/backend",
 		Environments: []config.Environment{{Alias: "DEV",
 			Deployments: []config.DeployMapping{
-				{Folder: "", Workspace: "WS-Back"},                          // primary → backend
+				{Folder: "", Workspace: "WS-Back"},                           // primary → backend
 				{Folder: "", Workspace: "WS-Front", Repo: "/repos/frontend"}, // frontend
 			}}},
 	}

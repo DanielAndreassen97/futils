@@ -152,9 +152,14 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 
 // resolveGUIDReason translates one baseline GUID to its target item, returning a
 // Reason when it can't. Override (highest precedence) resolves its name in the
-// target; otherwise the baseline index supplies the name and the target index
-// supplies the GUID.
-func (rb *Rebinder) resolveGUIDReason(guid string) (IndexedItem, bool, string) {
+// target using ov.ItemType exactly, regardless of targetType; otherwise the
+// baseline index supplies the name and the target index supplies the GUID.
+// targetType, when non-empty, overrides base.Type for the forward lookup —
+// needed by the SQL pass, whose baked GUID is often indexed as a SQLEndpoint
+// item but must resolve to the same-named target LAKEHOUSE (targetEndpointFor
+// needs the lakehouse GUID, not a SQLEndpoint item). Pass "" to use base.Type
+// as before.
+func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, bool, string) {
 	if ov, ok := rb.overrides[guid]; ok {
 		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
 		return it, st == LookupFound, reasonForStatus(st)
@@ -163,7 +168,11 @@ func (rb *Rebinder) resolveGUIDReason(guid string) (IndexedItem, bool, string) {
 	if !ok {
 		return IndexedItem{}, false, ReasonNameUnknown
 	}
-	it, st := rb.target.LookupName(base.Name, base.Type)
+	typ := base.Type
+	if targetType != "" {
+		typ = targetType
+	}
+	it, st := rb.target.LookupName(base.Name, typ)
 	return it, st == LookupFound, reasonForStatus(st)
 }
 
@@ -175,6 +184,24 @@ func addChange(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV 
 		return
 	}
 	seen[oldV] = true
+	out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
+}
+
+// recordChangePair appends a RebindChange to out, deduplicated by the (old,new)
+// PAIR via seen — unlike addChange, which dedups by old alone. Needed wherever a
+// single old value can legitimately resolve to two different new values within
+// one pass (e.g. two SQL/OneLake sources sharing a baseline host or workspace
+// GUID that resolve to different targets): deduping by old alone would silently
+// drop the second, distinct rewrite from the display.
+func recordChangePair(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV string) {
+	if oldV == "" || oldV == newV {
+		return
+	}
+	key := oldV + "\x00" + newV
+	if seen[key] {
+		return
+	}
+	seen[key] = true
 	out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
 }
 
@@ -229,7 +256,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 			resolved = st == LookupFound
 			reason = reasonForStatus(st)
 		} else {
-			it, resolved, reason = rb.resolveGUIDReason(lh.DefaultLakehouse)
+			it, resolved, reason = rb.resolveGUIDReason(lh.DefaultLakehouse, "")
 		}
 		if resolved {
 			addChange(&out, seen, "Lakehouse", it.Name, lh.DefaultLakehouse, it.GUID)
@@ -244,7 +271,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		if k.ID == "" || seen[k.ID] {
 			continue
 		}
-		if it, ok, reason := rb.resolveGUIDReason(k.ID); ok {
+		if it, ok, reason := rb.resolveGUIDReason(k.ID, ""); ok {
 			addChange(&out, seen, "Lakehouse", it.Name, k.ID, it.GUID)
 		} else {
 			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses", Reason: reason})

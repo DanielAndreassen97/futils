@@ -18,8 +18,8 @@ func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 	t.Helper()
 	f := &fakeFabric{
 		workspaces: []fabric.Workspace{
-			{ID: "dev-data", DisplayName: "DP - DEV - Data"},
-			{ID: "test-data", DisplayName: "DP - TEST - Data"},
+			{ID: "dev-data", DisplayName: "DW - DEV - Data"},
+			{ID: "test-data", DisplayName: "DW - TEST - Data"},
 		},
 		itemsByWS: map[string][]fabric.Item{
 			// dev-ep is the baked SQL-endpoint item (indexed by name, resolved via
@@ -40,7 +40,7 @@ func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 	if err != nil {
 		t.Fatalf("NewRebinder: %v", err)
 	}
-	target := fabric.Workspace{ID: "test-data", DisplayName: "DP - TEST - Data"}
+	target := fabric.Workspace{ID: "test-data", DisplayName: "DW - TEST - Data"}
 	resolver := NewResolver(f, "tok", target)
 	return resolver, rb
 }
