@@ -8,6 +8,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -157,11 +158,17 @@ func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]
 	return all, nil
 }
 
-// folderLabel renders a deploy-mapping folder for display. An empty folder is
-// a valid mapping meaning "the whole repo", so show it as such instead of a
-// bare "/".
-func folderLabel(folder string) string {
-	if folder == "" {
+// mappingLabel renders a deploy mapping's source side for display. An empty
+// folder is a valid mapping meaning "the whole repo". Mappings living in a
+// secondary repo are prefixed with that repo's folder name so two repos'
+// mappings stay distinguishable in the same list.
+func mappingLabel(folder, repo string) string {
+	switch {
+	case repo != "" && folder == "":
+		return filepath.Base(repo)
+	case repo != "":
+		return filepath.Base(repo) + "/" + folder + "/"
+	case folder == "":
 		return "(repo root)"
 	}
 	return folder + "/"

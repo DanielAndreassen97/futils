@@ -1334,7 +1334,7 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 	}
 	opts := []ui.MenuOption{{Label: fmt.Sprintf("All (%d mappings)", len(mappings)), Value: "__all"}}
 	for i, m := range mappings {
-		opts = append(opts, ui.MenuOption{Label: fmt.Sprintf("%s → %s", folderLabel(m.Folder), m.Workspace), Value: fmt.Sprintf("%d", i)})
+		opts = append(opts, ui.MenuOption{Label: fmt.Sprintf("%s → %s", mappingLabel(m.Folder, m.Repo), m.Workspace), Value: fmt.Sprintf("%d", i)})
 	}
 	choice, err := ui.NumberMenu("Deploy which folder?", opts)
 	if err != nil {

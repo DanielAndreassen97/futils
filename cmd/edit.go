@@ -175,10 +175,10 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 
 		ui.MenuOption{Label: "Deploy setup", IsHeader: true},
 		ui.MenuOption{
-			Label:       "Repo path",
+			Label:       "Primary repo path",
 			Value:       editActionSetRepo,
-			Description: "The Fabric git repo futils reads items from. Set it here so pickers work before your first deploy.",
-			Info:        "futils reads your Fabric items from this repo's origin/<default-branch> (never the working tree) when it compares and deploys. Setting it here also lets the Exclude-item-types and Post-deploy pickers scan the repo right away — otherwise the path is only captured the first time you run a deploy, and those pickers can't work until then.",
+			Description: "The customer's main Fabric git repo. Deployment mappings are edited under each environment above, not here.",
+			Info:        "futils reads your Fabric items from this repo's origin/<default-branch> (never the working tree) when it compares and deploys. Setting it here also lets the Exclude-item-types and Post-deploy pickers scan the repo right away — otherwise the path is only captured the first time you run a deploy, and those pickers can't work until then. Folder→workspace deployment mappings — including ones living in other repos — are managed per environment: Edit <env> → Add/Remove deployment mapping.",
 		},
 		ui.MenuOption{
 			Label:       "Baseline environment",
@@ -263,7 +263,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 		if len(env.Deployments) > 0 {
 			fmt.Println("  Deployments:")
 			for _, d := range env.Deployments {
-				fmt.Printf("    %s → %s\n", folderLabel(d.Folder), d.Workspace)
+				fmt.Printf("    %s → %s\n", mappingLabel(d.Folder, d.Repo), d.Workspace)
 			}
 		}
 		fmt.Println()
@@ -641,16 +641,19 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 		return err
 	}
 
+	for _, d := range env.Deployments {
+		if d.Folder == folder && d.Repo == repoChoice && strings.EqualFold(d.Workspace, workspace) {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("Mapping %s → %s already exists in env %q — nothing added.", mappingLabel(folder, repoChoice), workspace, alias)))
+			return nil
+		}
+	}
+
 	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments,
 		config.DeployMapping{Folder: folder, Workspace: workspace, Repo: repoChoice})
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save customer: %w", err)
 	}
-	if repoChoice != "" {
-		fmt.Printf("Mapped %s in %s → %s in env %q\n", folderLabel(folder), repoChoice, workspace, alias)
-	} else {
-		fmt.Printf("Mapped %s → %s in env %q\n", folderLabel(folder), workspace, alias)
-	}
+	fmt.Printf("Mapped %s → %s in env %q\n", mappingLabel(folder, repoChoice), workspace, alias)
 	return nil
 }
 
@@ -923,7 +926,7 @@ func removeDeploymentMapping(configPath, customerName, alias string, customer co
 
 	options := make([]ui.MenuOption, len(env.Deployments))
 	for i, d := range env.Deployments {
-		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s → %s", folderLabel(d.Folder), d.Workspace), Value: fmt.Sprintf("%d", i)}
+		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s → %s", mappingLabel(d.Folder, d.Repo), d.Workspace), Value: fmt.Sprintf("%d", i)}
 	}
 	chosen, err := ui.NumberMenu("Select mapping to remove", options)
 	if err != nil {
