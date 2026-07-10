@@ -263,7 +263,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 		if len(env.Deployments) > 0 {
 			fmt.Println("  Deployments:")
 			for _, d := range env.Deployments {
-				fmt.Printf("    %s/ → %s\n", d.Folder, d.Workspace)
+				fmt.Printf("    %s → %s\n", folderLabel(d.Folder), d.Workspace)
 			}
 		}
 		fmt.Println()
@@ -626,13 +626,11 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 	}
 
 	var folder string
-	if err := runFormStep(huh.NewInput().Title("Repo subfolder (e.g. Backend)").Value(&folder)); err != nil {
+	if err := runFormStep(huh.NewInput().Title("Repo subfolder (e.g. Backend — leave empty to deploy the whole repo)").Value(&folder)); err != nil {
 		return err
 	}
+	// Empty is valid: a folder that is the whole repo maps as an empty folder.
 	folder = strings.Trim(strings.TrimSpace(folder), "/")
-	if folder == "" {
-		return fmt.Errorf("folder required")
-	}
 
 	wsOptions := make([]ui.MenuOption, len(env.Workspaces))
 	for i, ws := range env.Workspaces {
@@ -649,9 +647,9 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 		return fmt.Errorf("save customer: %w", err)
 	}
 	if repoChoice != "" {
-		fmt.Printf("Mapped %s/ in %s → %s in env %q\n", folder, repoChoice, workspace, alias)
+		fmt.Printf("Mapped %s in %s → %s in env %q\n", folderLabel(folder), repoChoice, workspace, alias)
 	} else {
-		fmt.Printf("Mapped %s/ → %s in env %q\n", folder, workspace, alias)
+		fmt.Printf("Mapped %s → %s in env %q\n", folderLabel(folder), workspace, alias)
 	}
 	return nil
 }
@@ -925,7 +923,7 @@ func removeDeploymentMapping(configPath, customerName, alias string, customer co
 
 	options := make([]ui.MenuOption, len(env.Deployments))
 	for i, d := range env.Deployments {
-		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s/ → %s", d.Folder, d.Workspace), Value: fmt.Sprintf("%d", i)}
+		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s → %s", folderLabel(d.Folder), d.Workspace), Value: fmt.Sprintf("%d", i)}
 	}
 	chosen, err := ui.NumberMenu("Select mapping to remove", options)
 	if err != nil {
