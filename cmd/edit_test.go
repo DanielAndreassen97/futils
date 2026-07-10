@@ -100,3 +100,17 @@ func TestMergePostDeploySelection(t *testing.T) {
 		t.Fatal("empty selection must return nil")
 	}
 }
+
+func TestMappingLabel(t *testing.T) {
+	cases := []struct{ folder, repo, want string }{
+		{"Backend", "", "Backend/"},
+		{"", "", "(repo root)"},
+		{"", "/Users/x/GIT/dataplatform-frontend", "dataplatform-frontend"},
+		{"Reports", "/Users/x/GIT/dataplatform-frontend", "dataplatform-frontend/Reports/"},
+	}
+	for _, c := range cases {
+		if got := mappingLabel(c.folder, c.repo); got != c.want {
+			t.Errorf("mappingLabel(%q, %q) = %q, want %q", c.folder, c.repo, got, c.want)
+		}
+	}
+}
