@@ -2,10 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 )
 
 var spinnerStyle = lipgloss.NewStyle().Foreground(AccentColor)
@@ -70,7 +73,16 @@ func (s *Spinner) Start() {
 				return
 			default:
 				frame := spinnerStyle.Render(frames[i%len(frames)])
-				fmt.Printf("\r\033[K%s %s", frame, s.getMessage())
+				// The repaint (\r\033[K) can only erase the CURRENT terminal row.
+				// A message wider than the terminal wraps onto a second row, the
+				// cursor lands there, and every frame leaves the previous row
+				// behind — one stale spinner line per tick. Truncate (ANSI-aware)
+				// to the live width so the line never wraps.
+				msg := s.getMessage()
+				if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 6 {
+					msg = ansi.Truncate(msg, w-5, "…") // frame (3) + space + spare column
+				}
+				fmt.Printf("\r\033[K%s %s", frame, msg)
 				i++
 				time.Sleep(150 * time.Millisecond)
 			}

@@ -158,6 +158,32 @@ func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]
 	return all, nil
 }
 
+// currentValueBoxStyle frames the "what is configured right now" callout shown
+// at the top of edit flows. Dim border and label with the value in bold, so the
+// current state stands apart from the surrounding green prompts and menus.
+var currentValueBoxStyle = lipgloss.NewStyle().
+	BorderStyle(lipgloss.RoundedBorder()).
+	BorderForeground(ui.DimColor).
+	Padding(0, 1)
+
+// currentValueBox renders a labelled current-configuration value in a dim
+// rounded box — e.g. the configured primary repo before the picker opens.
+func currentValueBox(label, value string) string {
+	l := lipgloss.NewStyle().Foreground(ui.DimColor).Render(label)
+	v := lipgloss.NewStyle().Bold(true).Render(value)
+	return currentValueBoxStyle.Render(l + "\n" + v)
+}
+
+// baselineSuffix renders a mapping's isolated baseline workspace for display —
+// " [baseline: AG - Front - DEV]" — and nothing when the mapping inherits the
+// baseline environment.
+func baselineSuffix(m config.DeployMapping) string {
+	if m.BaselineWorkspace == "" {
+		return ""
+	}
+	return " [baseline: " + m.BaselineWorkspace + "]"
+}
+
 // mappingLabel renders a deploy mapping's source side for display. An empty
 // folder is a valid mapping meaning "the whole repo". Mappings living in a
 // secondary repo are prefixed with that repo's folder name so two repos'

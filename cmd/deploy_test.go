@@ -543,14 +543,16 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 	groups := []deployGroup{{Target: fabric.Workspace{DisplayName: "WS"}}}
 	results := []deploy.Result{{Name: "NB", Type: "Notebook", Action: deploy.ActionCreate}}
 
+	decline := func(string) (bool, error) { return false, nil }
+
 	// Nothing published (empty results) → no report, no folder created.
-	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, nil, nil) })
+	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, groups, nil, nil, decline) })
 	if entries, _ := os.ReadDir(filepath.Join(repo, "history")); len(entries) != 0 {
 		t.Errorf("empty results must write no report, found %d file(s)", len(entries))
 	}
 
 	// Items deployed → a .html report appears in the configured folder.
-	_ = captureStdout(t, func() { saveDeployHistory(customer, groups, results, nil) })
+	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, groups, results, nil, decline) })
 	entries, err := os.ReadDir(filepath.Join(repo, "history"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("expected 1 report file, got %d (err %v)", len(entries), err)
@@ -559,12 +561,43 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 		t.Errorf("report should be .html, got %q", entries[0].Name())
 	}
 
-	// Deployed but history unconfigured → skip notice, no panic.
+	// Deployed but history unconfigured → the offer declined → skip notice.
 	out := captureStdout(t, func() {
-		saveDeployHistory(config.Customer{RepoPath: repo}, groups, results, nil)
+		saveDeployHistory("", "acme", config.Customer{RepoPath: repo}, groups, results, nil, decline)
 	})
 	if !strings.Contains(out, "No deploy-history folder set") {
 		t.Errorf("expected skip notice when unconfigured, got %q", out)
+	}
+}
+
+// TestSaveDeployHistoryOffersSetupOnFirstDeploy: accepting the first-deploy
+// offer persists docs/deploys to the customer config AND writes THIS run's
+// report there.
+func TestSaveDeployHistoryOffersSetupOnFirstDeploy(t *testing.T) {
+	repo := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	customer := config.Customer{RepoPath: repo}
+	if err := config.Save(configPath, config.Config{Customers: map[string]config.Customer{"acme": customer}}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	groups := []deployGroup{{Target: fabric.Workspace{DisplayName: "WS"}}}
+	results := []deploy.Result{{Name: "NB", Type: "Notebook", Action: deploy.ActionCreate}}
+
+	accept := func(string) (bool, error) { return true, nil }
+	_ = captureStdout(t, func() {
+		saveDeployHistory(configPath, "acme", customer, groups, results, nil, accept)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(repo, "docs", "deploys"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected 1 report in docs/deploys, got %d (err %v)", len(entries), err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Customers["acme"].DeployHistoryPath; got != "docs/deploys" {
+		t.Errorf("DeployHistoryPath = %q, want docs/deploys", got)
 	}
 }
 
@@ -597,7 +630,7 @@ func TestRunDeployHappyPath(t *testing.T) {
 			Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}
 	groups := []deployGroup{makeGroup("Backend", "ws-1", "Config", local, nil)}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
+	res, err := runDeploy(fake, "tok", groups, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -614,7 +647,7 @@ func TestRunDeployDeclinedConfirmDoesNotExecute(t *testing.T) {
 	groups := []deployGroup{makeGroup("F", "ws1", "WS",
 		[]deploy.LocalItem{{Type: "Notebook", DisplayName: "NB", LogicalID: "lid"}}, nil)}
 
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return false, nil }, false)
+	res, err := runDeploy(fake, "tok", groups, selectAll, func(string) (bool, error) { return false, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -636,7 +669,7 @@ func TestRunDeployTwoGroupsDeployToOwnWorkspaces(t *testing.T) {
 		makeGroup("Backend", "ws-config", "Config", backend, nil),
 		makeGroup("Frontend", "ws-semmod", "SemMod", frontend, nil),
 	}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
+	res, err := runDeploy(fake, "tok", groups, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -664,7 +697,7 @@ func TestRunDeployCrossGroupRebind(t *testing.T) {
 		makeGroup("Frontend", "ws-shared", "Shared", report, nil),
 		makeGroup("Backend", "ws-shared", "Backend", model, nil),
 	}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
+	res, err := runDeploy(fake, "tok", groups, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -694,7 +727,7 @@ func TestRunDeployByConnectionWarning(t *testing.T) {
 		Parts: []deploy.Part{{Path: "definition.pbir",
 			Content: []byte(`{"datasetReference":{"byConnection":{"connectionType":"pbiServiceXmlaStyleLive"}}}`)}}}}
 	groups := []deployGroup{makeGroup("Frontend", "ws-1", "WS", report, nil)}
-	res, err := runDeploy(fake, "tok", groups, nil, selectAll, func(string) (bool, error) { return true, nil }, false)
+	res, err := runDeploy(fake, "tok", groups, selectAll, func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}
@@ -747,7 +780,7 @@ func TestBuildDeployGroupsReportUnresolvedCarriesItemName(t *testing.T) {
 	customer := config.Customer{RepoPath: "/repo"}
 	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
-		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, rb, nil)
+		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, &rebinderSet{shared: rb}, nil)
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}
@@ -801,7 +834,7 @@ func TestBuildDeployGroupsExistingReportCustomSubUnresolvedSurfaces(t *testing.T
 	customer := config.Customer{RepoPath: "/repo"}
 	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Frontend", Workspace: "TGT"}},
-		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, rb, nil)
+		map[string][]deploy.LocalItem{customer.RepoPath: {report}}, fake.workspaces, &rebinderSet{shared: rb}, nil)
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}
@@ -1034,7 +1067,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 
 	// Deploy confirm yes, delete confirm NO → no delete runs.
 	calls := 0
-	res, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
+	res, err := runDeploy(newFake(), "tok", groups, selectWithDelete,
 		func(string) (bool, error) { calls++; return calls == 1, nil }, false) // 1st (deploy) yes, 2nd (delete) no
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -1044,7 +1077,7 @@ func TestRunDeployDeletesOnlyOnDeleteConfirm(t *testing.T) {
 	}
 
 	// Both confirms yes → the delete runs.
-	res2, err := runDeploy(newFake(), "tok", groups, nil, selectWithDelete,
+	res2, err := runDeploy(newFake(), "tok", groups, selectWithDelete,
 		func(string) (bool, error) { return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -1065,7 +1098,7 @@ func TestRunDeployDeleteOnly(t *testing.T) {
 			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
 	}
 	calls := 0
-	res, err := runDeploy(fake, "tok", groups, nil, selectDeleteOnly,
+	res, err := runDeploy(fake, "tok", groups, selectDeleteOnly,
 		func(string) (bool, error) { calls++; return true, nil }, false)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
@@ -1129,7 +1162,7 @@ func TestRunDeployDeleteConfirmNamesWorkspace(t *testing.T) {
 			map[int][]deploy.DeleteTarget{0: {{ID: "x", Name: "NB_Gone", Type: "Notebook"}}}, nil
 	}
 	var deletePrompt string
-	_, err := runDeploy(fake, "tok", groups, nil, selectDel, func(p string) (bool, error) {
+	_, err := runDeploy(fake, "tok", groups, selectDel, func(p string) (bool, error) {
 		if strings.Contains(p, "DELETE") {
 			deletePrompt = p
 		}
@@ -1244,7 +1277,7 @@ func TestRunDeployBulkBackendCallsBulkImport(t *testing.T) {
 	}
 	confirm := func(string) (bool, error) { return true, nil }
 
-	results, err := runDeploy(api, "tok", groups, nil, selectItems, confirm, true)
+	results, err := runDeploy(api, "tok", groups, selectItems, confirm, true)
 	if err != nil {
 		t.Fatalf("runDeploy: %v", err)
 	}

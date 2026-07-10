@@ -24,19 +24,21 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 		if rb != nil {
 			subbed, subOutcome := rb.ApplyCustomSubstitutions(item, part.Path, substituted)
 			substituted = subbed
-			for i := range subOutcome.Unresolved {
-				subOutcome.Unresolved[i].ItemName = item.DisplayName
-			}
 			outcome.Changes = append(outcome.Changes, subOutcome.Changes...)
-			outcome.Unresolved = append(outcome.Unresolved, subOutcome.Unresolved...)
+			for _, u := range subOutcome.Unresolved {
+				u.ItemName = item.DisplayName
+				// Re-dedup across parts: the same broken ref usually repeats in
+				// every part/table expression of the item.
+				outcome.AddUnresolved(u)
+			}
 
 			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted)
 			substituted = rebound
-			for i := range partOutcome.Unresolved {
-				partOutcome.Unresolved[i].ItemName = item.DisplayName
-			}
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
-			outcome.Unresolved = append(outcome.Unresolved, partOutcome.Unresolved...)
+			for _, u := range partOutcome.Unresolved {
+				u.ItemName = item.DisplayName
+				outcome.AddUnresolved(u)
+			}
 		}
 		out[part.Path] = substituted
 	}

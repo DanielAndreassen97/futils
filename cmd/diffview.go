@@ -9,15 +9,20 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/deploy"
 )
 
 // DiffLine is one line of a unified diff. Op is ' ' (context), '-' (only in
-// old), or '+' (only in new).
+// old), or '+' (only in new). OldNo/NewNo are the line's 1-based position in
+// the old/new content; 0 means the line has no position on that side ('+'
+// lines have no OldNo, '-' lines no NewNo, fold markers neither).
 type DiffLine struct {
-	Op   byte
-	Text string
+	Op    byte
+	Text  string
+	OldNo int
+	NewNo int
 }
 
 // commonAffixLen counts the leading (prefix) and trailing (suffix) lines that a
@@ -49,11 +54,12 @@ func unifiedLineDiff(oldText, newText string) []DiffLine {
 
 	var out []DiffLine
 	for i := 0; i < prefix; i++ {
-		out = append(out, DiffLine{' ', a[i]})
+		out = append(out, DiffLine{Op: ' ', Text: a[i], OldNo: i + 1, NewNo: i + 1})
 	}
-	out = append(out, lcsDiff(a[prefix:len(a)-suffix], b[prefix:len(b)-suffix])...)
+	out = append(out, lcsDiff(a[prefix:len(a)-suffix], b[prefix:len(b)-suffix], prefix, prefix)...)
 	for i := len(a) - suffix; i < len(a); i++ {
-		out = append(out, DiffLine{' ', a[i]})
+		newNo := len(b) - suffix + (i - (len(a) - suffix))
+		out = append(out, DiffLine{Op: ' ', Text: a[i], OldNo: i + 1, NewNo: newNo + 1})
 	}
 	return out
 }
@@ -62,7 +68,7 @@ func unifiedLineDiff(oldText, newText string) []DiffLine {
 // context/removed/added lines in order. Callers pass the divergent core only, so
 // the len(a)×len(b) table stays bounded. Cells are int32 (counts never exceed
 // min(len(a),len(b)) ≪ 2³¹), halving the table's footprint vs int.
-func lcsDiff(a, b []string) []DiffLine {
+func lcsDiff(a, b []string, aOff, bOff int) []DiffLine {
 	n, m := len(a), len(b)
 	lcs := make([][]int32, n+1)
 	for i := range lcs {
@@ -84,22 +90,22 @@ func lcsDiff(a, b []string) []DiffLine {
 	i, j := 0, 0
 	for i < n && j < m {
 		if a[i] == b[j] {
-			out = append(out, DiffLine{' ', a[i]})
+			out = append(out, DiffLine{Op: ' ', Text: a[i], OldNo: aOff + i + 1, NewNo: bOff + j + 1})
 			i++
 			j++
 		} else if lcs[i+1][j] >= lcs[i][j+1] {
-			out = append(out, DiffLine{'-', a[i]})
+			out = append(out, DiffLine{Op: '-', Text: a[i], OldNo: aOff + i + 1})
 			i++
 		} else {
-			out = append(out, DiffLine{'+', b[j]})
+			out = append(out, DiffLine{Op: '+', Text: b[j], NewNo: bOff + j + 1})
 			j++
 		}
 	}
 	for ; i < n; i++ {
-		out = append(out, DiffLine{'-', a[i]})
+		out = append(out, DiffLine{Op: '-', Text: a[i], OldNo: aOff + i + 1})
 	}
 	for ; j < m; j++ {
-		out = append(out, DiffLine{'+', b[j]})
+		out = append(out, DiffLine{Op: '+', Text: b[j], NewNo: bOff + j + 1})
 	}
 	return out
 }
@@ -137,7 +143,7 @@ func cappedLineDiff(oldText, newText string) []DiffLine {
 	coreOld := len(a) - prefix - suffix
 	coreNew := len(b) - prefix - suffix
 	if int64(coreOld)*int64(coreNew) > maxDiffCells {
-		return []DiffLine{{' ', fmt.Sprintf(
+		return []DiffLine{{Op: ' ', Text: fmt.Sprintf(
 			"Change too large to diff inline — %d → %d divergent lines (out of %d → %d total).",
 			coreOld, coreNew, len(a), len(b))}}
 	}
@@ -145,7 +151,7 @@ func cappedLineDiff(oldText, newText string) []DiffLine {
 	if len(folded) > maxRenderedDiffLines {
 		omitted := len(folded) - maxRenderedDiffLines
 		folded = append(folded[:maxRenderedDiffLines:maxRenderedDiffLines],
-			DiffLine{'@', fmt.Sprintf("⋯ diff truncated — %d more lines omitted ⋯", omitted)})
+			DiffLine{Op: '@', Text: fmt.Sprintf("⋯ diff truncated — %d more lines omitted ⋯", omitted)})
 	}
 	return folded
 }
@@ -192,10 +198,19 @@ func foldContext(lines []DiffLine, ctx int) []DiffLine {
 		if n == 1 {
 			noun = "line"
 		}
-		out = append(out, DiffLine{'@', fmt.Sprintf("⋯ %d unchanged %s ⋯", n, noun)})
+		out = append(out, DiffLine{Op: '@', Text: fmt.Sprintf("⋯ %d unchanged %s ⋯", n, noun)})
 		i = j
 	}
 	return out
+}
+
+// lineNoCell renders one line-number gutter cell; 0 (no position on that side)
+// renders as an empty cell so the gutter stays aligned.
+func lineNoCell(n int) string {
+	if n == 0 {
+		return `<span class="no"></span>`
+	}
+	return fmt.Sprintf(`<span class="no">%d</span>`, n)
 }
 
 // prettyForDiff pretty-prints content as 2-space-indented JSON when it parses
@@ -240,6 +255,7 @@ const deployReportStyle = `<style>
      -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
   .sub{color:var(--muted);font-size:.85rem;margin-top:.35rem}
   .sub b{color:#bfe9cd;font-weight:600}
+  .hero .when{color:var(--muted);font-size:.85rem;margin-top:.35rem;font-variant-numeric:tabular-nums}
   h2{font-size:.95rem;margin:1.9rem 0 .55rem;font-weight:600;letter-spacing:.01em;
      color:#bff0cf;display:flex;align-items:center;gap:.5rem}
   h2::before{content:"";width:.55rem;height:.55rem;border-radius:2px;
@@ -308,6 +324,8 @@ const deployReportStyle = `<style>
   .h2row h2{margin:0}
   pre{margin:0;padding:.5rem 0;overflow-x:auto;font-size:.82rem;line-height:1.45}
   pre .ln{display:block;padding:0 .95rem;white-space:pre}
+  pre .no{display:inline-block;width:3.2em;text-align:right;padding-right:.7em;
+          color:#55635a;font-size:.9em;user-select:none}
   pre .ctx{color:#8fa096}
   pre .add{color:var(--addfg);background:linear-gradient(90deg,rgba(34,197,94,.16),rgba(34,197,94,.04))}
   pre .rem{color:var(--delfg);background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.03))}
@@ -328,14 +346,15 @@ const deployReportStyle = `<style>
 // "Post-deploy runs" section reports each notebook run (✓ completed / ✗ failed
 // / ⊘ skipped). All content is HTML-escaped. With results==nil it is the
 // compare-only viewer the browser preview shows.
-func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome) string {
+func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, ts time.Time) string {
 	var b strings.Builder
 	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>futils deploy report</title>`)
 	b.WriteString(deployReportStyle)
 	b.WriteString(`</head><body>`)
 
-	// Hero header.
-	b.WriteString(`<div class="hero"><h1>futils deploy report</h1></div>`)
+	// Hero header with the deploy timestamp.
+	b.WriteString(`<div class="hero"><h1>futils deploy report</h1>`)
+	b.WriteString(`<div class="when">` + ts.Format("2006-01-02 15:04") + `</div></div>`)
 
 	// Summary cards.
 	b.WriteString(renderSummaryCards(groups, results))
@@ -487,7 +506,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					case '@':
 						cls, prefix = "fold", " "
 					}
-					b.WriteString(`<span class="ln ` + cls + `">` + prefix + " " + html.EscapeString(ln.Text) + "</span>")
+					b.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
 				}
 				b.WriteString(`</pre></div>`)
 			}
@@ -504,7 +523,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
 // in-browser preview.
 func renderDeployDiffHTML(groups []deployGroup) string {
-	return renderDeployReport(groups, nil, nil)
+	return renderDeployReport(groups, nil, nil, time.Now())
 }
 
 // renderSummaryCards builds the colored summary-card row. With results it shows

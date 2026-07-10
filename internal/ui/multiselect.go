@@ -41,6 +41,7 @@ type checkboxModel struct {
 	done       bool
 	goBack     bool
 	quit       bool
+	goHome     bool
 }
 
 func (m checkboxModel) Init() tea.Cmd { return nil }
@@ -101,6 +102,10 @@ func (m checkboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "ctrl+c", "q":
 			m.quit = true
+			m.done = true
+			return m, tea.Quit
+		case "m":
+			m.goHome = true
 			m.done = true
 			return m, tea.Quit
 		}
@@ -170,7 +175,7 @@ func (m checkboxModel) View() string {
 	// Collapsed post-submit summary — keeps scrollback readable when the
 	// user has clicked through multiple screens in sequence.
 	if m.done {
-		if m.goBack || m.quit {
+		if m.goBack || m.quit || m.goHome {
 			return ""
 		}
 		n := m.countChecked()
@@ -179,7 +184,7 @@ func (m checkboxModel) View() string {
 	}
 
 	var b strings.Builder
-	hint := "space toggle • enter confirm • alt+↑↓ jump • a select all • esc back"
+	hint := "space toggle • enter confirm • alt+↑↓ jump • a select all • esc back • m main menu"
 	fmt.Fprintf(&b, "  %s\n", m.title)
 	fmt.Fprintf(&b, "  %s\n\n", checkboxHintStyle.Render(hint))
 
@@ -264,6 +269,9 @@ func MultiSelectRich(title string, items []CheckItem) ([]int, error) {
 	if result.quit {
 		return nil, ErrQuit
 	}
+	if result.goHome {
+		return nil, ErrGoHome
+	}
 	if result.goBack {
 		return nil, ErrGoBack
 	}
@@ -307,6 +315,9 @@ func MultiSelect(title string, options []string, initial []string) ([]string, er
 	result := final.(checkboxModel)
 	if result.quit {
 		return nil, ErrQuit
+	}
+	if result.goHome {
+		return nil, ErrGoHome
 	}
 	if result.goBack {
 		return nil, ErrGoBack

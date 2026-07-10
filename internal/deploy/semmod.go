@@ -10,6 +10,11 @@ import (
 // Sql.Database("<host>", "<endpoint-id>")
 var sqlDbRe = regexp.MustCompile(`Sql\.Database\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\)`)
 
+// guidShapeRe tells the two Sql.Database second-argument forms apart: a
+// UUID-shaped value is a baked SQL-endpoint id, anything else is the database
+// NAME (e.g. "LH_Gold").
+var guidShapeRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // guidPat matches a canonical lowercase/upper GUID (used inside connection URLs).
 const guidPat = `[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`
 
@@ -50,6 +55,11 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 // otherwise place — fetches the resolved lakehouse's target endpoint, and
 // replaces both host and id.
 //
+// The second argument also appears in NAME form (Sql.Database("host",
+// "LH_Gold")): the database name equals the lakehouse name, is the same in the
+// target, and involves no baseline lookup — the name resolves directly in the
+// target index (override-first) and only the host is rewritten.
+//
 // Like rebindOneLakeSources, each match is rewritten by byte SPAN, not by a
 // global ReplaceAll of the extracted host/id values: two Sql.Database(...)
 // expressions can share one baseline HOST but resolve to two different target
@@ -71,14 +81,35 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		idStart, idEnd := loc[4], loc[5]
 		host, id := s[hostStart:hostEnd], s[idStart:idEnd]
 
+		if !guidShapeRe.MatchString(id) {
+			// Name form: Sql.Database("host", "LH_Gold") carries the database
+			// NAME, not an endpoint GUID. The name is the same in the target, so
+			// resolve it there directly and rewrite only the host.
+			tgt, ok, reason := rb.resolveNameReason(id, "Lakehouse")
+			if !ok {
+				out.AddUnresolved(UnresolvedRef{GUID: id, ItemType: "SQL database (by name)", Location: "Sql.Database", Reason: reason})
+				continue
+			}
+			newHost, _, ok := rb.targetEndpointFor(tgt)
+			if !ok {
+				out.AddUnresolved(UnresolvedRef{GUID: id, ItemType: "SQL database (by name)", Location: "Sql.Database", Reason: ReasonNotInTarget})
+				continue
+			}
+			b.WriteString(s[last:hostStart])
+			b.WriteString(newHost)
+			last = hostEnd
+			recordChangePair(out, seenChange, "SQL endpoint", tgt.Name, host, newHost)
+			continue
+		}
+
 		tgt, ok, reason := rb.resolveGUIDReason(id, "Lakehouse")
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: reason})
 			continue
 		}
 		newHost, newID, ok := rb.targetEndpointFor(tgt)
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNotInTarget})
+			out.AddUnresolved(UnresolvedRef{GUID: id, ItemType: "SQL endpoint", Location: "Sql.Database", Reason: ReasonNotInTarget})
 			continue
 		}
 
@@ -129,7 +160,7 @@ func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 		seenURL[full] = true
 		it, ok, reason := rb.resolveGUIDReason(lhGUID, "")
 		if !ok {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
 			continue
 		}
 		newWS := wsGUID

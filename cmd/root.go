@@ -35,9 +35,9 @@ func MainMenu(configPath string) {
 
 		choice, err := ui.NumberMenu("What would you like to do?", options)
 		if err != nil {
-			// esc/b at the top level just re-shows the menu — there's
-			// nowhere to go "back" to.
-			if errors.Is(err, ui.ErrGoBack) {
+			// esc/b (and m — we ARE the main menu) at the top level just
+			// re-shows the menu — there's nowhere to go "back" to.
+			if errors.Is(err, ui.ErrGoBack) || errors.Is(err, ui.ErrGoHome) {
 				continue
 			}
 			if errors.Is(err, ui.ErrQuit) {
@@ -68,7 +68,9 @@ func MainMenu(configPath string) {
 		}
 
 		if cmdErr != nil {
-			if errors.Is(cmdErr, ui.ErrGoBack) {
+			// ErrGoHome lands here after unwinding whatever flow the user
+			// abandoned with m — the main menu simply shows again.
+			if errors.Is(cmdErr, ui.ErrGoBack) || errors.Is(cmdErr, ui.ErrGoHome) {
 				continue
 			}
 			if errors.Is(cmdErr, ui.ErrQuit) {
@@ -116,8 +118,10 @@ func customersSubmenu(configPath string) error {
 			if errors.Is(cmdErr, ui.ErrGoBack) {
 				continue
 			}
-			if errors.Is(cmdErr, ui.ErrQuit) {
-				return ui.ErrQuit
+			// Unwind both sentinels to the main loop: quit exits the app,
+			// go-home lands on the main menu.
+			if errors.Is(cmdErr, ui.ErrQuit) || errors.Is(cmdErr, ui.ErrGoHome) {
+				return cmdErr
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", cmdErr)
 		}

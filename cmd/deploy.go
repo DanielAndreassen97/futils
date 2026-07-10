@@ -88,6 +88,10 @@ type deployGroup struct {
 	Changes        []deploy.RebindChange
 	ReportBindings []deploy.ReportBinding
 	Diffs          []ItemDiff
+	// rb is the rebinder this group's mapping resolves references through — the
+	// shared env-level one, or the mapping's isolated one when it sets a
+	// BaselineWorkspace. Nil when rebinding is disabled.
+	rb *deploy.Rebinder
 }
 
 // ItemDiff holds the per-part content diffs for one Changed item, for the HTML
@@ -196,7 +200,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
 
-	rebinder, err := buildRebinder(client, token, customer, alias, workspaces)
+	rebinders, err := newRebinderSet(client, token, customer, alias, workspaces)
 	if err != nil {
 		return fmt.Errorf("set up reference rebinding: %w", err)
 	}
@@ -241,7 +245,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		fmt.Println(infoStyle.Render("Excluded item types: " + strings.Join(shown, ", ")))
 	}
 
-	groups, err := buildDeployGroups(client, token, customer, mappings, itemsByRepo, workspaces, rebinder, excluded)
+	groups, err := buildDeployGroups(client, token, customer, mappings, itemsByRepo, workspaces, rebinders, excluded)
 	if err != nil {
 		return err
 	}
@@ -302,13 +306,13 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		fmt.Println(warningStyle.Render("Bulk-import is a PREVIEW backend on a Fabric beta API — verify the deployed items afterwards."))
 	}
 
-	results, err := runDeploy(client, token, groups, rebinder, pickGroupedRows, ui.Confirm, useBulk)
+	results, err := runDeploy(client, token, groups, pickGroupedRows, ui.Confirm, useBulk)
 	printDeployResults(results)
 	if err != nil {
 		return err
 	}
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
-	saveDeployHistory(customer, groups, results, runOutcomes)
+	saveDeployHistory(configPath, customerName, customer, groups, results, runOutcomes, ui.Confirm)
 	return nil
 }
 
@@ -325,10 +329,14 @@ const diffConcurrency = 16
 // that already exist it runs a content-diff (concurrent definition fetches +
 // per-part normalized comparison) to refine ClassExists into ClassChanged or
 // ClassUnchanged; items it can't verify stay ClassExists.
-func buildDeployGroups(client APIClient, token string, customer config.Customer, mappings []config.DeployMapping, itemsByRepo map[string][]deploy.LocalItem, workspaces []fabric.Workspace, rb *deploy.Rebinder, excluded map[string]bool) ([]deployGroup, error) {
+func buildDeployGroups(client APIClient, token string, customer config.Customer, mappings []config.DeployMapping, itemsByRepo map[string][]deploy.LocalItem, workspaces []fabric.Workspace, rs *rebinderSet, excluded map[string]bool) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
+		if err != nil {
+			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
+		}
+		rb, err := rs.For(m)
 		if err != nil {
 			return nil, fmt.Errorf("mapping %q→%q: %w", m.Folder, m.Workspace, err)
 		}
@@ -352,6 +360,7 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			Target:   target,
 			Rows:     rows,
 			Deployed: deployed,
+			rb:       rb,
 		}
 		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb)
 		if rb != nil {
@@ -725,7 +734,6 @@ func runDeploy(
 	client deploy.FabricClient,
 	token string,
 	groups []deployGroup,
-	rb *deploy.Rebinder,
 	selectItems func([]deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error),
 	confirm func(string) (bool, error),
 	bulk bool,
@@ -770,7 +778,7 @@ func runDeploy(
 		}
 
 		if bulk {
-			bulkResults, berr := runBulkPublish(client, token, groups, selected, rb)
+			bulkResults, berr := runBulkPublish(client, token, groups, selected)
 			allResults = append(allResults, bulkResults...)
 			if berr != nil {
 				if nDel > 0 {
@@ -806,7 +814,7 @@ func runDeploy(
 				sp := ui.NewSpinner(renderPublish())
 				sp.SetMessageFunc(renderPublish)
 				sp.Start()
-				results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, rb, modelsByWS, &done)
+				results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, g.rb, modelsByWS, &done)
 				sp.Stop()
 				allResults = append(allResults, results...)
 				pending = append(pending, groupPending...)
@@ -821,7 +829,16 @@ func runDeploy(
 			// Post-deploy rebind pass: now that every group is published, repoint each
 			// report at its model and fold the outcome into the report's Result (matched
 			// by deployed GUID). Runs BEFORE the delete pass.
-			if outcomes := deploy.RebindReports(client, token, modelsByWS, pending, rb != nil); len(outcomes) > 0 {
+			// Report rebinding is on when ANY group resolves references — a
+			// mapping-level baseline can enable it even without an env baseline.
+			anyRB := false
+			for _, g := range groups {
+				if g.rb != nil {
+					anyRB = true
+					break
+				}
+			}
+			if outcomes := deploy.RebindReports(client, token, modelsByWS, pending, anyRB); len(outcomes) > 0 {
 				allResults = foldRebindOutcomes(allResults, outcomes)
 			}
 		}
@@ -867,10 +884,11 @@ func runDeploy(
 // lets Fabric resolve cross-item byPath references within a single payload). One
 // LRO per workspace, so the spinner shows a count + the live throttle countdown
 // rather than per-item progress.
-func runBulkPublish(client deploy.FabricClient, token string, groups []deployGroup, selected map[int][]deploy.LocalItem, rb *deploy.Rebinder) ([]deploy.Result, error) {
+func runBulkPublish(client deploy.FabricClient, token string, groups []deployGroup, selected map[int][]deploy.LocalItem) ([]deploy.Result, error) {
 	type bucket struct {
 		target fabric.Workspace
 		items  []deploy.LocalItem
+		rb     *deploy.Rebinder
 	}
 	buckets := map[string]*bucket{}
 	var order []string
@@ -879,11 +897,16 @@ func runBulkPublish(client deploy.FabricClient, token string, groups []deployGro
 		if len(items) == 0 {
 			continue
 		}
-		b := buckets[g.Target.ID]
+		// Merge by workspace AND rebinder: groups sharing a target normally share
+		// the env-level rebinder (one call, cross-item byPath resolution intact),
+		// but a mapping with its own baseline must not have its items rebound
+		// through another mapping's index.
+		key := fmt.Sprintf("%s/%p", g.Target.ID, g.rb)
+		b := buckets[key]
 		if b == nil {
-			b = &bucket{target: g.Target}
-			buckets[g.Target.ID] = b
-			order = append(order, g.Target.ID)
+			b = &bucket{target: g.Target, rb: g.rb}
+			buckets[key] = b
+			order = append(order, key)
 		}
 		b.items = append(b.items, items...)
 	}
@@ -897,7 +920,7 @@ func runBulkPublish(client deploy.FabricClient, token string, groups []deployGro
 		sp := ui.NewSpinner(render())
 		sp.SetMessageFunc(render)
 		sp.Start()
-		r, err := deploy.BulkImport(client, token, b.target, b.items, rb)
+		r, err := deploy.BulkImport(client, token, b.target, b.items, b.rb)
 		sp.Stop()
 		results = append(results, r...)
 		if err != nil {
@@ -927,18 +950,34 @@ func targetsSummary(groups []deployGroup) string {
 // repo-relative history folder. It's a no-op when nothing was published (empty
 // results — e.g. the user continued past the gate but selected nothing or
 // cancelled the inner confirm), so aborted runs don't litter the history with
-// empty reports. When items WERE deployed but no folder/repo is configured it
-// prints a skip notice. The report's diff section reflects every compared item
+// empty reports. When items WERE deployed but no history folder is configured
+// it offers (once per run) to set the default docs/deploys and record this very
+// deploy; declining prints the old skip notice. The report's diff section reflects every compared item
 // while the results section reflects what was actually deployed (a cherry-picked
 // subset shows fewer results than diffs). A write failure is non-fatal — the
 // deploy already happened.
-func saveDeployHistory(customer config.Customer, groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome) {
+func saveDeployHistory(configPath, customerName string, customer config.Customer, groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, confirm func(string) (bool, error)) {
 	if len(results) == 0 {
 		return // nothing was published — no report to write
 	}
-	if customer.DeployHistoryPath == "" {
-		fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
+	if customer.RepoPath == "" && customer.DeployHistoryPath == "" {
+		// A relative DeployHistoryPath is anchored to the primary repo; without
+		// one there's nothing to anchor to — nothing to offer either.
 		return
+	}
+	if customer.DeployHistoryPath == "" {
+		// First deploy without history configured: offer to set it NOW, so this
+		// very run gets a report — the moment it's most wanted and most easily
+		// forgotten. Declining keeps the old skip notice.
+		ok, err := confirm(fmt.Sprintf("No deploy-history folder set — save a report per deploy to %s/docs/deploys from now on (including this run)?", filepath.Base(customer.RepoPath)))
+		if err != nil || !ok {
+			fmt.Println(infoStyle.Render("No deploy-history folder set — skipping report. Set one with `futils edit`."))
+			return
+		}
+		customer.DeployHistoryPath = "docs/deploys"
+		if serr := config.EditCustomer(configPath, customerName, customer); serr != nil {
+			fmt.Println(warningStyle.Render("Couldn't save deploy-history setting: " + serr.Error()))
+		}
 	}
 	if customer.RepoPath == "" {
 		// A relative DeployHistoryPath is anchored to the primary repo; without one
@@ -949,8 +988,9 @@ func saveDeployHistory(customer config.Customer, groups []deployGroup, results [
 	// Relative history is anchored to the PRIMARY repo (customer.RepoPath) even
 	// when a deploy spans multiple repos; an absolute DeployHistoryPath is used verbatim.
 	dir := historyDir(customer.RepoPath, customer.DeployHistoryPath)
-	htmlDoc := renderDeployReport(groups, results, postRuns)
-	path, err := writeHistoryReport(dir, time.Now(), htmlDoc)
+	ts := time.Now()
+	htmlDoc := renderDeployReport(groups, results, postRuns, ts)
+	path, err := writeHistoryReport(dir, ts, htmlDoc)
 	if err != nil {
 		fmt.Println(warningStyle.Render("Couldn't save deploy report: " + err.Error()))
 		return
@@ -1255,8 +1295,22 @@ func printRebindSummary(groups []deployGroup) {
 	}
 	fmt.Println()
 	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
+	// Group by (Kind, Name) so an item whose rewrite spans several values — a
+	// SQL endpoint rebinds both its host and its id — reads as ONE reference
+	// with its rewrites indented beneath, not as unrelated rows.
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Kind != ordered[j].Kind {
+			return ordered[i].Kind < ordered[j].Kind
+		}
+		return ordered[i].Name < ordered[j].Name
+	})
+	lastKind, lastName := "", ""
 	for _, c := range ordered {
-		fmt.Printf("  %-12s %-24s %s → %s\n", c.Kind, c.Name, c.Old, c.New)
+		if c.Kind != lastKind || c.Name != lastName {
+			fmt.Printf("  %-12s %s\n", c.Kind, c.Name)
+			lastKind, lastName = c.Kind, c.Name
+		}
+		fmt.Printf("    %s → %s\n", c.Old, c.New)
 	}
 	fmt.Println()
 }
@@ -1303,10 +1357,19 @@ func printUnresolved(groups []deployGroup) {
 	fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
 	for _, g := range groups {
 		for _, u := range g.Unresolved {
-			fmt.Printf("  %s in %s — looks like a %s (%s): %s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason))
+			fmt.Printf("  %s in %s — looks like a %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason), countSuffix(u.Count))
 		}
 	}
 	fmt.Println()
+}
+
+// countSuffix renders how many occurrences collapsed into one unresolved ref —
+// " (×80)" — and nothing for a single occurrence.
+func countSuffix(n int) string {
+	if n > 1 {
+		return fmt.Sprintf(" (×%d)", n)
+	}
+	return ""
 }
 
 // reasonText renders an UnresolvedRef reason code as a short human hint, so the
@@ -1356,7 +1419,7 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef) error {
 	changed := false
 	for _, ref := range refs {
-		fmt.Printf("\n%s in %s — looks like a %s (%s): %s\n", shortGUID(ref.GUID), ref.ItemName, ref.ItemType, ref.Location, reasonText(ref.Reason))
+		fmt.Printf("\n%s in %s — looks like a %s (%s): %s%s\n", shortGUID(ref.GUID), ref.ItemName, ref.ItemType, ref.Location, reasonText(ref.Reason), countSuffix(ref.Count))
 		choice, err := ui.NumberMenu("How do you want to resolve it?", refActionOptions(ref))
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {

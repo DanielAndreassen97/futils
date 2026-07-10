@@ -45,15 +45,84 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, fmt.Errorf("target env %q: %w", targetAlias, err)
 	}
 
-	overrides := make(map[string]deploy.Override, len(customer.ReferenceOverrides))
-	for _, o := range customer.ReferenceOverrides {
-		overrides[o.SourceGUID] = deploy.Override{ItemType: o.ItemType, ItemName: o.ItemName}
-	}
-	rb, err := deploy.NewRebinder(client, token, baselineWS, targetWS, overrides)
+	rb, err := deploy.NewRebinder(client, token, baselineWS, targetWS, overridesFromConfig(customer))
 	if err != nil {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions))
+	return rb, nil
+}
+
+// overridesFromConfig converts the customer's reference overrides into the
+// engine's config-free Override map, keyed by the baseline GUID (or literal
+// name, for name-form references).
+func overridesFromConfig(customer config.Customer) map[string]deploy.Override {
+	overrides := make(map[string]deploy.Override, len(customer.ReferenceOverrides))
+	for _, o := range customer.ReferenceOverrides {
+		overrides[o.SourceGUID] = deploy.Override{ItemType: o.ItemType, ItemName: o.ItemName}
+	}
+	return overrides
+}
+
+// rebinderSet hands out the right rebinder for each deploy mapping: the shared
+// env-level one (baseline env span → target env span) for mappings without a
+// BaselineWorkspace, and an isolated, cached one (mapping's baseline workspace →
+// the mapping's own deploy workspace) when the mapping sets one. Isolation is
+// the point: a frontend repo's baked GUIDs resolve only against the frontend
+// workspace pair, so same-named backend items can't collide or go ambiguous.
+// Reference overrides and custom substitutions are shared across all rebinders.
+type rebinderSet struct {
+	client     deploy.FabricClient
+	token      string
+	customer   config.Customer
+	workspaces []fabric.Workspace
+	shared     *deploy.Rebinder // env-level; nil when rebinding is disabled
+	cache      map[string]*deploy.Rebinder
+}
+
+// newRebinderSet builds the shared env-level rebinder eagerly (same semantics
+// as buildRebinder, including the nil-when-disabled case) and defers isolated
+// per-mapping rebinders until a mapping actually needs one.
+func newRebinderSet(client deploy.FabricClient, token string, customer config.Customer, targetAlias string, workspaces []fabric.Workspace) (*rebinderSet, error) {
+	shared, err := buildRebinder(client, token, customer, targetAlias, workspaces)
+	if err != nil {
+		return nil, err
+	}
+	return &rebinderSet{
+		client: client, token: token, customer: customer, workspaces: workspaces,
+		shared: shared, cache: map[string]*deploy.Rebinder{},
+	}, nil
+}
+
+// For returns the rebinder for one mapping. A mapping with a BaselineWorkspace
+// gets its isolated rebinder even when env-level rebinding is disabled — the
+// mapping's own baseline is authoritative for it. A nil set (rebinding fully
+// disabled and never configured) yields nil for every mapping.
+func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
+	if rs == nil {
+		return nil, nil
+	}
+	if m.BaselineWorkspace == "" {
+		return rs.shared, nil
+	}
+	key := m.BaselineWorkspace + "\x00" + m.Workspace
+	if rb, ok := rs.cache[key]; ok {
+		return rb, nil
+	}
+	baseWS, err := resolveWorkspaceSet(rs.workspaces, []string{m.BaselineWorkspace})
+	if err != nil {
+		return nil, fmt.Errorf("mapping baseline workspace %q: %w", m.BaselineWorkspace, err)
+	}
+	targetWS, err := resolveWorkspaceSet(rs.workspaces, []string{m.Workspace})
+	if err != nil {
+		return nil, fmt.Errorf("mapping target workspace %q: %w", m.Workspace, err)
+	}
+	rb, err := deploy.NewRebinder(rs.client, rs.token, baseWS, targetWS, overridesFromConfig(rs.customer))
+	if err != nil {
+		return nil, err
+	}
+	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions))
+	rs.cache[key] = rb
 	return rb, nil
 }
 

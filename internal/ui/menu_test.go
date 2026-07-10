@@ -297,3 +297,15 @@ func TestMenuInfoBoxWrapsToWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestMenuMKeyReturnsGoHome(t *testing.T) {
+	m := menuModel{message: "t", options: []MenuOption{{Label: "A", Value: "a"}}}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("m")})
+	got := next.(menuModel)
+	if !got.goHome || !got.done {
+		t.Fatalf("m key should set goHome+done, got %+v", got)
+	}
+	if got.View() != "" {
+		t.Errorf("go-home collapse should render nothing, got %q", got.View())
+	}
+}

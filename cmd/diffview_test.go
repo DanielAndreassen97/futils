@@ -251,10 +251,10 @@ func TestFoldContextCollapsesLongRuns(t *testing.T) {
 	// marker, near context (±contextLines) is kept.
 	var lines []DiffLine
 	for i := 0; i < 50; i++ {
-		lines = append(lines, DiffLine{' ', fmt.Sprintf("ctx%d", i)})
+		lines = append(lines, DiffLine{Op: ' ', Text: fmt.Sprintf("ctx%d", i)})
 	}
-	lines[25] = DiffLine{'-', "before"}
-	lines = append(lines[:26], append([]DiffLine{{'+', "after"}}, lines[26:]...)...)
+	lines[25] = DiffLine{Op: '-', Text: "before"}
+	lines = append(lines[:26], append([]DiffLine{{Op: '+', Text: "after"}}, lines[26:]...)...)
 
 	got := foldContext(lines, contextLines)
 
@@ -288,7 +288,7 @@ func TestFoldContextCollapsesLongRuns(t *testing.T) {
 }
 
 func TestFoldContextNoChangeReturnsAsIs(t *testing.T) {
-	lines := []DiffLine{{' ', "a"}, {' ', "b"}}
+	lines := []DiffLine{{Op: ' ', Text: "a"}, {Op: ' ', Text: "b"}}
 	got := foldContext(lines, contextLines)
 	if len(got) != 2 {
 		t.Fatalf("all-context input must pass through unfolded, got %d lines", len(got))
@@ -314,7 +314,7 @@ func TestRenderDeployReportBigFileSmallChangeShowsDiff(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: oldB.String(), New: newB.String()}},
 		}},
 	}}
-	out := renderDeployReport(groups, nil, nil)
+	out := renderDeployReport(groups, nil, nil, time.Unix(0, 0))
 	if strings.Contains(out, "too large to diff") {
 		t.Error("big file with a tiny change must render a real diff, not the cap message")
 	}
@@ -360,7 +360,7 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 		// NB_Config must be a deployed result so its diff renders under the deployed-only [6] gate.
 		{Name: "NB_Config", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results, nil)
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
 
 	if !strings.Contains(out, "<!doctype html>") {
 		t.Errorf("expected a doctype")
@@ -394,7 +394,7 @@ func TestRenderDeployReportHasCardsAndCollapse(t *testing.T) {
 		{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_A", Type: "Notebook", Action: deploy.ActionUpdate}}
-	out := renderDeployReport(groups, results, nil)
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
 	if !strings.Contains(out, `class="cards"`) {
 		t.Error("report must include the summary cards")
 	}
@@ -415,7 +415,7 @@ func TestRenderDeployReportDeleteOnlyHasNoContentDiffs(t *testing.T) {
 		{Name: "NB_Changed", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_Gone", Type: "Notebook", Action: deploy.ActionDelete}}
-	out := renderDeployReport(groups, results, nil)
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
 	if strings.Contains(out, "NB_Changed") {
 		t.Error("delete-only run must not render content diffs for items that were not deployed")
 	}
@@ -485,7 +485,7 @@ func TestRenderDeployReportGatesDiffByTypeAndName(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-only-marker.py", Old: "a", New: "b"}},
 		}},
 	}}
-	out := renderDeployReport(groups, results, nil)
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
 	if strings.Contains(out, "notebook-only-marker.py") {
 		t.Error("Notebook diff for type=Notebook name=X must not render when only type=DataPipeline name=X was deployed (gate must key by type+name)")
 	}
@@ -514,7 +514,7 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate},
 		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results, nil)
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
 	if !strings.Contains(out, "WS Alpha") {
 		t.Error("multi-group report must include workspace heading for WS Alpha")
 	}
@@ -538,7 +538,7 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 	singleResults := []deploy.Result{
 		{Name: "NB_Sole", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	singleOut := renderDeployReport(singleGroups, singleResults, nil)
+	singleOut := renderDeployReport(singleGroups, singleResults, nil, time.Unix(0, 0))
 	if strings.Contains(singleOut, `class="wsgroup"`) {
 		t.Error("single-group report must NOT include wsgroup element")
 	}
@@ -551,14 +551,36 @@ func TestRenderDeployReportPostDeploySection(t *testing.T) {
 		{Run: postDeployRun{Name: "NB_B", WorkspaceName: "WS One"}, Status: fabric.JobStatusFailed, Err: errors.New("job Failed: boom")},
 		{Run: postDeployRun{Name: "NB_C", WorkspaceName: "WS One"}, Status: postDeployStatusSkipped},
 	}
-	html := renderDeployReport(nil, results, postRuns)
+	html := renderDeployReport(nil, results, postRuns, time.Unix(0, 0))
 	for _, want := range []string{"Post-deploy runs", "NB_A", "Completed in 14s", "job Failed: boom", "skipped — earlier run failed"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("report missing %q", want)
 		}
 	}
 	// No section when nothing ran.
-	if strings.Contains(renderDeployReport(nil, results, nil), "Post-deploy runs") {
+	if strings.Contains(renderDeployReport(nil, results, nil, time.Unix(0, 0)), "Post-deploy runs") {
 		t.Fatal("report must omit the Post-deploy runs section when no runs happened")
+	}
+}
+
+func TestUnifiedLineDiffLineNumbers(t *testing.T) {
+	old := "a\nb\nc\nd"
+	new := "a\nB\nc\nd"
+	lines := unifiedLineDiff(old, new)
+	// a(1,1) -b(2,-) +B(-,2) c(3,3) d(4,4)
+	want := []DiffLine{
+		{Op: ' ', Text: "a", OldNo: 1, NewNo: 1},
+		{Op: '-', Text: "b", OldNo: 2},
+		{Op: '+', Text: "B", NewNo: 2},
+		{Op: ' ', Text: "c", OldNo: 3, NewNo: 3},
+		{Op: ' ', Text: "d", OldNo: 4, NewNo: 4},
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("got %d lines, want %d: %+v", len(lines), len(want), lines)
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Errorf("line %d = %+v, want %+v", i, lines[i], w)
+		}
 	}
 }

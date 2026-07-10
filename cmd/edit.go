@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -131,6 +132,11 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			}
 		case action == editActionFavorites:
 			if err := favoritesForCustomer(configPath, client, customerName, customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				// The navigation sentinels must keep unwinding — swallowing them
+				// here would trap q/m inside the edit-customer loop.
+				if errors.Is(err, ui.ErrQuit) || errors.Is(err, ui.ErrGoHome) {
+					return err
+				}
 				// Soft-fail: e.g. "no environments configured" when the customer
 				// has none yet. A plain return would eject the user from the
 				// edit-customer menu they'd need to add one from — print and
@@ -159,6 +165,12 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	if customer.BaselineEnvironment != "" {
 		baselineBadge = customer.BaselineEnvironment
 	}
+	// Same at-a-glance treatment as the baseline badge: show which repo is the
+	// primary without having to enter the picker.
+	repoBadge := "NOT SET"
+	if customer.RepoPath != "" {
+		repoBadge = filepath.Base(customer.RepoPath)
+	}
 
 	// Grouped under section headers so the menu scans as three concerns:
 	// the environments themselves, one-time deploy configuration, and what
@@ -177,6 +189,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 		ui.MenuOption{
 			Label:       "Primary repo path",
 			Value:       editActionSetRepo,
+			Badge:       repoBadge,
 			Description: "The customer's main Fabric git repo. Deployment mappings are edited under each environment above, not here.",
 			Info:        "futils reads your Fabric items from this repo's origin/<default-branch> (never the working tree) when it compares and deploys. Setting it here also lets the Exclude-item-types and Post-deploy pickers scan the repo right away — otherwise the path is only captured the first time you run a deploy, and those pickers can't work until then. Folder→workspace deployment mappings — including ones living in other repos — are managed per environment: Edit <env> → Add/Remove deployment mapping.",
 		},
@@ -263,7 +276,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 		if len(env.Deployments) > 0 {
 			fmt.Println("  Deployments:")
 			for _, d := range env.Deployments {
-				fmt.Printf("    %s → %s\n", mappingLabel(d.Folder, d.Repo), d.Workspace)
+				fmt.Printf("    %s → %s%s\n", mappingLabel(d.Folder, d.Repo), d.Workspace, baselineSuffix(d))
 			}
 		}
 		fmt.Println()
@@ -325,7 +338,7 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				alias = newAlias
 			}
 		case envActionAddDeploy:
-			err = addDeploymentMapping(configPath, customerName, alias, customer)
+			err = addDeploymentMapping(configPath, client, customerName, alias, customer)
 		case envActionRemoveDeploy:
 			err = removeDeploymentMapping(configPath, customerName, alias, customer)
 		case envActionDeleteEnv:
@@ -586,8 +599,9 @@ func validateNewAlias(alias string, existing []config.Environment) error {
 
 // addDeploymentMapping prompts for a repo subfolder and the workspace its items
 // should deploy to (chosen from the env's configured workspaces), then appends
-// a DeployMapping to the environment.
-func addDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
+// a DeployMapping to the environment. An optional dedicated baseline workspace
+// isolates the mapping's reference resolution from the baseline environment.
+func addDeploymentMapping(configPath string, client APIClient, customerName, alias string, customer config.Customer) error {
 	idx := findEnvIndex(customer, alias)
 	if idx < 0 {
 		return fmt.Errorf("env %q not found", alias)
@@ -648,13 +662,63 @@ func addDeploymentMapping(configPath, customerName, alias string, customer confi
 		}
 	}
 
-	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments,
-		config.DeployMapping{Folder: folder, Workspace: workspace, Repo: repoChoice})
+	baselineWS, err := pickMappingBaseline(client, customerName, customer)
+	if err != nil {
+		return err
+	}
+
+	m := config.DeployMapping{Folder: folder, Workspace: workspace, Repo: repoChoice, BaselineWorkspace: baselineWS}
+	customer.Environments[idx].Deployments = append(customer.Environments[idx].Deployments, m)
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save customer: %w", err)
 	}
-	fmt.Printf("Mapped %s → %s in env %q\n", mappingLabel(folder, repoChoice), workspace, alias)
+	fmt.Printf("Mapped %s → %s in env %q%s\n", mappingLabel(folder, repoChoice), workspace, alias, baselineSuffix(m))
 	return nil
+}
+
+// pickMappingBaseline asks whether the new mapping inherits the customer's
+// baseline environment (the default, returned as "") or resolves its references
+// against one dedicated baseline workspace — the multi-repo case where e.g. a
+// frontend repo's baked GUIDs live in a frontend workspace the baseline env
+// doesn't (and shouldn't) span.
+func pickMappingBaseline(client APIClient, customerName string, customer config.Customer) (string, error) {
+	const own = "__own_baseline"
+	opts := []ui.MenuOption{
+		{
+			Label:       "Inherit from baseline environment (default)",
+			Value:       "",
+			Description: "References resolve against the customer's baseline environment — right for folders in the primary repo.",
+		},
+		{
+			Label:       "Dedicated baseline workspace…",
+			Value:       own,
+			Description: "Isolate this mapping: its baked GUIDs resolve against ONE chosen workspace, and only into the mapping's own target workspace.",
+			Info:        "Use this when the mapping's repo was developed against a workspace outside the baseline environment — e.g. a frontend repo with its own DEV workspace. Isolation also prevents 'ambiguous' matches when frontend and backend workspaces contain same-named items.",
+		},
+	}
+	choice, err := ui.NumberMenu("Baseline for this mapping?", opts)
+	if err != nil {
+		return "", err
+	}
+	if choice != own {
+		return "", nil
+	}
+	token, err := client.GetAccessToken(customerName)
+	if err != nil {
+		return "", err
+	}
+	spinner := ui.NewSpinner("Loading workspaces...")
+	spinner.Start()
+	workspaces, err := client.ListWorkspaces(token)
+	spinner.Stop()
+	if err != nil {
+		return "", fmt.Errorf("list workspaces: %w", err)
+	}
+	wsOpts := make([]ui.FilterOption, len(workspaces))
+	for i, w := range workspaces {
+		wsOpts[i] = ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName}
+	}
+	return ui.FilterMenu("Baseline workspace for this mapping", wsOpts, ui.DefaultFilterRowRenderer)
 }
 
 // setBaseline sets (or, with an empty alias, clears) the customer's baseline
@@ -926,7 +990,7 @@ func removeDeploymentMapping(configPath, customerName, alias string, customer co
 
 	options := make([]ui.MenuOption, len(env.Deployments))
 	for i, d := range env.Deployments {
-		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s → %s", mappingLabel(d.Folder, d.Repo), d.Workspace), Value: fmt.Sprintf("%d", i)}
+		options[i] = ui.MenuOption{Label: fmt.Sprintf("%s → %s%s", mappingLabel(d.Folder, d.Repo), d.Workspace, baselineSuffix(d)), Value: fmt.Sprintf("%d", i)}
 	}
 	chosen, err := ui.NumberMenu("Select mapping to remove", options)
 	if err != nil {
@@ -1123,6 +1187,9 @@ func setRepoPath(configPath, customerName string) error {
 	startDir, _ := os.UserHomeDir()
 	if customer.RepoPath != "" {
 		startDir = customer.RepoPath
+		fmt.Println(currentValueBox("Current primary repo", customer.RepoPath))
+	} else {
+		fmt.Println(warningStyle.Render("No primary repo set yet."))
 	}
 	picked, err := ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
 	if err != nil {
