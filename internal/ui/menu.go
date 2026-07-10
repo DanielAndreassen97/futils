@@ -17,6 +17,12 @@ var ErrGoBack = errors.New("go back")
 // ErrQuit is returned when the user presses Ctrl+C or q to quit outright.
 var ErrQuit = errors.New("quit")
 
+// ErrGoHome is returned when the user presses m to abandon whatever flow they
+// are in and jump straight back to the main menu. Intermediate loops must let
+// it propagate (never swallow it as a local soft-failure); only the root menu
+// loop catches it.
+var ErrGoHome = errors.New("go to main menu")
+
 // MenuOption is one row in a NumberMenu. Label is what the user sees,
 // Value is what gets returned when they select it — decoupled so display
 // names can differ from internal identifiers (e.g. notebook display name
@@ -43,6 +49,7 @@ type menuModel struct {
 	selected string
 	goBack   bool
 	quit     bool
+	goHome   bool
 	done     bool
 	showInfo bool
 	width    int // terminal width from tea.WindowSizeMsg; 0 until first message
@@ -107,6 +114,10 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			m.done = true
 			return m, tea.Quit
+		case "m":
+			m.goHome = true
+			m.done = true
+			return m, tea.Quit
 		default:
 			// Number keys 1-9 jump straight to the Nth *selectable* row.
 			// Saves keystrokes when the menu is short and the user knows
@@ -150,7 +161,7 @@ func (m menuModel) View() string {
 	// After selection, collapse to a one-line summary. Keeps scrollback
 	// readable when the user has clicked through a multi-step flow.
 	if m.done {
-		if m.goBack || m.quit {
+		if m.goBack || m.quit || m.goHome {
 			return ""
 		}
 		return menuSelectedStyle.Render(fmt.Sprintf("  %s: %s", m.message, m.selectedLabel())) + "\n"
@@ -199,7 +210,7 @@ func (m menuModel) View() string {
 	// the Info box are the rich extras — they render on their own whenever
 	// the highlighted option happens to carry that field, so no separate
 	// gate is needed to keep plain Label/Value menus free of empty output.
-	hint := "↑/↓ move · enter select · esc back"
+	hint := "↑/↓ move · enter select · esc back · m main menu"
 	if cur.Info != "" {
 		hint += " · ? info"
 	}
@@ -279,6 +290,9 @@ func NumberMenu(message string, options []MenuOption) (string, error) {
 	result := final.(menuModel)
 	if result.quit {
 		return "", ErrQuit
+	}
+	if result.goHome {
+		return "", ErrGoHome
 	}
 	if result.goBack {
 		return "", ErrGoBack

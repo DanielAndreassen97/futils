@@ -8,6 +8,14 @@ import (
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
+// concurDevEP / concurTestEP are the baked/target SQL-endpoint GUIDs for
+// concurrencyFixture. Production endpoint ids are always GUIDs, so the
+// fixture uses obviously-fake ones rather than readable ids.
+const (
+	concurDevEP  = "eeeeeeee-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	concurTestEP = "eeeeeeee-cccc-cccc-cccc-cccccccccccc"
+)
+
 // concurrencyFixture builds a Resolver and a Rebinder that SHARE the same fake
 // client and that several goroutines hit at once, so their lazy caches
 // (Resolver.wsByName/itemsWS, Rebinder.targetEndpoint) are populated under
@@ -22,16 +30,16 @@ func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 			{ID: "test-data", DisplayName: "DW - TEST - Data"},
 		},
 		itemsByWS: map[string][]fabric.Item{
-			// dev-ep is the baked SQL-endpoint item (indexed by name, resolved via
-			// ItemByGUID) for the parent lakehouse dev-silver-lh.
-			"dev-data":  {{ID: "dev-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}, {ID: "dev-ep", DisplayName: "LH_Silver", Type: "SQLEndpoint"}},
+			// concurDevEP is the baked SQL-endpoint item (indexed by name, resolved
+			// via ItemByGUID) for the parent lakehouse dev-silver-lh.
+			"dev-data":  {{ID: "dev-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}, {ID: concurDevEP, DisplayName: "LH_Silver", Type: "SQLEndpoint"}},
 			"test-data": {{ID: "test-silver-lh", DisplayName: "LH_Silver", Type: "Lakehouse"}},
 		},
 		// The target lakehouse exposes its SQL endpoint so the SQL rebind path
 		// populates the Rebinder's targetEndpoint cache.
 		sqlByLH: map[string][2]string{
-			"dev-silver-lh":  {"dev-silver.datawarehouse.fabric.microsoft.com", "dev-ep"},
-			"test-silver-lh": {"test-silver.datawarehouse.fabric.microsoft.com", "test-ep"},
+			"dev-silver-lh":  {"dev-silver.datawarehouse.fabric.microsoft.com", concurDevEP},
+			"test-silver-lh": {"test-silver.datawarehouse.fabric.microsoft.com", concurTestEP},
 		},
 	}
 	baselineWS := []fabric.Workspace{f.workspaces[0]}
@@ -49,7 +57,7 @@ func concurrencyFixture(t *testing.T) (*Resolver, *Rebinder) {
 // against the DEV endpoint; rebind should swap host+id to the TEST endpoint.
 // Uses the on-disk TMDL connection shape Sql.Database("host", "id").
 func semModelWithSQLSource() []byte {
-	return []byte(`let Source = Sql.Database("dev-silver.datawarehouse.fabric.microsoft.com", "dev-ep") in Source`)
+	return []byte(`let Source = Sql.Database("dev-silver.datawarehouse.fabric.microsoft.com", "` + concurDevEP + `") in Source`)
 }
 
 // TestSubstitutePartsConcurrentSharedCaches drives SubstituteParts from many
@@ -134,8 +142,8 @@ func TestRebinderConcurrentEndpointCaches(t *testing.T) {
 
 	for w := 0; w < workers; w++ {
 		if !strings.Contains(outs[w], "test-silver.datawarehouse.fabric.microsoft.com") ||
-			!strings.Contains(outs[w], "test-ep") ||
-			strings.Contains(outs[w], "dev-ep") {
+			!strings.Contains(outs[w], concurTestEP) ||
+			strings.Contains(outs[w], concurDevEP) {
 			t.Fatalf("worker %d: SQL source not rebound to target endpoint: %s", w, outs[w])
 		}
 	}

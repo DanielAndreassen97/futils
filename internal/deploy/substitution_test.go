@@ -3,7 +3,7 @@ package deploy
 import "testing"
 
 func TestResolveTargetAttr(t *testing.T) {
-	rb := newSemmodSQLRebinder(t) // from semmod_test.go: target has LH_ConfigLog=test-lh with sqlByLH test-lh={testhost...,test-ep-id}
+	rb := newSemmodSQLRebinder(t) // from semmod_test.go: target has LH_ConfigLog=test-lh with sqlByLH test-lh={testhost...,testConfigEP}
 	// id
 	if v, ok := rb.ResolveTargetAttr("Lakehouse", "LH_ConfigLog", "id"); !ok || v != "test-lh" {
 		t.Errorf("id = %q ok=%v", v, ok)
@@ -13,7 +13,7 @@ func TestResolveTargetAttr(t *testing.T) {
 		t.Errorf("sqlendpoint = %q ok=%v", v, ok)
 	}
 	// sqlendpointid
-	if v, ok := rb.ResolveTargetAttr("Lakehouse", "LH_ConfigLog", "sqlendpointid"); !ok || v != "test-ep-id" {
+	if v, ok := rb.ResolveTargetAttr("Lakehouse", "LH_ConfigLog", "sqlendpointid"); !ok || v != testConfigEP {
 		t.Errorf("sqlendpointid = %q ok=%v", v, ok)
 	}
 	// empty attr defaults to id

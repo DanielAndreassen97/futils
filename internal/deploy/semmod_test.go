@@ -96,6 +96,16 @@ in
 	}
 }
 
+// devConfigEP / testConfigEP / unknownConfigEP are the DEV/TEST/unresolvable
+// baked SQL-endpoint GUIDs for newSemmodSQLRebinder. Production endpoint ids
+// are always GUIDs, so the fixture uses obviously-fake ones rather than
+// readable ids (a readable id would now be misread as the NAME-form branch).
+const (
+	devConfigEP     = "eeeeeeee-1111-1111-1111-111111111111"
+	testConfigEP    = "eeeeeeee-2222-2222-2222-222222222222"
+	unknownConfigEP = "eeeeeeee-0000-0000-0000-000000000000"
+)
+
 func newSemmodSQLRebinder(t *testing.T) *Rebinder {
 	t.Helper()
 	f := &fakeFabric{
@@ -104,12 +114,12 @@ func newSemmodSQLRebinder(t *testing.T) *Rebinder {
 			{ID: "test-config", DisplayName: "DW - TEST - Config"},
 		},
 		itemsByWS: map[string][]fabric.Item{
-			"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}, {ID: "dev-ep-id", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}},
+			"dev-config":  {{ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}, {ID: devConfigEP, DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}},
 			"test-config": {{ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 		},
 		sqlByLH: map[string][2]string{
-			"dev-lh":  {"devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id"},
-			"test-lh": {"testhost.datawarehouse.fabric.microsoft.com", "test-ep-id"},
+			"dev-lh":  {"devhost.datawarehouse.fabric.microsoft.com", devConfigEP},
+			"test-lh": {"testhost.datawarehouse.fabric.microsoft.com", testConfigEP},
 		},
 	}
 	rb, err := NewRebinder(f, "tok",
@@ -133,13 +143,13 @@ func semmodSQL(host, epID string) string {
 
 func TestRebindSQLSource(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
-	in := semmodSQL("devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id")
+	in := semmodSQL("devhost.datawarehouse.fabric.microsoft.com", devConfigEP)
 	var out RebindOutcome
 	got := rb.rebindSQLSources(in, &out)
-	if !strings.Contains(got, "testhost.datawarehouse.fabric.microsoft.com") || !strings.Contains(got, "test-ep-id") {
+	if !strings.Contains(got, "testhost.datawarehouse.fabric.microsoft.com") || !strings.Contains(got, testConfigEP) {
 		t.Errorf("SQL endpoint not rebound:\n%s", got)
 	}
-	if strings.Contains(got, "devhost") || strings.Contains(got, "dev-ep-id") {
+	if strings.Contains(got, "devhost") || strings.Contains(got, devConfigEP) {
 		t.Errorf("baseline endpoint still present:\n%s", got)
 	}
 	if len(out.Changes) != 2 { // host + id
@@ -154,10 +164,10 @@ func TestRebindSQLSource(t *testing.T) {
 
 func TestRebindSQLSourceUnresolved(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
-	in := semmodSQL("unknownhost.datawarehouse.fabric.microsoft.com", "unknown-ep-id")
+	in := semmodSQL("unknownhost.datawarehouse.fabric.microsoft.com", unknownConfigEP)
 	var out RebindOutcome
 	got := rb.rebindSQLSources(in, &out)
-	if !strings.Contains(got, "unknown-ep-id") {
+	if !strings.Contains(got, unknownConfigEP) {
 		t.Error("unresolved endpoint should be left unchanged")
 	}
 	if len(out.Unresolved) != 1 || out.Unresolved[0].ItemType != "SQL endpoint" {
@@ -168,7 +178,7 @@ func TestRebindSQLSourceUnresolved(t *testing.T) {
 func TestRebindSemanticModelSQLVariant(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	// SQL variant only (this fixture has no data workspace for OneLake).
-	in := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id"))
+	in := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", devConfigEP))
 	out, outcome := rb.RebindSemanticModel(in)
 	if strings.Contains(string(out), "devhost") {
 		t.Errorf("SQL endpoint not rebound:\n%s", out)
@@ -181,13 +191,13 @@ func TestRebindSemanticModelSQLVariant(t *testing.T) {
 func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Config"}
-	content := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id"))
+	content := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", devConfigEP))
 	out, outcome := rb.RebindPart(item, "definition/expressions.tmdl", content)
 	if strings.Contains(string(out), "devhost") || len(outcome.Changes) != 2 {
 		t.Errorf("RebindPart did not rebind a SemanticModel part:\n%s\n%#v", out, outcome.Changes)
 	}
 	// A non-semmod, non-notebook part is untouched.
-	plain := []byte(`Sql.Database("devhost.datawarehouse.fabric.microsoft.com", "dev-ep-id")`)
+	plain := []byte(`Sql.Database("devhost.datawarehouse.fabric.microsoft.com", "` + devConfigEP + `")`)
 	out2, outcome2 := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "P"}, "pipeline-content.json", plain)
 	if string(out2) != string(plain) || len(outcome2.Changes) != 0 {
 		t.Error("non-semmod/non-notebook part should be untouched")
@@ -197,35 +207,49 @@ func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 // The baked GUID is a SQLEndpoint item (indexed by name), not a Lakehouse — the
 // old baseEndpoints probe missed it; ItemByGUID must resolve it by name.
 func TestRebindSQLViaNameIndex(t *testing.T) {
+	const (
+		nameIdxDevEP  = "eeeeeeee-3333-3333-3333-333333333333"
+		nameIdxTestEP = "eeeeeeee-4444-4444-4444-444444444444"
+	)
 	dev := fabric.Workspace{ID: "ws-dev", DisplayName: "DEV"}
 	tgt := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{dev, tgt},
 		itemsByWS: map[string][]fabric.Item{
-			"ws-dev":  {{ID: "dev-ep", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
-			"ws-test": {{ID: "test-ep", DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+			"ws-dev":  {{ID: nameIdxDevEP, DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "dev-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
+			"ws-test": {{ID: nameIdxTestEP, DisplayName: "LH_ConfigLog", Type: "SQLEndpoint"}, {ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 		},
 		// GetLakehouseSqlEndpoint returns (host,id) per lakehouse id (host from the parent lakehouse).
-		sqlByLH: map[string][2]string{"test-lh": {"test-host", "test-ep"}},
+		sqlByLH: map[string][2]string{"test-lh": {"test-host", nameIdxTestEP}},
 	}}
 	rb, err := NewRebinder(rf, "tok", []fabric.Workspace{dev}, []fabric.Workspace{tgt}, nil)
 	if err != nil {
 		t.Fatalf("NewRebinder: %v", err)
 	}
-	in := `database = Sql.Database("dev-host", "dev-ep")`
+	in := `database = Sql.Database("dev-host", "` + nameIdxDevEP + `")`
 	var out RebindOutcome
 	got := rb.rebindSQLSources(in, &out)
 	if len(out.Unresolved) != 0 {
 		t.Fatalf("must resolve via NameIndex, got unresolved %+v", out.Unresolved)
 	}
-	if !strings.Contains(got, `"test-host"`) || !strings.Contains(got, `"test-ep"`) {
-		t.Fatalf("rewrite = %q, want test-host/test-ep", got)
+	if !strings.Contains(got, `"test-host"`) || !strings.Contains(got, nameIdxTestEP) {
+		t.Fatalf("rewrite = %q, want test-host/%s", got, nameIdxTestEP)
 	}
 }
 
 // newSemmodSharedHostRebinder wires a baseline where TWO lakehouses share one
 // SQL-endpoint host (dev-host) under different endpoint ids, and a target where
 // the same-named lakehouses live in different workspaces with different hosts.
+// Shared-host fixture SQL-endpoint GUIDs. Production endpoint ids are always
+// GUIDs, so these are obviously-fake ones rather than readable ids.
+const (
+	sharedDevEPOne  = "eeeeeeee-5555-5555-5555-555555555555"
+	sharedDevEPTwo  = "eeeeeeee-6666-6666-6666-666666666666"
+	sharedTgtEPOne  = "eeeeeeee-7777-7777-7777-777777777777"
+	sharedTgtEPTwo  = "eeeeeeee-8888-8888-8888-888888888888"
+	sharedUnknownEP = "eeeeeeee-9999-9999-9999-999999999999"
+)
+
 func newSemmodSharedHostRebinder(t *testing.T) *Rebinder {
 	t.Helper()
 	f := &fakeFabric{
@@ -237,16 +261,16 @@ func newSemmodSharedHostRebinder(t *testing.T) *Rebinder {
 		itemsByWS: map[string][]fabric.Item{
 			"dev-data": {
 				{ID: "dev-lh-one", DisplayName: "LH_One", Type: "Lakehouse"},
-				{ID: "dev-ep-one", DisplayName: "LH_One", Type: "SQLEndpoint"},
+				{ID: sharedDevEPOne, DisplayName: "LH_One", Type: "SQLEndpoint"},
 				{ID: "dev-lh-two", DisplayName: "LH_Two", Type: "Lakehouse"},
-				{ID: "dev-ep-two", DisplayName: "LH_Two", Type: "SQLEndpoint"},
+				{ID: sharedDevEPTwo, DisplayName: "LH_Two", Type: "SQLEndpoint"},
 			},
 			"tgt-a": {{ID: "tgt-lh-one", DisplayName: "LH_One", Type: "Lakehouse"}},
 			"tgt-b": {{ID: "tgt-lh-two", DisplayName: "LH_Two", Type: "Lakehouse"}},
 		},
 		sqlByLH: map[string][2]string{
-			"tgt-lh-one": {"host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one"},
-			"tgt-lh-two": {"host-b.datawarehouse.fabric.microsoft.com", "tgt-ep-two"},
+			"tgt-lh-one": {"host-a.datawarehouse.fabric.microsoft.com", sharedTgtEPOne},
+			"tgt-lh-two": {"host-b.datawarehouse.fabric.microsoft.com", sharedTgtEPTwo},
 		},
 	}
 	rb, err := NewRebinder(f, "tok",
@@ -266,19 +290,19 @@ func newSemmodSharedHostRebinder(t *testing.T) *Rebinder {
 func TestRebindSQLSharedHostDifferentTargets(t *testing.T) {
 	rb := newSemmodSharedHostRebinder(t)
 	in := `let
-	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-one"),
-	Two = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-two")
+	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "` + sharedDevEPOne + `"),
+	Two = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "` + sharedDevEPTwo + `")
 in
 	Two`
 	var out RebindOutcome
 	got := rb.rebindSQLSources(in, &out)
-	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one")`) {
+	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "`+sharedTgtEPOne+`")`) {
 		t.Errorf("LH_One must pair host-a with tgt-ep-one:\n%s", got)
 	}
-	if !strings.Contains(got, `Sql.Database("host-b.datawarehouse.fabric.microsoft.com", "tgt-ep-two")`) {
+	if !strings.Contains(got, `Sql.Database("host-b.datawarehouse.fabric.microsoft.com", "`+sharedTgtEPTwo+`")`) {
 		t.Errorf("LH_Two must pair host-b with tgt-ep-two (not funneled into host-a):\n%s", got)
 	}
-	if strings.Contains(got, "dev-host") || strings.Contains(got, "dev-ep") {
+	if strings.Contains(got, "dev-host") || strings.Contains(got, sharedDevEPOne) || strings.Contains(got, sharedDevEPTwo) {
 		t.Errorf("baseline host/id still present:\n%s", got)
 	}
 	if len(out.Unresolved) != 0 {
@@ -297,9 +321,9 @@ in
 // inside its own match span.
 func TestRebindSQLUnresolvedSharesHostWithResolved(t *testing.T) {
 	rb := newSemmodSharedHostRebinder(t)
-	const unresolvedExpr = `Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "unknown-ep")`
+	unresolvedExpr := `Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "` + sharedUnknownEP + `")`
 	in := `let
-	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "dev-ep-one"),
+	One = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "` + sharedDevEPOne + `"),
 	Other = ` + unresolvedExpr + `
 in
 	Other`
@@ -308,10 +332,10 @@ in
 	if !strings.Contains(got, unresolvedExpr) {
 		t.Errorf("unresolved expression must be byte-identical (shared host untouched):\n%s", got)
 	}
-	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "tgt-ep-one")`) {
+	if !strings.Contains(got, `Sql.Database("host-a.datawarehouse.fabric.microsoft.com", "`+sharedTgtEPOne+`")`) {
 		t.Errorf("resolved expression not rebound:\n%s", got)
 	}
-	if len(out.Unresolved) != 1 || out.Unresolved[0].GUID != "unknown-ep" || out.Unresolved[0].Reason != ReasonNameUnknown {
+	if len(out.Unresolved) != 1 || out.Unresolved[0].GUID != sharedUnknownEP || out.Unresolved[0].Reason != ReasonNameUnknown {
 		t.Fatalf("unresolved = %#v", out.Unresolved)
 	}
 }
@@ -321,6 +345,10 @@ in
 // reference — the SQL pass must consult the override map like every other
 // rebind pass (the edit-menu Info text promises exactly this).
 func TestRebindSQLOverrideResolvesEndpoint(t *testing.T) {
+	const (
+		bakedEP        = "eeeeeeee-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		overrideTestEP = "eeeeeeee-ffff-ffff-ffff-ffffffffffff"
+	)
 	f := &fakeFabric{
 		workspaces: []fabric.Workspace{
 			{ID: "dev-config", DisplayName: "DW - DEV - Config"},
@@ -332,11 +360,11 @@ func TestRebindSQLOverrideResolvesEndpoint(t *testing.T) {
 			"test-config": {{ID: "test-lh", DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 		},
 		sqlByLH: map[string][2]string{
-			"test-lh": {"testhost.datawarehouse.fabric.microsoft.com", "test-ep-id"},
+			"test-lh": {"testhost.datawarehouse.fabric.microsoft.com", overrideTestEP},
 		},
 	}
 	overrides := map[string]Override{
-		"baked-ep-id": {ItemType: "Lakehouse", ItemName: "LH_ConfigLog"},
+		bakedEP: {ItemType: "Lakehouse", ItemName: "LH_ConfigLog"},
 	}
 	rb, err := NewRebinder(f, "tok",
 		[]fabric.Workspace{f.workspaces[0]},
@@ -345,16 +373,187 @@ func TestRebindSQLOverrideResolvesEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRebinder: %v", err)
 	}
-	in := semmodSQL("stalehost.datawarehouse.fabric.microsoft.com", "baked-ep-id")
+	in := semmodSQL("stalehost.datawarehouse.fabric.microsoft.com", bakedEP)
 	var out RebindOutcome
 	got := rb.rebindSQLSources(in, &out)
 	if len(out.Unresolved) != 0 {
 		t.Fatalf("override should resolve the endpoint GUID, got unresolved %+v", out.Unresolved)
 	}
-	if !strings.Contains(got, "testhost.datawarehouse.fabric.microsoft.com") || !strings.Contains(got, "test-ep-id") {
+	if !strings.Contains(got, "testhost.datawarehouse.fabric.microsoft.com") || !strings.Contains(got, overrideTestEP) {
 		t.Errorf("override not applied:\n%s", got)
 	}
-	if strings.Contains(got, "stalehost") || strings.Contains(got, "baked-ep-id") {
+	if strings.Contains(got, "stalehost") || strings.Contains(got, bakedEP) {
 		t.Errorf("baseline endpoint still present:\n%s", got)
+	}
+}
+
+// --- Sql.Database NAME-form branch (guidShapeRe rejects the id) ---
+//
+// Sql.Database("host", "LH_Gold") carries the database NAME (equal to the
+// lakehouse name, and the same in the target), not a baked endpoint GUID.
+// resolveNameReason resolves it directly in the target index (override-first,
+// like every other rebind pass) and only the host is rewritten — the name
+// argument is untouched.
+
+// TestRebindSQLNameFormRewritesHostOnly proves the happy path: the target has
+// a lakehouse named LH_Gold, so only the host is rewritten and the name stays
+// byte-identical.
+func TestRebindSQLNameFormRewritesHostOnly(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-data", DisplayName: "TGT Data"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"tgt-data": {{ID: "tgt-gold-lh", DisplayName: "LH_Gold", Type: "Lakehouse"}},
+		},
+		sqlByLH: map[string][2]string{
+			"tgt-gold-lh": {"tgt-host.datawarehouse.fabric.microsoft.com", "eeeeeeee-dddd-dddd-dddd-dddddddddddd"},
+		},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let Source = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Gold") in Source`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if !strings.Contains(got, `Sql.Database("tgt-host.datawarehouse.fabric.microsoft.com", "LH_Gold")`) {
+		t.Errorf("host not rebound / name not preserved byte-identical:\n%s", got)
+	}
+	if len(out.Unresolved) != 0 {
+		t.Fatalf("expected no unresolved, got %+v", out.Unresolved)
+	}
+	if len(out.Changes) != 1 || out.Changes[0].Kind != "SQL endpoint" {
+		t.Fatalf("changes = %#v (want exactly one SQL endpoint change, for the host)", out.Changes)
+	}
+}
+
+// TestRebindSQLNameFormUnresolvedNotInTarget proves that a database name absent
+// from every target workspace is left byte-identical and reported unresolved
+// with ItemType "SQL database (by name)" and Reason not-in-target.
+func TestRebindSQLNameFormUnresolvedNotInTarget(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-data", DisplayName: "TGT Data"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"tgt-data": {}, // LH_Ghost exists nowhere in the target
+		},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let Source = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Ghost") in Source`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if got != in {
+		t.Errorf("unresolved name-form ref must leave content unchanged:\n%s", got)
+	}
+	if len(out.Unresolved) != 1 || out.Unresolved[0].ItemType != "SQL database (by name)" || out.Unresolved[0].Reason != ReasonNotInTarget {
+		t.Fatalf("unresolved = %#v (want one SQL database (by name) with ReasonNotInTarget)", out.Unresolved)
+	}
+}
+
+// TestRebindSQLNameFormAmbiguous proves that a database name present in TWO
+// target workspaces (so the target NameIndex can't place it) is left
+// byte-identical and reported unresolved with Reason ambiguous.
+func TestRebindSQLNameFormAmbiguous(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-a", DisplayName: "TGT A"},
+			{ID: "tgt-b", DisplayName: "TGT B"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"tgt-a": {{ID: "tgt-a-gold-lh", DisplayName: "LH_Gold", Type: "Lakehouse"}},
+			"tgt-b": {{ID: "tgt-b-gold-lh", DisplayName: "LH_Gold", Type: "Lakehouse"}},
+		},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1], f.workspaces[2]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let Source = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Gold") in Source`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if got != in {
+		t.Errorf("ambiguous name-form ref must leave content unchanged:\n%s", got)
+	}
+	if len(out.Unresolved) != 1 || out.Unresolved[0].Reason != ReasonAmbiguous {
+		t.Fatalf("unresolved = %#v (want one with ReasonAmbiguous)", out.Unresolved)
+	}
+}
+
+// TestRebindSQLNameFormOverrideTakesPrecedence proves that an override keyed by
+// the literal database name ("LH_Gold") redirects resolution to a
+// differently-named target lakehouse — override-first precedence, mirroring
+// resolveGUIDReason's precedence for GUID-form refs.
+func TestRebindSQLNameFormOverrideTakesPrecedence(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-data", DisplayName: "TGT Data"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			// The target has no lakehouse literally named LH_Gold; the override
+			// redirects the reference to LH_Renamed instead.
+			"tgt-data": {{ID: "tgt-renamed-lh", DisplayName: "LH_Renamed", Type: "Lakehouse"}},
+		},
+		sqlByLH: map[string][2]string{
+			"tgt-renamed-lh": {"tgt-host.datawarehouse.fabric.microsoft.com", "eeeeeeee-cccc-cccc-cccc-cccccccccccc"},
+		},
+	}
+	overrides := map[string]Override{
+		"LH_Gold": {ItemType: "Lakehouse", ItemName: "LH_Renamed"},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1]}, overrides)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let Source = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Gold") in Source`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if len(out.Unresolved) != 0 {
+		t.Fatalf("override should resolve the name, got unresolved %+v", out.Unresolved)
+	}
+	if !strings.Contains(got, `Sql.Database("tgt-host.datawarehouse.fabric.microsoft.com", "LH_Gold")`) {
+		t.Errorf("override not applied / name not preserved byte-identical:\n%s", got)
+	}
+}
+
+// TestRebindSQLUnresolvedDedupsCount proves that AddUnresolved's dedup applies
+// end-to-end through rebindSQLSources: the SAME broken name-form reference
+// appearing in three expressions collapses into ONE UnresolvedRef with
+// Count=3, not three identical entries.
+func TestRebindSQLUnresolvedDedupsCount(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-data", DisplayName: "TGT Data"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"tgt-data": {}, // LH_Ghost exists nowhere in the target
+		},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let
+	A = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Ghost"),
+	B = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Ghost"),
+	C = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "LH_Ghost")
+in
+	C`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if got != in {
+		t.Errorf("unresolved refs must leave content unchanged:\n%s", got)
+	}
+	if len(out.Unresolved) != 1 || out.Unresolved[0].Count != 3 {
+		t.Fatalf("unresolved = %#v (want exactly one ref with Count=3)", out.Unresolved)
 	}
 }

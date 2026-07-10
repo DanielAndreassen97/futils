@@ -22,6 +22,12 @@ type DeployMapping struct {
 	// Repo is the repo this folder lives in, when the customer deploys from more
 	// than one git repo. Empty = the customer's primary RepoPath (the common case).
 	Repo string `json:"repo,omitempty"`
+	// BaselineWorkspace isolates this mapping's reference resolution: when set,
+	// baked GUIDs resolve against ONLY this baseline workspace and references
+	// resolve into ONLY the mapping's own deploy workspace, instead of the
+	// customer-level baseline/target environment spans. Empty = inherit the
+	// baseline environment (the common case).
+	BaselineWorkspace string `json:"baselineWorkspace,omitempty"`
 }
 
 // ReferenceOverride maps a baseline-environment GUID baked in git to a target

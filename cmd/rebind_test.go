@@ -112,3 +112,101 @@ func TestBuildRebinderNilWhenNothingToDo(t *testing.T) {
 		t.Errorf("expected (nil,nil) when no baseline and no substitutions; got rb=%v err=%v", rb, err)
 	}
 }
+
+// TestRebinderSetIsolatedMapping proves the per-mapping baseline: two baseline
+// workspaces both hold "LH_Data", the target env spans two workspaces that
+// both hold "LH_Data" — the env-level rebinder would go ambiguous, but the
+// isolated mapping resolves within its own (baseline ws → deploy ws) pair.
+func TestRebinderSetIsolatedMapping(t *testing.T) {
+	customer := config.Customer{
+		BaselineEnvironment: "DEV",
+		Environments: []config.Environment{
+			{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}},
+			{Alias: "TEST", Workspaces: []string{"DW - TEST - Data", "Front - TEST"}},
+		},
+	}
+	workspaces := []fabric.Workspace{
+		{ID: "dev-data", DisplayName: "DW - DEV - Data"},
+		{ID: "test-data", DisplayName: "DW - TEST - Data"},
+		{ID: "front-dev", DisplayName: "Front - DEV"},
+		{ID: "front-test", DisplayName: "Front - TEST"},
+	}
+	api := &deployFakeAPI{items: map[string][]fabric.Item{
+		"dev-data":   {{ID: "back-dev-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+		"test-data":  {{ID: "back-test-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+		"front-dev":  {{ID: "front-dev-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+		"front-test": {{ID: "front-test-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+	}}
+	rs, err := newRebinderSet(api, "tok", customer, "TEST", workspaces)
+	if err != nil {
+		t.Fatalf("newRebinderSet: %v", err)
+	}
+
+	shared, err := rs.For(config.DeployMapping{Folder: "Backend", Workspace: "DW - TEST - Data"})
+	if err != nil {
+		t.Fatalf("For(shared): %v", err)
+	}
+	if shared != rs.shared || shared == nil {
+		t.Fatal("mapping without BaselineWorkspace must get the shared env rebinder")
+	}
+
+	iso, err := rs.For(config.DeployMapping{Folder: "", Workspace: "Front - TEST", BaselineWorkspace: "Front - DEV"})
+	if err != nil {
+		t.Fatalf("For(isolated): %v", err)
+	}
+	if iso == shared {
+		t.Fatal("isolated mapping must get its own rebinder")
+	}
+	nb := []byte(`# Fabric notebook source
+
+# METADATA ********************
+
+# META {
+# META   "dependencies": { "lakehouse": { "default_lakehouse": "front-dev-lh", "default_lakehouse_name": "LH_Data" } }
+# META }
+`)
+	out, outcome := iso.RebindNotebookLakehouses(nb)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("isolated resolve failed: %+v", outcome.Unresolved)
+	}
+	if !strings.Contains(string(out), "front-test-lh") {
+		t.Errorf("want front-test-lh (isolated target), got:\n%s", string(out))
+	}
+
+	again, _ := rs.For(config.DeployMapping{Folder: "", Workspace: "Front - TEST", BaselineWorkspace: "Front - DEV"})
+	if again != iso {
+		t.Error("isolated rebinder must be cached per (baseline ws, target ws) pair")
+	}
+}
+
+// TestRebinderSetIsolatedWithoutEnvBaseline: a mapping-level baseline works
+// even when the customer has no baseline environment at all.
+func TestRebinderSetIsolatedWithoutEnvBaseline(t *testing.T) {
+	customer := config.Customer{
+		Environments: []config.Environment{
+			{Alias: "TEST", Workspaces: []string{"Front - TEST"}},
+		},
+	}
+	workspaces := []fabric.Workspace{
+		{ID: "front-dev", DisplayName: "Front - DEV"},
+		{ID: "front-test", DisplayName: "Front - TEST"},
+	}
+	api := &deployFakeAPI{items: map[string][]fabric.Item{
+		"front-dev":  {{ID: "front-dev-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+		"front-test": {{ID: "front-test-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+	}}
+	rs, err := newRebinderSet(api, "tok", customer, "TEST", workspaces)
+	if err != nil {
+		t.Fatalf("newRebinderSet: %v", err)
+	}
+	if rs.shared != nil {
+		t.Fatal("shared rebinder should be nil without baseline env or substitutions")
+	}
+	iso, err := rs.For(config.DeployMapping{Workspace: "Front - TEST", BaselineWorkspace: "Front - DEV"})
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if iso == nil {
+		t.Fatal("mapping-level baseline must yield a rebinder even when env rebinding is disabled")
+	}
+}

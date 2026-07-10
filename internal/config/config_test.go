@@ -628,3 +628,32 @@ func TestMappingRepoFallback(t *testing.T) {
 		t.Fatalf("explicit Repo must win, got %q", got)
 	}
 }
+
+func TestMappingBaselineWorkspaceRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Environments: []Environment{{Alias: "TEST", Workspaces: []string{"Front - TEST"}, Deployments: []DeployMapping{
+				{Folder: "", Workspace: "Front - TEST", Repo: "/repos/frontend", BaselineWorkspace: "Front - DEV"},
+				{Folder: "Backend", Workspace: "DW - TEST - Config"},
+			}}},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	deps := out.Customers["acme"].Environments[0].Deployments
+	if len(deps) != 2 {
+		t.Fatalf("deployments = %#v", deps)
+	}
+	if deps[0].BaselineWorkspace != "Front - DEV" {
+		t.Errorf("BaselineWorkspace = %q, want Front - DEV", deps[0].BaselineWorkspace)
+	}
+	if deps[1].BaselineWorkspace != "" {
+		t.Errorf("inherited mapping should have empty BaselineWorkspace, got %q", deps[1].BaselineWorkspace)
+	}
+}

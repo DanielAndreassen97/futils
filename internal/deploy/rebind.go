@@ -27,6 +27,10 @@ type UnresolvedRef struct {
 	Location string // "default_lakehouse" | "known_lakehouses"
 	ItemName string
 	Reason   string // ReasonNameUnknown | ReasonNotInTarget | ReasonAmbiguous
+	// Count is how many occurrences collapsed into this ref (a model can carry
+	// the same broken reference in every table expression). 0 means 1 — set
+	// only by AddUnresolved.
+	Count int
 }
 
 const (
@@ -34,6 +38,24 @@ const (
 	ReasonNotInTarget = "not-in-target" // name known but absent from every registered target workspace
 	ReasonAmbiguous   = "ambiguous"     // name appears in 2+ target workspaces
 )
+
+// AddUnresolved records an unresolved reference on the outcome, deduplicated
+// on (GUID, ItemType, Location): a model carrying the same broken reference in
+// 80 table expressions reports it once with Count=80, not as 80 identical
+// lines. Merging pre-counted refs (outcome aggregation) sums the counts.
+func (o *RebindOutcome) AddUnresolved(ref UnresolvedRef) {
+	if ref.Count == 0 {
+		ref.Count = 1
+	}
+	for i := range o.Unresolved {
+		u := &o.Unresolved[i]
+		if u.GUID == ref.GUID && u.ItemType == ref.ItemType && u.Location == ref.Location {
+			u.Count += ref.Count
+			return
+		}
+	}
+	o.Unresolved = append(o.Unresolved, ref)
+}
 
 // LocationReportBinding is the UnresolvedRef.Location for a report's
 // definition.pbir dataset binding. Exported because the cmd layer uses it to
@@ -176,6 +198,20 @@ func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, boo
 	return it, st == LookupFound, reasonForStatus(st)
 }
 
+// resolveNameReason resolves a NAME-form reference — the baseline index plays
+// no part, because the reference already carries the item name (e.g.
+// Sql.Database("host", "LH_Gold")). An override keyed by the literal name takes
+// precedence, mirroring resolveGUIDReason's precedence for GUIDs; otherwise the
+// name resolves directly in the target index.
+func (rb *Rebinder) resolveNameReason(name, targetType string) (IndexedItem, bool, string) {
+	if ov, ok := rb.overrides[name]; ok {
+		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
+		return it, st == LookupFound, reasonForStatus(st)
+	}
+	it, st := rb.target.LookupName(name, targetType)
+	return it, st == LookupFound, reasonForStatus(st)
+}
+
 // addChange records a baseline→target rewrite on out, deduplicated by Old via
 // seen. No-ops on an empty, identity, or already-seen Old value. Shared by every
 // rebind pass so the dedup rule lives in one place.
@@ -264,7 +300,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 				addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason})
 		}
 	}
 	for _, k := range lh.KnownLakehouses {
@@ -274,7 +310,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		if it, ok, reason := rb.resolveGUIDReason(k.ID, ""); ok {
 			addChange(&out, seen, "Lakehouse", it.Name, k.ID, it.GUID)
 		} else {
-			out.Unresolved = append(out.Unresolved, UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: k.ID, ItemType: "Lakehouse", Location: "known_lakehouses", Reason: reason})
 		}
 	}
 
@@ -326,7 +362,7 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 		if sub.TargetType != "" {
 			r, ok := rb.ResolveTargetAttr(sub.TargetType, sub.TargetName, sub.Attr)
 			if !ok {
-				out.Unresolved = append(out.Unresolved, UnresolvedRef{
+				out.AddUnresolved(UnresolvedRef{
 					GUID: sub.FindValue, ItemType: sub.TargetType, Location: "custom substitution", Reason: ReasonNotInTarget,
 				})
 				continue
@@ -503,7 +539,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 
 	modelName := rb.resolveModelName(nameCandidate, baselineGUID)
 	if modelName == "" {
-		out.Unresolved = append(out.Unresolved, UnresolvedRef{
+		out.AddUnresolved(UnresolvedRef{
 			GUID: baselineGUID, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: ReasonNameUnknown,
 		})
 		return content, out
@@ -511,7 +547,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 
 	it, st := rb.target.LookupName(modelName, "SemanticModel")
 	if st != LookupFound {
-		out.Unresolved = append(out.Unresolved, UnresolvedRef{
+		out.AddUnresolved(UnresolvedRef{
 			GUID: baselineGUID, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: reasonForStatus(st),
 		})
 		return content, out
