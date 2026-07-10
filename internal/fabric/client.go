@@ -1167,7 +1167,10 @@ func GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, st
 	if err := validateUUID(lakehouseID, "lakehouse ID"); err != nil {
 		return "", "", err
 	}
-	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s", baseURL, workspaceID, lakehouseID)
+	// Must be the lakehouse-specific endpoint: the generic /items/{id} GET
+	// returns only the common item envelope, never the type-specific
+	// properties block that carries sqlEndpointProperties.
+	url := fmt.Sprintf("%s/v1/workspaces/%s/lakehouses/%s", baseURL, workspaceID, lakehouseID)
 	body, err := doGet(token, url)
 	if err != nil {
 		return "", "", err
