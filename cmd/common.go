@@ -156,3 +156,13 @@ func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]
 	}
 	return all, nil
 }
+
+// folderLabel renders a deploy-mapping folder for display. An empty folder is
+// a valid mapping meaning "the whole repo", so show it as such instead of a
+// bare "/".
+func folderLabel(folder string) string {
+	if folder == "" {
+		return "(repo root)"
+	}
+	return folder + "/"
+}
