@@ -1,18 +1,32 @@
 # futils
 
-Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh semantic-model tables, copy items between workspaces, and manage per-customer workspace configs.
+Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh semantic-model tables, copy items between workspaces, and deploy a git repo to Fabric with compare-first diffs and name-based reference rebinding.
 
 ![demo](demo.gif)
 
 ## Features
 
+- **Deploy from git** — deploy a Fabric git repo to target workspaces, straight from `origin/<default-branch>` (never your working tree). Self-contained: no `parameter.yml` or deployment pipelines needed.
+  - **Folder → workspace mappings** per environment: each top-level repo folder deploys to its own workspace, or one mapping covers the whole repo. A customer can deploy from multiple repos, and a first-run guided setup walks you through repo → baseline environment → mappings, challenging cross-environment slips (mapping a TEST folder to a DEV workspace) and rejecting duplicate mappings.
+  - **Compare first, always** — every deploy starts as a dry-run: new / changed / orphan summary per mapping, per-part content diffs, and an HTML report (line numbers, folded context) that opens in your browser. Reports are compared on their *semantic* dataset binding, so Fabric's import-time normalization of `definition.pbir` doesn't flag every rebound report as changed forever.
+  - **Name-based auto-rebind** — GUIDs baked into git (lakehouses, workspaces, SQL endpoints — in both GUID and name form) are translated to the target environment by item name: notebooks, Direct Lake semantic models (OneLake and SQL-endpoint flavours), and report dataset bindings. References that can't be resolved are listed with **likely causes** and fixed interactively: register the workspace they live in, map an override to a specific item, or ignore.
+  - **Reference overrides & custom substitutions** — environment-agnostic find→replace rules (literal or resolved-by-name, optionally regex) for anything the automatic pass doesn't cover.
+  - **Per-mapping baseline workspaces** — isolate a mapping's reference resolution to a single baseline/target workspace pair when the environment-wide lookup would be ambiguous.
+  - **Cherry-pick & orphan cleanup** — select exactly which items deploy; items that exist only in the target are flagged as orphans and can be deleted in a separate, separately-confirmed pass.
+  - **Schedules toggle** — optionally keep schedules out of compare and deploy, so schedules configured directly in TEST/PROD survive.
+  - **Two backends** — stable per-item create/update (default), or the bulk-import backend (Fabric preview API) as an opt-in per customer.
+  - **Post-deploy runs** — register notebooks to be offered for execution right after a successful deploy.
+  - **Deploy history** — a timestamped HTML deploy report written to a repo folder after each real deploy.
+- **Schema compare** — compare lakehouse table schemas between two workspaces (lakehouses paired by name) and see added/removed/changed tables and columns before you promote.
 - **Run notebooks** — pick a customer, environment, and notebook, override Papermill parameters, and submit a `RunNotebook` job. Polls until completion and reports status.
-- **Refresh tables** — pick a semantic model, multi-select tables (with `All Dim` / `All Fakta` / `All Log` group toggles), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
+- **Refresh tables** — pick a semantic model, multi-select tables (with group toggles and type-to-filter search), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
 - **Move items** — copy a Report, Semantic Model, or Notebook from one workspace to another. For Reports, optionally rebind to a different semantic model in the destination.
 - **Favourites** — pin the notebooks and parameters you actually use, so the run flow surfaces them first instead of scrolling through 200+ items.
-- **Per-customer config** — multiple customers, each with their own workspace pattern (e.g. `DW - {env} - Config`) and environment ladder (e.g. `DEV, TEST, PROD`).
-- **Workspace aliases** — per-environment override when the pattern doesn't fit (e.g. `PROD → "Production Reports"`).
+- **Per-customer config** — multiple customers, each with an environment ladder (e.g. `DEV, TEST, PROD`) where every environment maps to one or more workspaces (e.g. a Config workspace and a SemMod workspace).
+- **Friendly TUI** — numbered menus (`1`–`9` jump straight to an option), type-to-filter pickers, inline descriptions, and `?` info boxes explaining every setting. `esc` goes back, `m` returns to the main menu, `q` quits — a key legend is always visible.
+- **Sandboxed config** — point `FUTILS_CONFIG` at an alternate config file to try flows (or demo the tool) without touching your real setup.
 - **OAuth2 browser auth** — Entra ID via the Azure CLI public client. Tokens cached in your OS keychain, silently refreshed for months.
+- **Resilient API client** — automatic retry with backoff on throttling (live countdown in the spinner) and transient network failures.
 - **Cross-platform** — macOS, Linux, Windows.
 
 ## Install
@@ -40,6 +54,19 @@ go install github.com/DanielAndreassen97/futils@latest
 
 Download from [GitHub Releases](https://github.com/DanielAndreassen97/futils/releases/latest) and add to your PATH.
 
+### If macOS says the app can't be verified
+
+Release binaries aren't Developer ID-signed or notarized yet, so recent macOS versions may warn the first time you run `futils` — even when installed via Homebrew. If Gatekeeper blocks it:
+
+- approve it under **System Settings → Privacy & Security → "Open Anyway"**, or
+- clear the quarantine flag (relevant when the binary was downloaded with a browser):
+
+  ```sh
+  xattr -d com.apple.quarantine "$(which futils)"
+  ```
+
+Code signing and notarization are planned. In the meantime you can cryptographically verify any release yourself — see below.
+
 ### Verifying releases
 
 Every release ships with a `checksums.txt`, an SPDX SBOM per archive, and a signed [SLSA build provenance](https://slsa.dev/) attestation. You can cryptographically verify that a downloaded artifact was built by this repo's release workflow (and nowhere else) with the GitHub CLI:
@@ -54,6 +81,7 @@ A successful verification proves the file's provenance back to the tagged commit
 
 - A workspace on **Fabric (F SKU)**, **Premium (P SKU)**, **Premium Per User (PPU)**, or **Embedded (A/EM SKU)** capacity. Notebook execution and item copy use Fabric APIs that aren't available on Power BI Pro.
 - An Entra ID account with Contributor (or higher) permissions on the workspaces you target.
+- For **Deploy**: a local clone of a [Fabric git-integrated](https://learn.microsoft.com/en-us/fabric/cicd/git-integration/intro-to-git-integration) repo. futils deploys what's on `origin/<default-branch>`, so commit and push first.
 
 ## Usage
 
@@ -64,7 +92,7 @@ futils refresh      # Refresh semantic-model tables
 futils move         # Copy an item between workspaces
 futils favourites   # Manage favourite notebooks/parameters
 futils add          # Add a customer
-futils edit         # Edit a customer (workspaces, environments, aliases)
+futils edit         # Edit a customer (environments, deploy setup, favourites)
 futils remove       # Remove a customer
 futils list         # List customers
 futils logout       # Clear cached OAuth tokens
@@ -72,16 +100,29 @@ futils version      # Show version
 futils help         # Show available commands
 ```
 
+**Deploy** and **Schema compare** live in the interactive menu — run `futils` and pick them under Actions.
+
 ## Configuration
 
-Config is stored at `~/.config/futils/config.json` (macOS/Linux) or `%APPDATA%\futils\config.json` (Windows).
+Config is stored at `~/.config/futils/config.json` (macOS/Linux) or `%APPDATA%\futils\config.json` (Windows). Set `FUTILS_CONFIG=/path/to/other.json` to use an alternate file (handy for demos and testing).
 
-Each customer needs:
-- **Workspace pattern** — Power BI workspace name with `{env}` placeholder (e.g. `DW - {env} - Config`)
-- **Environments** — list of environments (e.g. `DEV, TEST, PROD`)
-- **Aliases** (optional) — per-environment workspace name override when the pattern doesn't fit
+Everything is managed from the TUI (`futils` → Manage customers). Each customer has:
+
+- **Environments** — an alias (e.g. `DEV`, `TEST`, `PROD`) mapping to one or more workspace names (e.g. `DW - TEST - Config`, `DW - TEST - SemMod`). Reference-only workspaces (looked up during rebind, never deployed to) belong here too.
+- **Deploy setup** (all optional, only needed for the deploy flow) — primary repo path, baseline environment (which env the git code belongs to), per-environment folder→workspace mappings, excluded item types, schedules toggle, bulk-import backend toggle, reference overrides, and custom substitutions.
+- **After deploy** — post-deploy notebook runs and a deploy-history folder.
+- **Favourites** — pinned notebooks and parameters for the run flow.
+
+First-time deploy setup is guided: pick the repo, pick the baseline environment, and map folders to workspaces — futils saves the answers to config as you go.
 
 ## How it works
+
+### Deploy
+1. Reads Fabric items from `origin/<default-branch>` of the mapped repo(s) — the working tree is never deployed.
+2. Resolves each folder→workspace mapping and compares every local item against the target workspace: new, changed (per-part content diff), or orphan (exists only in the target).
+3. Translates baseline-environment references to the target environment by item name: lakehouse/workspace/SQL-endpoint GUIDs in notebooks, Direct Lake connections in semantic models (OneLake and SQL-endpoint forms), and report dataset bindings in `definition.pbir`. Unresolved references are surfaced with likely causes and can be fixed interactively.
+4. Shows the full compare (optionally as an HTML diff report in the browser) and asks before continuing — every deploy is a dry-run until you confirm.
+5. Publishes the selected items via [item create/update definition](https://learn.microsoft.com/en-us/rest/api/fabric/core/items) (or the bulk-import preview API), then offers orphan deletion as a separate confirmed pass, post-deploy notebook runs, and writes a timestamped HTML report to the deploy-history folder.
 
 ### Run notebooks
 1. Authenticates via browser-based OAuth2 with Microsoft Entra ID (Fabric scope).
@@ -94,7 +135,7 @@ Each customer needs:
 1. Picks customer → environment → semantic model.
 2. Fetches the model's TMDL definition via [Fabric getDefinition](https://learn.microsoft.com/en-us/rest/api/fabric/semanticmodel/items/get-semantic-model-definition) to discover all tables.
 3. Filters tables by partition type — only tables with `partition = m` (Power Query / import) are refreshable; calculated tables, calculation groups, and measure-only tables are excluded.
-4. Multi-select picker with auto-grouping by prefix (`Dim`, `Fakta`/`Fact`, `Log`, `Other`) and an "All tables" shortcut.
+4. Multi-select picker with auto-grouping by prefix (`Dim`, `Fakta`/`Fact`, `Log`, `Other`), an "All tables" shortcut, and type-to-filter search.
 5. Triggers an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) (`type=full`, `commitMode=transactional`) and polls until completion.
 
 ### Move items
@@ -108,8 +149,9 @@ Each customer needs:
 
 | API | Purpose |
 |-----|---------|
-| **Fabric Items API** (`api.fabric.microsoft.com`) | Workspace resolution, item listing, `getDefinition` (notebook + semantic model), item create, notebook run + status |
+| **Fabric Items API** (`api.fabric.microsoft.com`) | Workspace resolution, item listing, `getDefinition`, item create/update/delete, bulk import (preview), notebook run + status, lakehouse SQL-endpoint lookup |
 | **Power BI REST API** (`api.powerbi.com`) | Enhanced Refresh trigger + polling, Report rebind |
+| **OneLake** | Lakehouse table schemas for Schema compare |
 | **Microsoft Entra ID** | OAuth2 authentication with token caching |
 
 ## Authentication
