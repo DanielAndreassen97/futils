@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -41,4 +42,42 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// TestDiffPartsPBIRSemanticBinding: Fabric round-trips our XMLA-style
+// byConnection as a flat connectionString under another schema version — the
+// two shapes bind the same model and must compare as unchanged, while a
+// genuinely different model GUID must still diff.
+func TestDiffPartsPBIRSemanticBinding(t *testing.T) {
+	local := []byte(`{
+	  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/1.0.0/schema.json",
+	  "datasetReference": {"byConnection": {
+	    "connectionString": null,
+	    "connectionType": "pbiServiceXmlaStyleLive",
+	    "name": "EntityDataSource",
+	    "pbiModelDatabaseName": "eeeeeeee-0000-0000-0000-000000000001",
+	    "pbiModelVirtualServerName": "sobe_wowvirtualserver",
+	    "pbiServiceModelId": null
+	  }},
+	  "version": "4.0"
+	}`)
+	flat := `{
+	  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json",
+	  "datasetReference": {"byConnection": {
+	    "connectionString": "Data Source=\"powerbi://api.powerbi.com/v1.0/myorg/DW - TEST - SemMod\";initial catalog=HR;integrated security=ClaimsToken;semanticmodelid=eeeeeeee-0000-0000-0000-000000000001"
+	  }},
+	  "version": "4.0"
+	}`
+	deployed := &fabric.Definition{Parts: []fabric.DefinitionPart{{
+		Path: "definition.pbir", Payload: base64.StdEncoding.EncodeToString([]byte(flat)), PayloadType: "InlineBase64",
+	}}}
+	if diffs := DiffParts(map[string][]byte{"definition.pbir": local}, deployed); len(diffs) != 0 {
+		t.Fatalf("same model GUID must compare unchanged across shapes, got %+v", diffs)
+	}
+
+	otherModel := []byte(strings.ReplaceAll(string(local), "eeeeeeee-0000-0000-0000-000000000001", "eeeeeeee-0000-0000-0000-000000000002"))
+	diffs := DiffParts(map[string][]byte{"definition.pbir": otherModel}, deployed)
+	if len(diffs) != 1 {
+		t.Fatalf("different model GUID must diff, got %+v", diffs)
+	}
 }

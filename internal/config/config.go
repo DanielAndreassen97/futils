@@ -91,6 +91,15 @@ type Customer struct {
 	// a successful deploy. Only those actually deployed (created/updated) in a
 	// run are offered. List order = run order.
 	PostDeployRuns []string `json:"post_deploy_runs,omitempty"`
+	// SkipSchedules excludes .schedules definition parts from compare and
+	// deploy, so schedules configured directly in a target environment (e.g.
+	// pipelines scheduled in TEST/PROD but not in DEV) survive a deploy.
+	// Default false = schedules deploy like any other part.
+	SkipSchedules bool `json:"skip_schedules,omitempty"`
+	// UseBulkDeploy makes deploys use the bulk-import backend (PREVIEW beta
+	// API) without asking per run. Default false = the stable per-item
+	// backend, silently.
+	UseBulkDeploy bool `json:"use_bulk_deploy,omitempty"`
 }
 
 // NotebookFavorite pins a single notebook (by displayName) and optionally
@@ -240,6 +249,8 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
 		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
 		PostDeployRuns      []string            `json:"post_deploy_runs,omitempty"`
+		SkipSchedules       bool                `json:"skip_schedules,omitempty"`
+		UseBulkDeploy       bool                `json:"use_bulk_deploy,omitempty"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -253,6 +264,8 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.ExcludedItemTypes = aux.ExcludedItemTypes
 	c.DeployHistoryPath = aux.DeployHistoryPath
 	c.PostDeployRuns = aux.PostDeployRuns
+	c.SkipSchedules = aux.SkipSchedules
+	c.UseBulkDeploy = aux.UseBulkDeploy
 
 	if len(aux.Environments) == 0 {
 		c.Environments = nil
@@ -303,6 +316,12 @@ type Config struct {
 
 // GetConfigPath returns the platform-appropriate config location.
 func GetConfigPath() string {
+	// FUTILS_CONFIG points futils at an alternate config file — a sandbox for
+	// trying flows (e.g. first-time setup with a fictional customer) without
+	// touching the real config.
+	if p := os.Getenv("FUTILS_CONFIG"); p != "" {
+		return p
+	}
 	var base string
 	if runtime.GOOS == "windows" {
 		base = os.Getenv("APPDATA")

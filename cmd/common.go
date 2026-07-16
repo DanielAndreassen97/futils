@@ -8,6 +8,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 // formTheme is the single huh.Theme used across add/edit forms so the look
@@ -156,6 +158,38 @@ func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]
 		return nil, fmt.Errorf("no notebooks found in workspaces: %s", strings.Join(names, ", "))
 	}
 	return all, nil
+}
+
+// wrapIndented wraps s to the live terminal width with a left indent, so long
+// hint lines wrap cleanly instead of running off the edge in narrow panes.
+// Falls back to a 100-column budget when the width is unknown (not a tty).
+func wrapIndented(s string, indent int) string {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w <= indent+20 {
+		w = 100
+	}
+	return lipgloss.NewStyle().PaddingLeft(indent).Width(w - indent).Render(s)
+}
+
+// contextBanner renders the "you are HERE" heading for drill-down screens: a
+// full-width accent rule with the title embedded in bold, and a dim subtitle
+// line beneath — ━━ TEST ━━━━━━━━ / Stortinget · 3 workspaces · 2 mappings.
+func contextBanner(title, subtitle string) string {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w < 20 {
+		w = 80
+	}
+	rule := lipgloss.NewStyle().Foreground(ui.AccentColor)
+	bold := lipgloss.NewStyle().Bold(true)
+	fill := w - lipgloss.Width("━━ "+title+" ")
+	if fill < 4 {
+		fill = 4
+	}
+	line := rule.Render("━━ ") + bold.Render(title) + rule.Render(" "+strings.Repeat("━", fill))
+	if subtitle == "" {
+		return line
+	}
+	return line + "\n" + lipgloss.NewStyle().Foreground(ui.DimColor).Render("   "+subtitle)
 }
 
 // currentValueBoxStyle frames the "what is configured right now" callout shown

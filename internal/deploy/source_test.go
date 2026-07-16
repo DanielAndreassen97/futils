@@ -327,3 +327,53 @@ func TestReadFileAtRef(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// TestDiscoverItemsExcludesGitOnlyMetadata: notebook-settings.json and
+// fs-settings.json are written into git by Fabric's own sync and are outside
+// the definition API's schema — they must never become definition parts
+// (phantom added-part diff on every compare + unsupported file in publish
+// payloads).
+func TestDiscoverItemsExcludesGitOnlyMetadata(t *testing.T) {
+	tree := strings.Join([]string{
+		"NB_Foo.Notebook/.platform",
+		"NB_Foo.Notebook/notebook-content.py",
+		"NB_Foo.Notebook/notebook-settings.json",
+		"NB_Foo.Notebook/fs-settings.json",
+	}, "\n") + "\n"
+	fooPlatform := `{"metadata":{"type":"Notebook","displayName":"NB_Foo"},"config":{"logicalId":"aaa"}}`
+	g := &fakeGit{responses: map[string]string{
+		"ls-tree -r --name-only origin/main": tree,
+	}}
+	fb := &fakeBatch{blobs: map[string][]byte{
+		"origin/main:NB_Foo.Notebook/.platform":              []byte(fooPlatform),
+		"origin/main:NB_Foo.Notebook/notebook-content.py":    []byte("print(1)\n"),
+		"origin/main:NB_Foo.Notebook/notebook-settings.json": []byte(`{"auto-binding":{"lakehouse":"off"}}`),
+		"origin/main:NB_Foo.Notebook/fs-settings.json":       []byte(`{}`),
+	}}
+	s := &Source{ref: "origin/main", git: g.run, gitBatch: fb.run}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(items) != 1 || len(items[0].Parts) != 1 || items[0].Parts[0].Path != "notebook-content.py" {
+		t.Fatalf("want exactly the content part, got %+v", items[0].Parts)
+	}
+}
+
+func TestStripScheduleParts(t *testing.T) {
+	items := []LocalItem{{
+		DisplayName: "PL_Main",
+		Parts: []Part{
+			{Path: "pipeline-content.json", Content: []byte("{}")},
+			{Path: ".schedules", Content: []byte("{}")},
+		},
+	}}
+	out := StripScheduleParts(items)
+	if len(out[0].Parts) != 1 || out[0].Parts[0].Path != "pipeline-content.json" {
+		t.Fatalf("schedules not stripped: %+v", out[0].Parts)
+	}
+	// The input items must not be mutated (callers may reuse them).
+	if len(items[0].Parts) != 2 {
+		t.Fatalf("input mutated: %+v", items[0].Parts)
+	}
+}

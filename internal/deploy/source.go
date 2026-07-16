@@ -224,7 +224,15 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 		}
 		for _, p := range filesByFolder[folder] {
 			rel := strings.TrimPrefix(p, folder+"/")
-			if rel == ".platform" {
+			// .platform is consumed separately (metadata + bulk payload).
+			// notebook-settings.json / fs-settings.json are written into git by
+			// Fabric's own sync (auto-binding state) and are OUTSIDE the
+			// definition API's schema: getDefinition never returns them and
+			// updateDefinition has no slot for them, so keeping them as parts
+			// yields a phantom added-part diff on every compare and rides an
+			// unsupported file into every publish payload (fabric-cicd#883
+			// hard-failed on exactly this).
+			if rel == ".platform" || rel == "notebook-settings.json" || rel == "fs-settings.json" {
 				continue
 			}
 			spec := s.ref + ":" + p

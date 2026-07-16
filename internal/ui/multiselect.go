@@ -184,7 +184,7 @@ func (m checkboxModel) View() string {
 	}
 
 	var b strings.Builder
-	hint := "space toggle • enter confirm • alt+↑↓ jump • a select all • esc back • m main menu"
+	hint := "space toggle • enter confirm • alt+↑↓ jump • a select all • esc back • m main menu • q quit"
 	fmt.Fprintf(&b, "  %s\n", m.title)
 	fmt.Fprintf(&b, "  %s\n\n", checkboxHintStyle.Render(hint))
 
