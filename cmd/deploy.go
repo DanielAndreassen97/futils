@@ -129,7 +129,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 	if len(customer.Environments) == 0 {
-		return fmt.Errorf("customer %q has no environments — add one via Edit customer first", customerName)
+		return fmt.Errorf("customer %q has no environments — add one via Manage customers → Edit customer first", customerName)
 	}
 
 	alias, err := pickEnvironment(customer)
@@ -142,8 +142,13 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	// to the interactive picker and treat the chosen dir as the primary repo.
 	repoInputs := repoInputsForAlias(customer, alias)
 	if len(repoInputs) == 0 {
+		// First-run setup, question 1: where does the code live? One headline,
+		// one instruction — the picker itself just shows the breadcrumb.
+		fmt.Println()
+		fmt.Println(infoStyle.Render("Primary repo path — where does the code live?"))
+		fmt.Println(wrapIndented("Navigate to the repo root and pick \"✓ Use this folder\". futils deploys from origin/<default-branch>, never the working tree.", 2))
 		startDir, _ := os.UserHomeDir()
-		picked, perr := ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
+		picked, perr := ui.PickDirectory("Fabric git repo", startDir)
 		if perr != nil {
 			return perr
 		}
@@ -158,6 +163,26 @@ func DeployWithAPI(configPath string, client APIClient) error {
 			fmt.Println(infoStyle.Render(fmt.Sprintf("Saved repo path for %s: %s", customerName, src.Repo())))
 		}
 		repoInputs = []string{customer.RepoPath}
+	}
+
+	// First-run setup, question 2: which environment does the git code belong
+	// to? Asked back-to-back with the repo question — both are about anchoring
+	// the source side — and BEFORE the fetch, so all setup questions come
+	// before the waiting starts. An explicit Skip keeps the old no-rebind
+	// behavior for this run.
+	if customer.BaselineEnvironment == "" && len(customer.Environments) > 0 {
+		chosen, perr := promptFirstRunBaseline(customer)
+		if perr != nil {
+			return perr
+		}
+		if chosen != "" {
+			customer.BaselineEnvironment = chosen
+			if serr := config.EditCustomer(configPath, customerName, customer); serr != nil {
+				fmt.Println(warningStyle.Render("Couldn't save baseline environment: " + serr.Error()))
+			} else {
+				fmt.Println(infoStyle.Render(fmt.Sprintf("Baseline environment set to %q — saved to %s.", chosen, customerName)))
+			}
+		}
 	}
 
 	itemsByRepo := make(map[string][]deploy.LocalItem, len(repoInputs))
@@ -205,7 +230,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return fmt.Errorf("set up reference rebinding: %w", err)
 	}
 	if customer.BaselineEnvironment == "" {
-		fmt.Println(infoStyle.Render("Auto-rebind disabled (no baseline environment set). Set one via Edit customer to translate references by name."))
+		fmt.Println(infoStyle.Render("Auto-rebind disabled (no baseline environment set). Set one via Manage customers → Edit customer to translate references by name."))
 	}
 
 	mappings, _ := customer.DeployMappings(alias)
@@ -213,7 +238,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		// Auto-setup only runs before any mappings exist, so it always offers
 		// the primary repo's items (customers with extra per-mapping repos add
 		// those manually afterward).
-		mappings, err = setupDeployMappings(itemsByRepo[customer.RepoPath], workspaces)
+		mappings, err = setupDeployMappings(itemsByRepo[customer.RepoPath], workspaces, customer, alias)
 		if err != nil {
 			return err
 		}
@@ -257,7 +282,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	printGroupedCompare(groups)
 	printRebindSummary(groups)
 	printReportBindings(groups)
-	printUnresolved(groups)
+	printUnresolved(groups, customer.BaselineEnvironment, alias)
 
 	hasDiffs := false
 	for _, g := range groups {
@@ -298,10 +323,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		return nil // declined: this was a dry-run
 	}
 
-	useBulk, err := ui.Confirm("Use the bulk-import backend? (PREVIEW — default is the stable per-item backend)")
-	if err != nil {
-		return err
-	}
+	// Backend choice is a per-customer setting (Edit customer → Bulk-import
+	// backend) instead of a per-deploy question.
+	useBulk := customer.UseBulkDeploy
 	if useBulk {
 		fmt.Println(warningStyle.Render("Bulk-import is a PREVIEW backend on a Fabric beta API — verify the deployed items afterwards."))
 	}
@@ -350,6 +374,11 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			fmt.Println(warningStyle.Render(fmt.Sprintf("Mapping %q→%q references repo %q, which wasn't discovered — deploying nothing for it. Check the customer's repo config with `futils edit`.", m.Folder, m.Workspace, repoKey)))
 		}
 		items := filterExcludedTypes(deploy.ItemsInFolder(repoItems, m.Folder), excluded)
+		if customer.SkipSchedules {
+			// Both compare and publish flow from these items, so stripping here
+			// keeps the diff, the plan, and the bulk payload consistent.
+			items = deploy.StripScheduleParts(items)
+		}
 		deployed, err := client.ListItems(token, target.ID)
 		if err != nil {
 			return nil, fmt.Errorf("list items in %s: %w", target.DisplayName, err)
@@ -362,7 +391,7 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			Deployed: deployed,
 			rb:       rb,
 		}
-		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb)
+		g.Unresolved, g.Changes, g.Diffs = diffExistingRows(client, token, target, rows, rb, customer.SkipSchedules)
 		if rb != nil {
 			// Existing (content-compared) reports get their custom-substitution
 			// unresolved via diffExistingRows; NEW reports only pass through here,
@@ -479,7 +508,7 @@ func newItemSentinel(logicalID string) string {
 // comparing against the local item's substituted parts. Rows whose definition
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
-func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, rows []deploy.CompareRow, rb *deploy.Rebinder) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
+func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, rows []deploy.CompareRow, rb *deploy.Rebinder, skipSchedules bool) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
 	var existsIdx []int
 	for i := range rows {
 		if rows[i].Class == deploy.ClassExists {
@@ -522,6 +551,18 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			defer wg.Done()
 			defer func() { <-sem }()
 			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "")
+			if skipSchedules && def != nil {
+				// Local parts were stripped before Compare; strip the deployed
+				// side too, or every scheduled target item would diff as a
+				// phantom removed-.schedules part.
+				kept := def.Parts[:0:0]
+				for _, p := range def.Parts {
+					if path.Base(p.Path) != ".schedules" {
+						kept = append(kept, p)
+					}
+				}
+				def.Parts = kept
+			}
 			results[j] = fetched{def: def, err: err}
 			atomic.AddInt64(&done, 1)
 		}(j, idx)
@@ -691,30 +732,83 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 // setupDeployMappings asks the user which workspace each repo folder deploys to,
 // using the folders discovered in the repo as the pick-list. Folders the user
 // skips are left unmapped. Returns the chosen mappings (possibly empty).
-func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace) ([]config.DeployMapping, error) {
+func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace, customer config.Customer, alias string) ([]config.DeployMapping, error) {
 	folders := deploy.TopLevelFolders(all)
 	if len(folders) == 0 {
-		return nil, fmt.Errorf("couldn't detect any folders to map in the repo — add mappings via Edit customer instead")
+		return nil, fmt.Errorf("couldn't detect any folders to map in the repo — add mappings via Manage customers → Edit customer instead")
 	}
 	const skipValue = "\x00skip"
-	fmt.Println(infoStyle.Render("Set up which repo folder deploys to which workspace:"))
+	fmt.Println()
+	fmt.Println(infoStyle.Render(fmt.Sprintf("Deployment mappings — which repo folder deploys to which %s workspace?", alias)))
+	fmt.Println(wrapIndented(fmt.Sprintf("Each mapping is saved on env %s: every %s deploy sends that folder's items to its workspace. Skip folders that shouldn't deploy.", alias, alias), 2))
+
+	baseOpts, wsEnv := mappingWorkspaceOptions(workspaces, customer, alias)
+
 	var mappings []config.DeployMapping
 	for _, folder := range folders {
-		opts := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: skipValue}}
-		for _, w := range workspaces {
-			opts = append(opts, ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName})
+		opts := append([]ui.FilterOption{{Label: "⋯ Skip this folder", Value: skipValue}}, baseOpts...)
+		for {
+			chosen, err := ui.FilterMenu(fmt.Sprintf("Map %s/ → which workspace?", folder), opts, ui.DefaultFilterRowRenderer)
+			if err != nil {
+				return nil, err
+			}
+			if chosen == skipValue {
+				break
+			}
+			if ok, cerr := confirmCrossEnvMapping(wsEnv, chosen, alias); cerr != nil {
+				return nil, cerr
+			} else if !ok {
+				continue // re-show the picker for this folder
+			}
+			mappings = append(mappings, config.DeployMapping{Folder: folder, Workspace: chosen})
+			fmt.Printf("  %s/ → %s\n", folder, chosen)
+			break
 		}
-		chosen, err := ui.FilterMenu(fmt.Sprintf("Deploy %s/ to which workspace?", folder), opts, ui.DefaultFilterRowRenderer)
-		if err != nil {
-			return nil, err
-		}
-		if chosen == skipValue {
-			continue
-		}
-		mappings = append(mappings, config.DeployMapping{Folder: folder, Workspace: chosen})
-		fmt.Printf("  %s/ → %s\n", folder, chosen)
 	}
 	return mappings, nil
+}
+
+// mappingWorkspaceOptions orders workspaces for a mapping picker: the target
+// env's own workspaces (sorted) lead, everything else follows — the right
+// answer is almost always one of the env's own. Also returns the
+// workspace→env map used to challenge cross-env choices.
+func mappingWorkspaceOptions(workspaces []fabric.Workspace, customer config.Customer, alias string) ([]ui.FilterOption, map[string]string) {
+	wsEnv := map[string]string{}
+	for _, e := range customer.Environments {
+		for _, w := range e.Workspaces {
+			wsEnv[w] = e.Alias
+		}
+	}
+	var envWS, otherWS []string
+	for _, w := range workspaces {
+		if wsEnv[w.DisplayName] == alias {
+			envWS = append(envWS, w.DisplayName)
+		} else {
+			otherWS = append(otherWS, w.DisplayName)
+		}
+	}
+	sort.Strings(envWS)
+	sort.Strings(otherWS)
+	opts := make([]ui.FilterOption, 0, len(envWS)+len(otherWS))
+	for _, w := range envWS {
+		opts = append(opts, ui.FilterOption{Label: w, Value: w})
+	}
+	for _, w := range otherWS {
+		opts = append(opts, ui.FilterOption{Label: w, Value: w})
+	}
+	return opts, wsEnv
+}
+
+// confirmCrossEnvMapping challenges a workspace choice registered on a
+// DIFFERENT environment — mapping TEST's folder to a DEV workspace is almost
+// always a slip that would deploy TEST-rebound content into DEV. Returns true
+// when the choice stands (same env, unregistered workspace, or confirmed).
+func confirmCrossEnvMapping(wsEnv map[string]string, chosen, alias string) (bool, error) {
+	owner, ok := wsEnv[chosen]
+	if !ok || owner == alias {
+		return true, nil
+	}
+	return ui.Confirm(fmt.Sprintf("%s is registered on env %s, not %s — map %s's folder there anyway?", chosen, owner, alias, alias))
 }
 
 // deleteCount returns the total number of items to be deleted across all groups.
@@ -1016,6 +1110,45 @@ func terminalLink(url, label string) string {
 }
 
 // pickEnvironment shows the customer's environment aliases as a numbered menu.
+// promptFirstRunBaseline asks which environment the repo's baked GUIDs belong
+// to, shown on the first deploy of a customer without a baseline. The cursor
+// starts on the first "dev"-looking alias (the answer in practice), and an
+// explicit Skip deploys without auto-rebind like before. Esc backs out of the
+// deploy.
+func promptFirstRunBaseline(customer config.Customer) (string, error) {
+	const skipValue = "\x00skip"
+	fmt.Println()
+	fmt.Println(infoStyle.Render("Baseline environment — which environment does the git code belong to?"))
+	fmt.Println(wrapIndented("Auto-rebind reads the GUIDs in git as belonging to this environment and swaps them to the target's on deploy. Without a baseline, references (lakehouse GUIDs, SQL endpoints) deploy unchanged — still pointing at the environment they were developed in.", 2))
+	preselected := false
+	opts := make([]ui.MenuOption, 0, len(customer.Environments)+1)
+	for _, e := range customer.Environments {
+		pre := !preselected && strings.Contains(strings.ToLower(e.Alias), "dev")
+		if pre {
+			preselected = true
+		}
+		opts = append(opts, ui.MenuOption{
+			Label:     e.Alias,
+			Value:     e.Alias,
+			Preselect: pre,
+			Info:      "Baseline is the environment your repo represents. futils reads the GUIDs in git as baseline GUIDs, resolves them by name, and swaps to the target environment's GUIDs on deploy.",
+		})
+	}
+	opts = append(opts, ui.MenuOption{
+		Label:       "Skip — deploy without auto-rebind",
+		Value:       skipValue,
+		Description: "References deploy unchanged into the target. You can set the baseline later via Manage customers → Edit customer.",
+	})
+	choice, err := ui.NumberMenu("Which environment do the repo's GUIDs belong to (baseline)?", opts)
+	if err != nil {
+		return "", err
+	}
+	if choice == skipValue {
+		return "", nil
+	}
+	return choice, nil
+}
+
 func pickEnvironment(customer config.Customer) (string, error) {
 	options := make([]ui.MenuOption, len(customer.Environments))
 	for i, e := range customer.Environments {
@@ -1343,12 +1476,20 @@ func printReportBindings(groups []deployGroup) {
 }
 
 // printUnresolved lists reference GUIDs the rebinder could not translate, with
-// enough context for the user to register an override (or ignore/strip them).
+// enough context for the user to register an override (or ignore/strip them),
+// followed by a likely-causes box tailored to the reasons that actually
+// occurred — the by-far most common cause is a workspace (typically a
+// reference-only Data workspace) missing from the baseline or target
+// environment's workspace list, which no amount of overrides fixes properly.
 // Silent when everything resolved.
-func printUnresolved(groups []deployGroup) {
+func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
 	var total int
+	reasons := map[string]bool{}
 	for _, g := range groups {
 		total += len(g.Unresolved)
+		for _, u := range g.Unresolved {
+			reasons[u.Reason] = true
+		}
 	}
 	if total == 0 {
 		return
@@ -1360,7 +1501,36 @@ func printUnresolved(groups []deployGroup) {
 			fmt.Printf("  %s in %s — looks like a %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason), countSuffix(u.Count))
 		}
 	}
+	var hints []string
+	if reasons[deploy.ReasonNameUnknown] {
+		env := "the baseline environment"
+		if baselineAlias != "" {
+			env = fmt.Sprintf("baseline environment %q", baselineAlias)
+		}
+		hints = append(hints, fmt.Sprintf("GUID not found in any baseline workspace: the item probably lives in a workspace that isn't registered on %s — reference-only workspaces (e.g. a Data workspace you never deploy to) must be added too. Fix: Edit customer → Edit %s → Add workspace, then redeploy.", env, orAlias(baselineAlias, "<baseline env>")))
+	}
+	if reasons[deploy.ReasonNotInTarget] {
+		hints = append(hints, fmt.Sprintf("no same-named item in the target workspaces: the name resolved in the baseline, but env %q has no workspace containing an item with that name — check that the counterpart workspace is registered on the target environment (and that the item exists there).", targetAlias))
+	}
+	if reasons[deploy.ReasonAmbiguous] {
+		hints = append(hints, fmt.Sprintf("name matches items in several target workspaces: the same name+type exists in more than one of env %q's workspaces, so name-matching is unsafe — resolve it with a reference override, or give the mapping a dedicated baseline workspace to scope the lookup.", targetAlias))
+	}
+	if len(hints) > 0 {
+		fmt.Println()
+		fmt.Println(infoStyle.Render("Likely causes:"))
+		for _, h := range hints {
+			fmt.Println(wrapIndented("• "+h, 2))
+		}
+	}
 	fmt.Println()
+}
+
+// orAlias returns the alias, or a placeholder when it is empty.
+func orAlias(alias, placeholder string) string {
+	if alias == "" {
+		return placeholder
+	}
+	return alias
 }
 
 // countSuffix renders how many occurrences collapsed into one unresolved ref —

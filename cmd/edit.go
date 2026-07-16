@@ -11,7 +11,6 @@ import (
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
-	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
 	"github.com/charmbracelet/huh"
 )
@@ -26,6 +25,8 @@ const (
 	editActionSubstitutions = "__substitutions"
 	editActionExcludeTypes  = "__exclude_types"
 	editActionDeployHistory = "__deploy_history"
+	editActionSchedules     = "__schedules"
+	editActionBulkBackend   = "__bulk_backend"
 	editActionPostDeploy    = "__post_deploy_runs"
 	editActionFavorites     = "__favorites"
 	envActionAddWS          = "__add_ws"
@@ -33,7 +34,7 @@ const (
 	envActionRenameAlias    = "__rename_alias"
 	envActionDeleteEnv      = "__delete_env"
 	envActionAddDeploy      = "__add_deploy"
-	envActionRemoveDeploy   = "__remove_deploy"
+	envActionEditDeploy     = "__edit_deploy:"
 )
 
 // Edit is the top-level customer editing flow. Drills down into a
@@ -130,6 +131,14 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionSchedules:
+			if err := toggleSchedules(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
+		case action == editActionBulkBackend:
+			if err := toggleBulkBackend(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionFavorites:
 			if err := favoritesForCustomer(configPath, client, customerName, customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				// The navigation sentinels must keep unwinding — swallowing them
@@ -171,19 +180,36 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	if customer.RepoPath != "" {
 		repoBadge = filepath.Base(customer.RepoPath)
 	}
+	schedulesBadge := "DEPLOYED"
+	if customer.SkipSchedules {
+		schedulesBadge = "KEPT IN TARGET"
+	}
+	bulkBadge := "OFF"
+	if customer.UseBulkDeploy {
+		bulkBadge = "ON (preview)"
+	}
 
 	// Grouped under section headers so the menu scans as three concerns:
 	// the environments themselves, one-time deploy configuration, and what
 	// runs after a deploy. Labels are terse — the footer Description carries
 	// the detail — so rows stay short and the headers do the explaining.
-	options := make([]ui.MenuOption, 0, len(customer.Environments)+12)
+	options := make([]ui.MenuOption, 0, len(customer.Environments)+13)
 	options = append(options, ui.MenuOption{Label: "Environments", IsHeader: true})
 	for _, e := range customer.Environments {
-		label := fmt.Sprintf("Edit %s (%d workspace%s)", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
+		label := fmt.Sprintf("Edit %s (%d workspace%s", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
+		if n := len(e.Deployments); n > 0 {
+			label += fmt.Sprintf(", %d mapping%s", n, pluralS(n))
+		}
+		label += ")"
 		options = append(options, ui.MenuOption{Label: label, Value: editActionEditEnv + e.Alias})
 	}
 	options = append(options,
-		ui.MenuOption{Label: "Add environment", Value: editActionAddEnv},
+		ui.MenuOption{
+			Label:       "Add environment",
+			Value:       editActionAddEnv,
+			Description: "Create a named environment (DEV, TEST, PROD…) and pick the workspaces it spans.",
+			Info:        "An environment is a named set of Fabric workspaces (e.g. DEV = 'DW - DEV - Config' + 'DW - DEV - SemMod'). Deploys target an environment, and auto-rebind resolves references against its full workspace set — so include reference-only workspaces too (e.g. a Data workspace you never deploy to directly).",
+		},
 
 		ui.MenuOption{Label: "Deploy setup", IsHeader: true},
 		ui.MenuOption{
@@ -205,6 +231,20 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Value:       editActionExcludeTypes,
 			Description: "Item types to skip when comparing/deploying.",
 			Info:        "Some item types round-trip through Fabric with cosmetic reformatting that shows as a phantom 'Changed' on every deploy, and some you simply never deploy from this repo. List those types here and futils leaves them out of both the compare and the deploy.",
+		},
+		ui.MenuOption{
+			Label:       "Schedules",
+			Value:       editActionSchedules,
+			Badge:       schedulesBadge,
+			Description: "Whether .schedules parts deploy with pipelines, or stay managed per environment.",
+			Info:        "Fabric git-sync writes pipeline schedules to a .schedules part. Deploying it overwrites the target's schedules with the source's — including deleting them when the source has none. Set KEPT IN TARGET to leave every environment's schedules alone: futils then excludes .schedules from both the compare and the deploy payload (the definition API treats the part as optional, so the target keeps what it has).",
+		},
+		ui.MenuOption{
+			Label:       "Bulk-import backend",
+			Value:       editActionBulkBackend,
+			Badge:       bulkBadge,
+			Description: "Deploy with the bulk-import backend (PREVIEW) instead of the per-item one.",
+			Info:        "The bulk-import backend publishes many items in one API call — a big rate-limit win on large deploys — but runs on a Fabric beta API. When ON, deploys use it without asking; when OFF, the stable per-item backend is used silently. This replaces the old per-deploy question.",
 		},
 		ui.MenuOption{
 			Label:       "Reference overrides",
@@ -265,19 +305,16 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 		}
 		env := customer.Environments[envIdx]
 
-		fmt.Printf("\nEditing env: %s (%s)\n", customerName, alias)
+		// One clear head for the screen (design alt C): full-width accent rule
+		// with the env name in bold, counts beneath, workspaces as one wrapped
+		// bullet line — replaces the old stacked "Editing env:" + bullet list.
+		fmt.Println()
+		fmt.Println(contextBanner(alias, fmt.Sprintf("%s · %d workspace%s · %d mapping%s",
+			customerName, len(env.Workspaces), pluralS(len(env.Workspaces)), len(env.Deployments), pluralS(len(env.Deployments)))))
 		if len(env.Workspaces) == 0 {
-			fmt.Println("  (no workspaces)")
+			fmt.Println(wrapIndented("(no workspaces)", 3))
 		} else {
-			for _, ws := range env.Workspaces {
-				fmt.Printf("  • %s\n", ws)
-			}
-		}
-		if len(env.Deployments) > 0 {
-			fmt.Println("  Deployments:")
-			for _, d := range env.Deployments {
-				fmt.Printf("    %s → %s%s\n", mappingLabel(d.Folder, d.Repo), d.Workspace, baselineSuffix(d))
-			}
+			fmt.Println(wrapIndented("• "+strings.Join(env.Workspaces, "   • "), 3))
 		}
 		fmt.Println()
 
@@ -303,25 +340,42 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 				Value:       envActionDeleteEnv,
 				Description: "Remove this environment and its deployment mappings.",
 			},
-			{
+		}
+		// Each mapping is its own selectable row — enter opens its actions
+		// (change workspace, change baseline, remove). The list IS the menu,
+		// so there's no separate remove-mapping action or pre-printed summary.
+		options = append(options, ui.MenuOption{Label: "Deployment mappings", IsHeader: true})
+		for i, d := range env.Deployments {
+			options = append(options, ui.MenuOption{
+				Label:       fmt.Sprintf("%s → %s%s", mappingLabel(d.Folder, d.Repo), d.Workspace, baselineSuffix(d)),
+				Value:       envActionEditDeploy + strconv.Itoa(i),
+				Description: "Enter for actions: change workspace, change baseline workspace, or remove.",
+			})
+		}
+		options = append(options,
+			ui.MenuOption{
 				Label:       "Add deployment mapping",
 				Value:       envActionAddDeploy,
 				Description: "Map a repo folder to a target workspace in this environment.",
 				Info:        "A deployment mapping says 'deploy this repo folder to this workspace' for this environment — e.g. FabricBackEnd/ → 'DW - DEV - Config'. You can point a folder at a second git repo, so a customer with separate backend and frontend repos deploys both in one run. A folder that is the whole repo maps as an empty folder.",
 			},
-			{
-				Label:       "Remove deployment mapping",
-				Value:       envActionRemoveDeploy,
-				Description: "Delete one of this environment's folder→workspace mappings.",
-			},
-			{Label: "Back", Value: editActionBack},
-		}
+			ui.MenuOption{Label: "Back", Value: editActionBack},
+		)
 		action, err := ui.NumberMenu("Action", options)
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {
 				return nil
 			}
 			return err
+		}
+
+		if strings.HasPrefix(action, envActionEditDeploy) {
+			if i, aerr := strconv.Atoi(strings.TrimPrefix(action, envActionEditDeploy)); aerr == nil {
+				if merr := editMappingActions(configPath, client, customerName, customer, alias, envIdx, i); merr != nil && !errors.Is(merr, ui.ErrGoBack) {
+					return merr
+				}
+			}
+			continue
 		}
 
 		switch action {
@@ -339,8 +393,6 @@ func editEnvironmentLoop(configPath string, client APIClient, customerName, alia
 			}
 		case envActionAddDeploy:
 			err = addDeploymentMapping(configPath, client, customerName, alias, customer)
-		case envActionRemoveDeploy:
-			err = removeDeploymentMapping(configPath, customerName, alias, customer)
 		case envActionDeleteEnv:
 			ok, derr := ui.Confirm(fmt.Sprintf("Delete env %q and all its workspaces?", alias))
 			if derr != nil {
@@ -376,23 +428,12 @@ func findEnvIndex(c config.Customer, alias string) int {
 // keeps the create flow short for the common case of "one env, one
 // workspace, see if it works".
 func addEnvironment(configPath string, client APIClient, customerName string, customer config.Customer) error {
-	fmt.Println(infoStyle.Render("Authenticating..."))
-	token, err := client.GetAccessToken(customerName)
-	if err != nil {
-		return fmt.Errorf("authentication failed: %w", err)
-	}
-
-	chosenName, err := pickAvailableWorkspace(client, token, customer)
-	if err != nil {
-		return err
-	}
-
-	// Alias prompt with validation retries. Esc sends user back to the
-	// workspace picker (the caller will surface ErrGoBack one level up).
+	// Name first — "Select workspaces that belong to DEV" reads naturally,
+	// the reverse (pick a workspace, then invent a name for it) doesn't.
 	var alias string
 	for {
 		alias = ""
-		err := runFormStep(huh.NewInput().Title("Alias for this workspace").Value(&alias))
+		err := runFormStep(huh.NewInput().Title("Environment name (e.g. DEV)").Value(&alias))
 		if errors.Is(err, ui.ErrGoBack) {
 			return ui.ErrGoBack
 		}
@@ -407,14 +448,32 @@ func addEnvironment(configPath string, client APIClient, customerName string, cu
 		break
 	}
 
+	fmt.Println(infoStyle.Render("Authenticating..."))
+	token, err := client.GetAccessToken(customerName)
+	if err != nil {
+		return fmt.Errorf("authentication failed: %w", err)
+	}
+	available, err := availableWorkspaceNames(client, token, customer)
+	if err != nil {
+		return err
+	}
+	chosen, err := ui.MultiSelect(fmt.Sprintf("Select workspaces that belong to %s", alias), available, nil)
+	if err != nil {
+		return err
+	}
+	if len(chosen) == 0 {
+		fmt.Println(warningStyle.Render("No workspaces selected — environment not added."))
+		return nil
+	}
+
 	customer.Environments = append(customer.Environments, config.Environment{
 		Alias:      alias,
-		Workspaces: []string{chosenName},
+		Workspaces: chosen,
 	})
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save customer: %w", err)
 	}
-	fmt.Printf("Added environment %q with workspace %s\n", alias, chosenName)
+	fmt.Printf("Added environment %q with %d workspace%s: %s\n", alias, len(chosen), pluralS(len(chosen)), strings.Join(chosen, ", "))
 	return nil
 }
 
@@ -543,12 +602,26 @@ func renameEnvAlias(configPath, customerName, oldAlias string, customer config.C
 // excluding ones already attached to any env on this customer, and
 // shows them in a single-select menu.
 func pickAvailableWorkspace(client APIClient, token string, customer config.Customer) (string, error) {
+	available, err := availableWorkspaceNames(client, token, customer)
+	if err != nil {
+		return "", err
+	}
+	options := make([]ui.MenuOption, len(available))
+	for i, name := range available {
+		options[i] = ui.MenuOption{Label: name, Value: name}
+	}
+	return ui.NumberMenu("Select workspace", options)
+}
+
+// availableWorkspaceNames lists (sorted) workspaces the user can see that are
+// not yet attached to any of this customer's environments.
+func availableWorkspaceNames(client APIClient, token string, customer config.Customer) ([]string, error) {
 	spinner := ui.NewSpinner("Loading workspaces...")
 	spinner.Start()
 	workspaces, err := client.ListWorkspaces(token)
 	spinner.Stop()
 	if err != nil {
-		return "", fmt.Errorf("list workspaces: %w", err)
+		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 
 	used := make(map[string]bool)
@@ -557,10 +630,10 @@ func pickAvailableWorkspace(client APIClient, token string, customer config.Cust
 			used[ws] = true
 		}
 	}
-	available := make([]fabric.Workspace, 0, len(workspaces))
+	available := make([]string, 0, len(workspaces))
 	for _, ws := range workspaces {
 		if !used[ws.DisplayName] {
-			available = append(available, ws)
+			available = append(available, ws.DisplayName)
 		}
 	}
 	if len(available) == 0 {
@@ -569,17 +642,10 @@ func pickAvailableWorkspace(client APIClient, token string, customer config.Cust
 		// pops the user back to the previous menu without printing a
 		// red "Error:" line.
 		fmt.Println("No unaliased workspaces available.")
-		return "", ui.ErrGoBack
+		return nil, ui.ErrGoBack
 	}
-	sort.Slice(available, func(i, j int) bool {
-		return available[i].DisplayName < available[j].DisplayName
-	})
-
-	options := make([]ui.MenuOption, len(available))
-	for i, ws := range available {
-		options[i] = ui.MenuOption{Label: ws.DisplayName, Value: ws.DisplayName}
-	}
-	return ui.NumberMenu("Select workspace", options)
+	sort.Strings(available)
+	return available, nil
 }
 
 // validateNewAlias rejects empty / whitespace-only aliases and
@@ -627,7 +693,7 @@ func addDeploymentMapping(configPath string, client APIClient, customerName, ali
 		}
 		if chosen == another {
 			startDir, _ := os.UserHomeDir()
-			picked, perr := ui.PickDirectory("Select the other Fabric git repo", startDir)
+			picked, perr := ui.PickDirectory("Other Fabric git repo", startDir)
 			if perr != nil {
 				return perr
 			}
@@ -726,6 +792,160 @@ func pickMappingBaseline(client APIClient, customerName string, customer config.
 func setBaseline(c config.Customer, alias string) config.Customer {
 	c.BaselineEnvironment = alias
 	return c
+}
+
+// editMappingActions is the per-mapping action menu opened from an
+// environment's mapping row: repoint the folder at another workspace (with
+// the cross-env guardrail), switch between inherited and dedicated baseline,
+// or remove the mapping.
+func editMappingActions(configPath string, client APIClient, customerName string, customer config.Customer, alias string, envIdx, mIdx int) error {
+	if envIdx < 0 || envIdx >= len(customer.Environments) || mIdx < 0 || mIdx >= len(customer.Environments[envIdx].Deployments) {
+		return nil
+	}
+	m := customer.Environments[envIdx].Deployments[mIdx]
+	act, err := ui.NumberMenu(
+		fmt.Sprintf("%s: %s → %s", alias, mappingLabel(m.Folder, m.Repo), m.Workspace),
+		[]ui.MenuOption{
+			{Label: "Change workspace", Value: "workspace", Description: "Point this folder at a different workspace (env " + alias + "'s own listed first)."},
+			{Label: "Change baseline workspace", Value: "baseline", Description: "Inherit the baseline environment, or isolate this mapping to one dedicated baseline workspace."},
+			{Label: "Remove mapping", Value: "remove", Description: "Deletes only the mapping — items and workspaces are untouched."},
+			{Label: "Back", Value: "back"},
+		})
+	if err != nil {
+		return err
+	}
+	switch act {
+	case "workspace":
+		token, terr := client.GetAccessToken(customerName)
+		if terr != nil {
+			return terr
+		}
+		spinner := ui.NewSpinner("Loading workspaces...")
+		spinner.Start()
+		workspaces, werr := client.ListWorkspaces(token)
+		spinner.Stop()
+		if werr != nil {
+			return fmt.Errorf("list workspaces: %w", werr)
+		}
+		opts, wsEnv := mappingWorkspaceOptions(workspaces, customer, alias)
+		for {
+			chosen, perr := ui.FilterMenu(fmt.Sprintf("Map %s → which workspace?", mappingLabel(m.Folder, m.Repo)), opts, ui.DefaultFilterRowRenderer)
+			if perr != nil {
+				return perr
+			}
+			ok, cerr := confirmCrossEnvMapping(wsEnv, chosen, alias)
+			if cerr != nil {
+				return cerr
+			}
+			if !ok {
+				continue
+			}
+			customer.Environments[envIdx].Deployments[mIdx].Workspace = chosen
+			if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+				return fmt.Errorf("save customer: %w", err)
+			}
+			fmt.Printf("Mapping now %s → %s in env %q\n", mappingLabel(m.Folder, m.Repo), chosen, alias)
+			return nil
+		}
+	case "baseline":
+		baselineWS, perr := pickMappingBaseline(client, customerName, customer)
+		if perr != nil {
+			return perr
+		}
+		customer.Environments[envIdx].Deployments[mIdx].BaselineWorkspace = baselineWS
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+		if baselineWS == "" {
+			fmt.Printf("Mapping %s inherits the baseline environment.\n", mappingLabel(m.Folder, m.Repo))
+		} else {
+			fmt.Printf("Mapping %s resolves against dedicated baseline %q.\n", mappingLabel(m.Folder, m.Repo), baselineWS)
+		}
+	case "remove":
+		deps := customer.Environments[envIdx].Deployments
+		customer.Environments[envIdx].Deployments = append(deps[:mIdx:mIdx], deps[mIdx+1:]...)
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+		fmt.Printf("Removed mapping %s → %s from env %q\n", mappingLabel(m.Folder, m.Repo), m.Workspace, alias)
+	}
+	return nil
+}
+
+// toggleSchedules flips whether .schedules definition parts deploy with their
+// items or are excluded so each environment keeps its own schedules.
+func toggleSchedules(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	current := func(v bool) string {
+		if v == customer.SkipSchedules {
+			return " (current)"
+		}
+		return ""
+	}
+	chosen, err := ui.NumberMenu("Deploy schedules?", []ui.MenuOption{
+		{Label: "Deploy schedules with items" + current(false), Value: "deploy",
+			Description: "The source's .schedules parts overwrite the target's — schedules follow git."},
+		{Label: "Keep schedules in the target" + current(true), Value: "keep",
+			Description: "Exclude .schedules from compare and deploy — schedules are managed per environment and survive deploys."},
+	})
+	if err != nil {
+		return err
+	}
+	customer.SkipSchedules = chosen == "keep"
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	if customer.SkipSchedules {
+		fmt.Println(infoStyle.Render("Schedules are kept in the target — .schedules is excluded from compare and deploy."))
+	} else {
+		fmt.Println(infoStyle.Render("Schedules deploy with their items."))
+	}
+	return nil
+}
+
+// toggleBulkBackend flips whether deploys use the bulk-import (preview)
+// backend, replacing the old per-deploy question.
+func toggleBulkBackend(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	current := func(v bool) string {
+		if v == customer.UseBulkDeploy {
+			return " (current)"
+		}
+		return ""
+	}
+	chosen, err := ui.NumberMenu("Which deploy backend?", []ui.MenuOption{
+		{Label: "Per-item (stable, default)" + current(false), Value: "peritem",
+			Description: "One API call per item. Slower on big deploys but battle-tested."},
+		{Label: "Bulk-import (PREVIEW)" + current(true), Value: "bulk",
+			Description: "Many items per API call on a Fabric beta API — verify deployed items afterwards."},
+	})
+	if err != nil {
+		return err
+	}
+	customer.UseBulkDeploy = chosen == "bulk"
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	if customer.UseBulkDeploy {
+		fmt.Println(warningStyle.Render("Deploys now use the bulk-import PREVIEW backend — verify the deployed items afterwards."))
+	} else {
+		fmt.Println(infoStyle.Render("Deploys use the stable per-item backend."))
+	}
+	return nil
 }
 
 // setBaselineEnvironment lets the user choose which of the customer's
@@ -975,7 +1195,6 @@ func promptSubstitution(client APIClient, customerName string) (config.Substitut
 	return config.Substitution{FindValue: find, TargetType: itemType, TargetName: itemName, Attr: attr}, nil
 }
 
-// removeDeploymentMapping lets the user drop a folder→workspace mapping from an
 // environment.
 func removeDeploymentMapping(configPath, customerName, alias string, customer config.Customer) error {
 	idx := findEnvIndex(customer, alias)
@@ -1191,7 +1410,7 @@ func setRepoPath(configPath, customerName string) error {
 	} else {
 		fmt.Println(warningStyle.Render("No primary repo set yet."))
 	}
-	picked, err := ui.PickDirectory("Select the Fabric git repo (enter to choose the highlighted folder)", startDir)
+	picked, err := ui.PickDirectory("Fabric git repo", startDir)
 	if err != nil {
 		return err
 	}

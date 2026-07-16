@@ -40,6 +40,9 @@ type MenuOption struct {
 	Description string // one-line footer hint shown when this option is highlighted
 	Info        string // fuller text shown in a box when the user presses ?
 	Badge       string // short inline tag, e.g. "MUST SET" (rendered accent/warn)
+	// Preselect puts the initial cursor on this row (first flagged row wins),
+	// so the likeliest answer is one Enter away.
+	Preselect bool
 }
 
 type menuModel struct {
@@ -170,6 +173,43 @@ func (m menuModel) View() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "  %s\n\n", m.message)
 
+	var cur MenuOption
+	if m.cursor >= 0 && m.cursor < len(m.options) {
+		cur = m.options[m.cursor]
+	}
+
+	// The highlighted option's help renders ABOVE the options: on long menus
+	// the area below the list can sit past the fold, and the eye starts at
+	// the top anyway. When any option carries a Description, the line is
+	// always reserved (blank when the cursor row has none) so the option list
+	// doesn't jump vertically as the cursor moves.
+	anyDesc := false
+	for _, o := range m.options {
+		if o.Description != "" {
+			anyDesc = true
+			break
+		}
+	}
+	if anyDesc {
+		desc := menuDescStyle.PaddingLeft(2)
+		if m.width > 4 {
+			// Wrap to the terminal width; PaddingLeft keeps the 2-space indent
+			// on wrapped lines. Width is the content area (minus the indent).
+			desc = desc.Width(m.width - 2)
+		}
+		b.WriteString(desc.Render(cur.Description) + "\n\n")
+	}
+	if m.showInfo && cur.Info != "" {
+		// Wrap the info text to the terminal width. Width() is the content area;
+		// the box's border (2) + horizontal padding (2) sit outside it, so
+		// subtract 4. Guard a not-yet-known/too-narrow terminal (→ no wrap).
+		box := menuInfoBoxStyle
+		if m.width > 6 {
+			box = box.Width(m.width - 4)
+		}
+		b.WriteString(box.Render(cur.Info) + "\n\n")
+	}
+
 	// Number only the selectable rows. Headers print without pointer or
 	// digit, with leading blank line for breathing room (unless first row).
 	displayNum := 0
@@ -200,43 +240,21 @@ func (m menuModel) View() string {
 		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), label)
 	}
 
-	var cur MenuOption
-	if m.cursor >= 0 && m.cursor < len(m.options) {
-		cur = m.options[m.cursor]
-	}
-
-	// The nav hint renders for every menu, plain or rich. The "? info"
-	// advertisement, the cursor option's one-line Description, and (on ?)
-	// the Info box are the rich extras — they render on their own whenever
-	// the highlighted option happens to carry that field, so no separate
-	// gate is needed to keep plain Label/Value menus free of empty output.
-	hint := "↑/↓ move · enter select · esc back · m main menu"
+	// The nav hint renders for every menu, plain or rich; the "? info"
+	// advertisement appears whenever the highlighted option has fuller Info.
+	// The Description line and Info box render ABOVE the options (see top of
+	// View), so the footer stays a single short line.
+	hint := "↑/↓ move · enter select · esc back · m main menu · q quit"
 	if cur.Info != "" {
 		hint += " · ? info"
 	}
-	b.WriteString("\n  " + confirmHelpStyle.Render(hint) + "\n")
-
-	if cur.Description != "" {
-		// Wrap the description to the terminal width instead of running off the
-		// edge; PaddingLeft keeps the 2-space indent on wrapped lines. Width is
-		// the content area (subtract the 2-space indent). Unknown/tiny width → no wrap.
-		desc := menuDescStyle.PaddingLeft(2)
-		if m.width > 4 {
-			desc = desc.Width(m.width - 2)
-		}
-		b.WriteString(desc.Render(cur.Description) + "\n")
+	// Wrap the legend to the terminal width — it has grown past what a narrow
+	// pane fits on one row, and an overflowing line breaks bubbletea's repaint.
+	hintStyle := confirmHelpStyle.PaddingLeft(2)
+	if m.width > 4 {
+		hintStyle = hintStyle.Width(m.width - 2)
 	}
-
-	if m.showInfo && cur.Info != "" {
-		// Wrap the info text to the terminal width. Width() is the content area;
-		// the box's border (2) + horizontal padding (2) sit outside it, so
-		// subtract 4. Guard a not-yet-known/too-narrow terminal (→ no wrap).
-		box := menuInfoBoxStyle
-		if m.width > 6 {
-			box = box.Width(m.width - 4)
-		}
-		b.WriteString("\n" + box.Render(cur.Info) + "\n")
-	}
+	b.WriteString("\n" + hintStyle.Render(hint) + "\n")
 
 	return b.String()
 }
@@ -275,9 +293,16 @@ func NumberMenu(message string, options []MenuOption) (string, error) {
 
 	model := menuModel{message: message, options: options}
 	// Start the cursor on the first selectable row so headers at the top
-	// don't make Enter immediately no-op.
+	// don't make Enter immediately no-op — or on the first Preselect-flagged
+	// row, so callers can put Enter-once on the likeliest answer.
 	for i, opt := range options {
 		if !opt.IsHeader {
+			model.cursor = i
+			break
+		}
+	}
+	for i, opt := range options {
+		if opt.Preselect && !opt.IsHeader {
 			model.cursor = i
 			break
 		}

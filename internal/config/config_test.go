@@ -657,3 +657,21 @@ func TestMappingBaselineWorkspaceRoundTrip(t *testing.T) {
 		t.Errorf("inherited mapping should have empty BaselineWorkspace, got %q", deps[1].BaselineWorkspace)
 	}
 }
+
+func TestDeployTogglesRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {SkipSchedules: true, UseBulkDeploy: true},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	c := out.Customers["acme"]
+	if !c.SkipSchedules || !c.UseBulkDeploy {
+		t.Fatalf("toggles dropped on load: %+v", c)
+	}
+}

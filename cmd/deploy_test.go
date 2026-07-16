@@ -149,7 +149,7 @@ func TestDiffExistingRows_DescriptionDriftIsChanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
 
 	if rows[0].Class != deploy.ClassChanged {
 		t.Fatalf("description drift must make the row Changed, got %v", rows[0].Class)
@@ -180,7 +180,7 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
 
 	if rows[0].Class != deploy.ClassUnchanged {
 		t.Fatalf("matching content + description must be Unchanged (no phantom .platform diff), got %v", rows[0].Class)
@@ -243,7 +243,7 @@ func TestDiffExistingRows_ClassNewDepMakesRefChanged(t *testing.T) {
 	}}
 	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
 
-	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil)
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
 
 	// Find rows by display name for clear assertions.
 	rowByName := map[string]*deploy.CompareRow{}
@@ -346,7 +346,7 @@ func TestDiffExistingRows_MultiItemDeterministicOrder(t *testing.T) {
 		Attr:       "id",
 	}})
 
-	unresolved, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb)
+	unresolved, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb, false)
 
 	// itemDiffs must be in existsIdx (== local) order: NB_1, NB_3, NB_4, NB_5.
 	wantDiffOrder := []string{"NB_1", "NB_3", "NB_4", "NB_5"}
@@ -429,7 +429,7 @@ func TestDiffExistingRows_RaceSharedCaches(t *testing.T) {
 		Attr:       "sqlendpoint",
 	}})
 
-	_, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb)
+	_, changes, diffs := diffExistingRows(fake, "tok", target, rows, rb, false)
 
 	if len(diffs) != n {
 		t.Fatalf("want %d changed items, got %d", n, len(diffs))
@@ -882,7 +882,7 @@ func TestPrintUnresolvedListsRefs(t *testing.T) {
 			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
 		},
 	}}
-	out := captureStdout(t, func() { printUnresolved(groups) })
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
 	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, "0b0b0b0b") {
 		t.Errorf("unresolved output missing context:\n%s", out)
 	}
@@ -892,7 +892,7 @@ func TestPrintUnresolvedListsRefs(t *testing.T) {
 }
 
 func TestPrintUnresolvedSilentWhenNone(t *testing.T) {
-	out := captureStdout(t, func() { printUnresolved([]deployGroup{{Folder: "Backend"}}) })
+	out := captureStdout(t, func() { printUnresolved([]deployGroup{{Folder: "Backend"}}, "DEV", "TEST") })
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("expected no output when nothing unresolved, got:\n%s", out)
 	}

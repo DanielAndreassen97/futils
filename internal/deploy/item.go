@@ -175,3 +175,23 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// StripScheduleParts returns items with any ".schedules" definition part
+// removed. Schedules are optional in the definition APIs — omitting the part
+// on update leaves the target item's schedules untouched — so filtering here
+// lets schedules be managed per environment instead of overwritten from git.
+func StripScheduleParts(items []LocalItem) []LocalItem {
+	out := make([]LocalItem, len(items))
+	for i, it := range items {
+		kept := it.Parts[:0:0]
+		for _, p := range it.Parts {
+			if filepath.Base(p.Path) == ".schedules" {
+				continue
+			}
+			kept = append(kept, p)
+		}
+		it.Parts = kept
+		out[i] = it
+	}
+	return out
+}

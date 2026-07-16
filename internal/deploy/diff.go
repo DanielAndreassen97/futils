@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"path"
 	"strings"
 
@@ -70,6 +71,59 @@ func normalizePart(content []byte) []byte {
 	return []byte(strings.TrimSpace(strings.Join(lines, "\n")))
 }
 
+// normalizePBIRBinding reduces a definition.pbir to the semantic binding it
+// expresses — the byPath target, or the byConnection model GUID. Fabric
+// normalizes the SHAPE on import: our XMLA-style byConnection (schema 1.0.0,
+// pbiModelDatabaseName) round-trips out of getDefinition as a flat
+// connectionString under schema 2.0.0 — semantically the same binding — so
+// comparing shapes reports every rebound report as Changed forever. Returns
+// ok=false when the content isn't a parseable pbir document with a known
+// reference shape (caller falls back to generic normalization).
+func normalizePBIRBinding(content []byte) ([]byte, bool) {
+	var pbir struct {
+		DatasetReference *struct {
+			ByPath *struct {
+				Path string `json:"path"`
+			} `json:"byPath"`
+			ByConnection *struct {
+				ConnectionString     *string `json:"connectionString"`
+				PbiModelDatabaseName string  `json:"pbiModelDatabaseName"`
+			} `json:"byConnection"`
+		} `json:"datasetReference"`
+	}
+	if err := json.Unmarshal(content, &pbir); err != nil || pbir.DatasetReference == nil {
+		return nil, false
+	}
+	dr := pbir.DatasetReference
+	switch {
+	case dr.ByPath != nil:
+		return []byte(fmt.Sprintf(`{"binding":"byPath","path":%q}`, dr.ByPath.Path)), true
+	case dr.ByConnection != nil:
+		guid := dr.ByConnection.PbiModelDatabaseName
+		if cs := dr.ByConnection.ConnectionString; cs != nil && *cs != "" {
+			if _, g := parseFlatConn(*cs); g != "" {
+				guid = g
+			}
+		}
+		if guid == "" {
+			return nil, false
+		}
+		return []byte(fmt.Sprintf(`{"binding":"byConnection","model":%q}`, guid)), true
+	}
+	return nil, false
+}
+
+// normalizePartFor normalizes one part for comparison, applying the
+// path-specific semantic normalizations before the generic one.
+func normalizePartFor(partPath string, content []byte) []byte {
+	if path.Base(partPath) == "definition.pbir" {
+		if n, ok := normalizePBIRBinding(content); ok {
+			return n
+		}
+	}
+	return normalizePart(content)
+}
+
 // PartDiff is the normalized old (deployed) vs new (substituted-local) text of
 // one item part that differs. Old is empty when the part is new locally; New is
 // empty when the part exists only in the deployed definition.
@@ -93,13 +147,13 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 		if err != nil {
 			raw = []byte(p.Payload)
 		}
-		deployedNorm[p.Path] = string(normalizePart(raw))
+		deployedNorm[p.Path] = string(normalizePartFor(p.Path, raw))
 	}
 	var diffs []PartDiff
 	seen := make(map[string]bool, len(localParts))
 	for path, lb := range localParts {
 		seen[path] = true
-		newN := string(normalizePart(lb))
+		newN := string(normalizePartFor(path, lb))
 		oldN := deployedNorm[path]
 		if newN != oldN {
 			diffs = append(diffs, PartDiff{Path: path, Old: oldN, New: newN})
