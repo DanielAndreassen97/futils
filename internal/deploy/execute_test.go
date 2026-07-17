@@ -10,10 +10,11 @@ import (
 )
 
 // recordingFabric extends fakeFabric (from resolve_test.go) to capture
-// create/update/rebind calls.
+// create/update/rebind calls. created holds the def pointer as passed, so
+// tests can assert a zero-part item was created with a nil definition.
 type recordingFabric struct {
 	fakeFabric
-	created       []fabric.Definition
+	created       []*fabric.Definition
 	createdNames  []string
 	updates       map[string]fabric.Definition // existingID -> def
 	rebinds       [][3]string                  // {workspaceID, reportID, datasetID}
@@ -35,7 +36,7 @@ func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.De
 	if r.createErr != nil {
 		return fabric.Item{}, r.createErr
 	}
-	r.created = append(r.created, *def)
+	r.created = append(r.created, def)
 	r.createdNames = append(r.createdNames, name)
 	return fabric.Item{ID: name + "-newid", DisplayName: name, Type: typ, WorkspaceID: ws}, nil
 }
@@ -55,8 +56,11 @@ func (r *recordingFabric) DeleteItem(token, ws, id string) error {
 	return nil
 }
 
-func decodePart(t *testing.T, def fabric.Definition, suffix string) string {
+func decodePart(t *testing.T, def *fabric.Definition, suffix string) string {
 	t.Helper()
+	if def == nil {
+		t.Fatalf("definition is nil")
+	}
 	for _, p := range def.Parts {
 		if strings.HasSuffix(p.Path, suffix) {
 			b, err := base64.StdEncoding.DecodeString(p.Payload)
@@ -93,6 +97,46 @@ func TestExecuteEncodesPartsAsBase64(t *testing.T) {
 	}
 	if got := decodePart(t, rf.created[0], "notebook-content.py"); got != "id=SOME-GUID" {
 		t.Errorf("part content not preserved through encode/decode: %q", got)
+	}
+}
+
+// Verified live 2026-07-17: the items API rejects "parts": null with 400
+// "Parts: Must be a non-empty collection" — a zero-part item (Warehouse,
+// SQLDatabase, a bare Lakehouse) must be created WITHOUT a definition field,
+// and an update has no definition to push (only metadata is synced).
+func TestExecuteZeroPartItemOmitsDefinition(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Warehouse", DisplayName: "WH_Main", Description: "main"}},
+		{Action: ActionUpdate, ExistingID: "wh-existing", Item: LocalItem{Type: "Warehouse", DisplayName: "WH_Other"}},
+	}
+
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatalf("result %s: %v", r.Name, r.Err)
+		}
+	}
+	if len(rf.created) != 1 || rf.created[0] != nil {
+		t.Errorf("zero-part create must pass a nil definition, got %+v", rf.created)
+	}
+	if len(rf.updates) != 0 {
+		t.Errorf("zero-part update must not call UpdateItemDefinition, got %v", rf.updates)
+	}
+	// Metadata (description) sync still runs for both, and the update result
+	// keeps its existing ID so downstream passes can reference the item.
+	if len(rf.metaUpdates) != 2 {
+		t.Errorf("expected 2 metadata syncs, got %+v", rf.metaUpdates)
+	}
+	if res[1].ID != "wh-existing" {
+		t.Errorf("update result ID = %q, want wh-existing", res[1].ID)
 	}
 }
 

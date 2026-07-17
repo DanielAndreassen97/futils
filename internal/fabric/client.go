@@ -389,18 +389,25 @@ func ListItemsByType(token, workspaceID, itemType string) ([]Item, error) {
 // Report. The call is async: 202 + Location is polled to
 // completion. The 5-minute cap handles large report definitions
 // that the default 2-minute cap would time out on.
+//
+// A nil (or zero-part) def omits the definition field entirely, creating a
+// shell item — required for definitionless types like Warehouse, where the
+// API rejects an empty parts collection with 400 InvalidInput.
 func CreateItem(token, workspaceID, displayName, itemType string, def *Definition) (Item, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return Item{}, err
 	}
+	if def != nil && len(def.Parts) == 0 {
+		def = nil
+	}
 	body := struct {
-		DisplayName string     `json:"displayName"`
-		Type        string     `json:"type"`
-		Definition  Definition `json:"definition"`
+		DisplayName string      `json:"displayName"`
+		Type        string      `json:"type"`
+		Definition  *Definition `json:"definition,omitempty"`
 	}{
 		DisplayName: displayName,
 		Type:        itemType,
-		Definition:  *def,
+		Definition:  def,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

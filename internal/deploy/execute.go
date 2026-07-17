@@ -116,7 +116,12 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			var deployedID string
 			switch p.Action {
 			case ActionUpdate:
-				err = client.UpdateItemDefinition(token, target.ID, p.ExistingID, def)
+				// def is nil for a zero-part item (Warehouse, SQLDatabase, bare
+				// Lakehouse): there is no definition to push, and the API rejects an
+				// empty parts collection — skip straight to the metadata sync below.
+				if def != nil {
+					err = client.UpdateItemDefinition(token, target.ID, p.ExistingID, def)
+				}
 				deployedID = p.ExistingID
 			default:
 				var created fabric.Item
@@ -244,10 +249,17 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 // published (the pending report rebind parses its dataset ref from them).
 // Unresolved references are intentionally discarded here — the dry-run surfaces
 // them; the publish path leaves any unresolved (cosmetic) GUID as-is.
+//
+// A zero-part item yields a NIL definition: the items API rejects an empty
+// parts collection ("Parts: Must be a non-empty collection"), so such items
+// are created as shells (no definition field) and never definition-updated.
 func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, map[string][]byte, error) {
 	parts, _, err := SubstituteParts(item, idMap, resolver, rb)
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(item.Parts) == 0 {
+		return nil, parts, nil
 	}
 	def := &fabric.Definition{}
 	for _, part := range item.Parts { // preserve discovery order
