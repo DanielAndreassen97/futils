@@ -104,6 +104,7 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 	}
 	if kind == "Config" {
 		items := []fabric.Item{
+			mk("VL_Settings", "VariableLibrary"),
 			mk("LH_Bronze", "Lakehouse"), sqlEndpoint("LH_Bronze"),
 			mk("LH_Silver", "Lakehouse"), sqlEndpoint("LH_Silver"),
 			mk("nb_ingest_sales", "Notebook"),
@@ -294,6 +295,54 @@ func demoReportJSON(current bool) string {
 `
 }
 
+// demoVariableLibrary renders the three definition parts of VL_Settings: the
+// variables with their DEV defaults, TEST/PROD value sets overriding them, and
+// the settings file whose valueSetsOrder the post-deploy activation reads.
+// current adds a variable, so TEST shows a real diff.
+func demoVariableLibrary(current bool) (variables, settings string, valueSets map[string]string) {
+	extra := ""
+	if current {
+		extra = `,
+    { "name": "full_reload", "type": "Boolean", "value": false, "note": "Force a full reload on next run" }`
+	}
+	variables = `{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
+  "variables": [
+    { "name": "landing_path", "type": "String", "value": "Files/landing", "note": "Root of the raw extracts" },
+    { "name": "retention_days", "type": "Integer", "value": 7 }` + extra + `
+  ]
+}
+`
+	settings = `{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/settings/1.0.0/schema.json",
+  "valueSetsOrder": [
+    "TEST",
+    "PROD"
+  ]
+}
+`
+	valueSets = map[string]string{
+		"TEST": `{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/valueSet/1.0.0/schema.json",
+  "name": "TEST",
+  "variableOverrides": [
+    { "name": "retention_days", "value": 30 }
+  ]
+}
+`,
+		"PROD": `{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/valueSet/1.0.0/schema.json",
+  "name": "PROD",
+  "variableOverrides": [
+    { "name": "landing_path", "value": "Files/landing-prod" },
+    { "name": "retention_days", "value": 365 }
+  ]
+}
+`,
+	}
+	return variables, settings, valueSets
+}
+
 // demoPlatform renders the .platform descriptor for a seeded repo item.
 func demoPlatform(itemType, displayName string) string {
 	return `{
@@ -315,7 +364,14 @@ func demoPlatform(itemType, displayName string) string {
 func demoRepoFiles() map[string]string {
 	salesExpr, salesModel := demoSalesModelTMDL("DEV", true)
 	finExpr, finModel := demoFinanceModelTMDL("DEV")
+	vlVars, vlSettings, vlSets := demoVariableLibrary(true)
 	return map[string]string{
+		"Backend/VL_Settings.VariableLibrary/.platform":           demoPlatform("VariableLibrary", "VL_Settings"),
+		"Backend/VL_Settings.VariableLibrary/variables.json":      vlVars,
+		"Backend/VL_Settings.VariableLibrary/settings.json":       vlSettings,
+		"Backend/VL_Settings.VariableLibrary/valueSets/TEST.json": vlSets["TEST"],
+		"Backend/VL_Settings.VariableLibrary/valueSets/PROD.json": vlSets["PROD"],
+
 		"Backend/LH_Bronze.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Bronze"),
 		"Backend/LH_Silver.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Silver"),
 
@@ -351,6 +407,14 @@ func demoDefinition(env string, item fabric.Item) *fabric.Definition {
 		}
 	}
 	switch item.Type + "/" + item.DisplayName {
+	case "VariableLibrary/VL_Settings":
+		vlVars, vlSettings, vlSets := demoVariableLibrary(false)
+		return &fabric.Definition{Parts: []fabric.DefinitionPart{
+			part("variables.json", vlVars),
+			part("settings.json", vlSettings),
+			part("valueSets/TEST.json", vlSets["TEST"]),
+			part("valueSets/PROD.json", vlSets["PROD"]),
+		}}
 	case "Notebook/nb_ingest_sales":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{part("notebook-content.py", demoNotebookIngest(env, false))}}
 	case "Notebook/nb_transform_orders":
@@ -619,6 +683,13 @@ func demoBulkItem(p fabric.DefinitionPart) (name, typ string, ok bool) {
 		return "", "", false
 	}
 	return platform.Metadata.DisplayName, platform.Metadata.Type, true
+}
+
+// SetVariableLibraryActiveSet records nothing — the demo just succeeds after
+// a beat, so the post-deploy activation line shows in recordings.
+func (c *demoClient) SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName string) error {
+	time.Sleep(350 * time.Millisecond)
+	return nil
 }
 
 // NewOneLakeAPI implements the flow's optional oneLakeProvider interface, so

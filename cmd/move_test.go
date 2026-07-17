@@ -553,3 +553,7 @@ func TestMove_RebindPicker_DestinationModelsFirst(t *testing.T) {
 		t.Errorf("expected 'Dest Model' first, got %q", first.Label)
 	}
 }
+
+func (f *fakeMoveAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName string) error {
+	return nil
+}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -336,6 +337,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return err
 	}
+	// Before the post-deploy notebooks: they may consume the variables, so the
+	// right value set must be active when they run.
+	activateVariableLibraries(client, token, alias, groups, results)
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
 	saveDeployHistory(configPath, customerName, customer, groups, results, runOutcomes, ui.Confirm)
 	return nil
@@ -1779,5 +1783,62 @@ func printDeployResults(results []deploy.Result) {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("%s, %d failure(s)\n%s", summary, failed, b)))
 	} else {
 		fmt.Println(successStyle.Render(summary + "\n" + b))
+	}
+}
+
+// activateVariableLibraries enforces the value-set-per-environment convention
+// after a publish, mirroring fabric-cicd: every successfully deployed
+// VariableLibrary whose settings.json lists a value set named after the target
+// environment gets that set activated in the target workspace. The active set
+// is workspace state (never part of the definition), so with no matching set
+// the target's choice is deliberately left alone — with a hint, not an error.
+func activateVariableLibraries(client APIClient, token, alias string, groups []deployGroup, results []deploy.Result) {
+	valueSets := map[string][]string{} // display name -> valueSetsOrder from the local settings.json
+	for _, g := range groups {
+		for _, r := range g.Rows {
+			if r.Local.Type != "VariableLibrary" {
+				continue
+			}
+			for _, p := range r.Local.Parts {
+				if path.Base(p.Path) != "settings.json" {
+					continue
+				}
+				var settings struct {
+					ValueSetsOrder []string `json:"valueSetsOrder"`
+				}
+				if json.Unmarshal(p.Content, &settings) == nil {
+					valueSets[r.Local.DisplayName] = settings.ValueSetsOrder
+				}
+			}
+		}
+	}
+	if len(valueSets) == 0 {
+		return
+	}
+	for _, res := range results {
+		if res.Type != "VariableLibrary" || res.Action == deploy.ActionDelete || res.Err != nil || res.ID == "" {
+			continue
+		}
+		order, ok := valueSets[res.Name]
+		if !ok {
+			continue
+		}
+		match := false
+		for _, name := range order {
+			if name == alias {
+				match = true
+				break
+			}
+		}
+		if !match {
+			fmt.Println(infoStyle.Render(fmt.Sprintf(
+				"%s: no value set named %q — the target's active value set is unchanged. Name a value set after the environment to have deploys activate it.", res.Name, alias)))
+			continue
+		}
+		if err := client.SetVariableLibraryActiveSet(token, res.WorkspaceID, res.ID, alias); err != nil {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: couldn't activate value set %q: %v", res.Name, alias, err)))
+			continue
+		}
+		fmt.Println(infoStyle.Render(fmt.Sprintf("%s: active value set → %s", res.Name, alias)))
 	}
 }

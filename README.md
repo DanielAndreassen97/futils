@@ -15,6 +15,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
   - **Cherry-pick & orphan cleanup** — select exactly which items deploy; items that exist only in the target are flagged as orphans and can be deleted in a separate, separately-confirmed pass.
   - **Schedules toggle** — optionally keep schedules out of compare and deploy, so schedules configured directly in TEST/PROD survive.
   - **Two backends** — stable per-item create/update (default), or the bulk-import backend (Fabric preview API) as an opt-in per customer.
+  - **Variable libraries** — VariableLibrary items deploy first (anything may reference them), and after publish futils activates the value set named after the target environment — the same convention as fabric-cicd. No matching value set? The target's active-set choice is left untouched, by design.
   - **Post-deploy runs** — register notebooks to be offered for execution right after a successful deploy.
   - **Deploy history** — a timestamped HTML deploy report written to a repo folder after each real deploy.
 - **Schema compare** — compare lakehouse table schemas between two workspaces (lakehouses paired by name) and see added/removed/changed tables and columns before you promote.

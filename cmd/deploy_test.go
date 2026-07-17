@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1387,4 +1388,55 @@ func TestBuildDeployGroupsPerRepo(t *testing.T) {
 	if !reflect.DeepEqual(byWS["WS-Front"], []string{"NB_Front"}) {
 		t.Fatalf("WS-Front rows = %v, want [NB_Front]", byWS["WS-Front"])
 	}
+}
+
+func (f *deployFakeAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName string) error {
+	return nil
+}
+
+// TestActivateVariableLibraries: a deployed VariableLibrary whose settings.json
+// names a value set after the target env gets it activated; no match leaves the
+// target untouched; deletes and failures are never activated.
+func TestActivateVariableLibraries(t *testing.T) {
+	settings := func(sets ...string) []byte {
+		b, _ := json.Marshal(map[string]any{"valueSetsOrder": sets})
+		return b
+	}
+	local := func(name string, settingsJSON []byte) deploy.LocalItem {
+		return deploy.LocalItem{
+			Type: "VariableLibrary", DisplayName: name,
+			Parts: []deploy.Part{{Path: "settings.json", Content: settingsJSON}},
+		}
+	}
+	groups := []deployGroup{{Rows: []deploy.CompareRow{
+		{Class: deploy.ClassChanged, Local: local("VL_Match", settings("TEST", "PROD"))},
+		{Class: deploy.ClassChanged, Local: local("VL_NoMatch", settings("PROD"))},
+		{Class: deploy.ClassChanged, Local: local("VL_Deleted", settings("TEST"))},
+	}}}
+	results := []deploy.Result{
+		{Name: "VL_Match", Type: "VariableLibrary", Action: deploy.ActionUpdate, ID: "id-1", WorkspaceID: "ws-1"},
+		{Name: "VL_NoMatch", Type: "VariableLibrary", Action: deploy.ActionUpdate, ID: "id-2", WorkspaceID: "ws-1"},
+		{Name: "VL_Deleted", Type: "VariableLibrary", Action: deploy.ActionDelete, ID: "id-3", WorkspaceID: "ws-1"},
+		{Name: "nb_x", Type: "Notebook", Action: deploy.ActionUpdate, ID: "id-4", WorkspaceID: "ws-1"},
+	}
+	fake := &activationFakeAPI{}
+	activateVariableLibraries(fake, "tok", "TEST", groups, results)
+	if len(fake.activated) != 1 {
+		t.Fatalf("activations = %v, want exactly VL_Match", fake.activated)
+	}
+	if got := fake.activated[0]; got != [3]string{"ws-1", "id-1", "TEST"} {
+		t.Errorf("activated %v", got)
+	}
+}
+
+// activationFakeAPI records SetVariableLibraryActiveSet calls; everything else
+// is unused by activateVariableLibraries.
+type activationFakeAPI struct {
+	deployFakeAPI
+	activated [][3]string
+}
+
+func (f *activationFakeAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName string) error {
+	f.activated = append(f.activated, [3]string{ws, id, valueSetName})
+	return nil
 }
