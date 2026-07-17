@@ -234,12 +234,13 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			return nil, fmt.Errorf("%s: %w", folder, err)
 		}
 		item := LocalItem{
-			Type:        meta.Type,
-			DisplayName: meta.DisplayName,
-			Description: meta.Description,
-			LogicalID:   meta.LogicalID,
-			FolderPath:  folder,
-			Platform:    platRaw,
+			Type:            meta.Type,
+			DisplayName:     meta.DisplayName,
+			Description:     meta.Description,
+			LogicalID:       meta.LogicalID,
+			FolderPath:      folder,
+			Platform:        platRaw,
+			CreationPayload: meta.CreationPayload,
 		}
 		for _, p := range filesByFolder[folder] {
 			rel := strings.TrimPrefix(p, folder+"/")

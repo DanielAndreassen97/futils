@@ -68,7 +68,7 @@ func (f *deployFakeAPI) GetItemDefinition(token, ws, id, format string) (*fabric
 	}
 	return &fabric.Definition{}, nil
 }
-func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
+func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
 	f.created = append(f.created, name)
 	if f.createdWS == nil {
 		f.createdWS = map[string]string{}
@@ -188,6 +188,39 @@ func TestDiffExistingRows_PlatformOnlyIsUnchanged(t *testing.T) {
 	}
 	if len(diffs) != 0 {
 		t.Errorf("want no diffs, got %+v", diffs)
+	}
+}
+
+// Zero-part items (Warehouse and other shell types) have no definition to
+// fetch — getDefinition is unsupported for them — so the compare must classify
+// them on description alone, never leaving them as unverified Exists.
+func TestDiffExistingRows_ZeroPartShellTypes(t *testing.T) {
+	local := []deploy.LocalItem{
+		{Type: "Warehouse", DisplayName: "WH_Same", Description: "d"},
+		{Type: "Warehouse", DisplayName: "WH_Drift", Description: "new desc"},
+	}
+	deployed := []fabric.Item{
+		{ID: "wh-1", DisplayName: "WH_Same", Type: "Warehouse", WorkspaceID: "ws-1", Description: "d"},
+		{ID: "wh-2", DisplayName: "WH_Drift", Type: "Warehouse", WorkspaceID: "ws-1", Description: "old desc"},
+	}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+	fake := &deployFakeAPI{} // no definitions — a fetch attempt would return an empty def, not an error, so also assert none happens via class outcome
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "Config"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
+
+	byName := map[string]deploy.Class{}
+	for _, r := range rows {
+		byName[r.Name()] = r.Class
+	}
+	if byName["WH_Same"] != deploy.ClassUnchanged {
+		t.Errorf("WH_Same = %v, want Unchanged", byName["WH_Same"])
+	}
+	if byName["WH_Drift"] != deploy.ClassChanged {
+		t.Errorf("WH_Drift = %v, want Changed", byName["WH_Drift"])
+	}
+	if len(diffs) != 1 || diffs[0].Name != "WH_Drift" || diffs[0].Parts[0].New != "new desc" {
+		t.Errorf("want one description diff for WH_Drift, got %+v", diffs)
 	}
 }
 

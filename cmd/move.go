@@ -446,7 +446,7 @@ func executeMove(client APIClient, token string, srcWS fabric.Workspace, srcItem
 			}
 			newID = existingID
 		} else {
-			created, err := client.CreateItem(token, dstWS.ID, targetName, srcItem.Type, def)
+			created, err := client.CreateItem(token, dstWS.ID, targetName, srcItem.Type, def, nil)
 			if err != nil {
 				moveErr = fmt.Errorf("create item: %w (check that you have Member or higher on %s)", err, dstWS.DisplayName)
 				return

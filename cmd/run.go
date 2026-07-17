@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -59,7 +60,7 @@ type APIClient interface {
 	ListItems(token, workspaceID string) ([]fabric.Item, error)
 	ListItemsByType(token, workspaceID, itemType string) ([]fabric.Item, error)
 	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
-	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error)
+	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error)
 	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
 	UpdateItem(token, workspaceID, itemID, displayName, description string) error
 	DeleteItem(token, workspaceID, itemID string) error
@@ -110,8 +111,8 @@ func (RealAPIClient) ListItemsByType(token, workspaceID, itemType string) ([]fab
 func (RealAPIClient) GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error) {
 	return fabric.GetItemDefinition(token, workspaceID, itemID, format)
 }
-func (RealAPIClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error) {
-	return fabric.CreateItem(token, workspaceID, displayName, itemType, def)
+func (RealAPIClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
+	return fabric.CreateItem(token, workspaceID, displayName, itemType, def, creationPayload)
 }
 func (RealAPIClient) UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error {
 	return fabric.UpdateItemDefinition(token, workspaceID, itemID, def)

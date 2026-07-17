@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -29,7 +30,7 @@ func (f *fakeFabric) ListItemsByType(token, ws, typ string) ([]fabric.Item, erro
 func (f *fakeFabric) GetItemDefinition(token, ws, id, format string) (*fabric.Definition, error) {
 	return &fabric.Definition{}, nil
 }
-func (f *fakeFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
+func (f *fakeFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
 	return fabric.Item{ID: "new-" + name, DisplayName: name, Type: typ, WorkspaceID: ws}, nil
 }
 func (f *fakeFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {

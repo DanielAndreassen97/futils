@@ -309,6 +309,7 @@ type Item struct {
 	DisplayName string `json:"displayName"`
 	Type        string `json:"type"`
 	WorkspaceID string `json:"workspaceId"`
+	Description string `json:"description"`
 }
 
 // pagedGet walks a Fabric Core listing endpoint that pages via
@@ -393,7 +394,12 @@ func ListItemsByType(token, workspaceID, itemType string) ([]Item, error) {
 // A nil (or zero-part) def omits the definition field entirely, creating a
 // shell item — required for definitionless types like Warehouse, where the
 // API rejects an empty parts collection with 400 InvalidInput.
-func CreateItem(token, workspaceID, displayName, itemType string, def *Definition) (Item, error) {
+//
+// creationPayload, when non-nil, is passed through as the create request's
+// creationPayload field — type-specific one-time settings that only exist at
+// create time (Warehouse collation, Lakehouse enableSchemas). Fabric git-sync
+// stores it in .platform's metadata block, which is where the deploy reads it.
+func CreateItem(token, workspaceID, displayName, itemType string, def *Definition, creationPayload json.RawMessage) (Item, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return Item{}, err
 	}
@@ -401,13 +407,15 @@ func CreateItem(token, workspaceID, displayName, itemType string, def *Definitio
 		def = nil
 	}
 	body := struct {
-		DisplayName string      `json:"displayName"`
-		Type        string      `json:"type"`
-		Definition  *Definition `json:"definition,omitempty"`
+		DisplayName     string          `json:"displayName"`
+		Type            string          `json:"type"`
+		Definition      *Definition     `json:"definition,omitempty"`
+		CreationPayload json.RawMessage `json:"creationPayload,omitempty"`
 	}{
-		DisplayName: displayName,
-		Type:        itemType,
-		Definition:  def,
+		DisplayName:     displayName,
+		Type:            itemType,
+		Definition:      def,
+		CreationPayload: creationPayload,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

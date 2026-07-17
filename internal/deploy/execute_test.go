@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,8 +15,11 @@ import (
 // tests can assert a zero-part item was created with a nil definition.
 type recordingFabric struct {
 	fakeFabric
-	created       []*fabric.Definition
-	createdNames  []string
+	created         []*fabric.Definition
+	createdNames    []string
+	createdPayloads []json.RawMessage // creationPayload per CreateItem call
+	sqlPolls        int               // GetLakehouseSqlEndpoint call count
+	sqlFailFirst    int               // fail the first N endpoint polls
 	updates       map[string]fabric.Definition // existingID -> def
 	rebinds       [][3]string                  // {workspaceID, reportID, datasetID}
 	rebindErr     error                        // when set, RebindReport returns it
@@ -32,12 +36,13 @@ func (r *recordingFabric) UpdateItem(token, ws, id, displayName, description str
 	return r.updateItemErr
 }
 
-func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition) (fabric.Item, error) {
+func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
 	if r.createErr != nil {
 		return fabric.Item{}, r.createErr
 	}
 	r.created = append(r.created, def)
 	r.createdNames = append(r.createdNames, name)
+	r.createdPayloads = append(r.createdPayloads, creationPayload)
 	return fabric.Item{ID: name + "-newid", DisplayName: name, Type: typ, WorkspaceID: ws}, nil
 }
 func (r *recordingFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
@@ -137,6 +142,95 @@ func TestExecuteZeroPartItemOmitsDefinition(t *testing.T) {
 	}
 	if res[1].ID != "wh-existing" {
 		t.Errorf("update result ID = %q, want wh-existing", res[1].ID)
+	}
+}
+
+// GetLakehouseSqlEndpoint on recordingFabric can be primed to fail the first
+// N calls, simulating a lakehouse whose SQL endpoint is still provisioning.
+func (r *recordingFabric) GetLakehouseSqlEndpoint(token, ws, lhID string) (string, string, error) {
+	r.sqlPolls++
+	if r.sqlPolls <= r.sqlFailFirst {
+		return "", "", fmt.Errorf("lakehouse has no SQL endpoint yet (still provisioning?)")
+	}
+	return r.fakeFabric.GetLakehouseSqlEndpoint(token, ws, lhID)
+}
+
+// A create must pass .platform's creationPayload through (Warehouse collation,
+// Lakehouse enableSchemas); items without one pass nil.
+func TestExecutePassesCreationPayload(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	payload := json.RawMessage(`{"defaultCollation":"Latin1_General_100_CI_AS_KS_WS_SC_UTF8"}`)
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Warehouse", DisplayName: "WH_A", CreationPayload: payload}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB_A",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}},
+	}
+
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if string(rf.createdPayloads[0]) != string(payload) {
+		t.Errorf("creationPayload not passed through: %s", rf.createdPayloads[0])
+	}
+	if rf.createdPayloads[1] != nil {
+		t.Errorf("item without creationPayload must pass nil, got %s", rf.createdPayloads[1])
+	}
+}
+
+// After creating a Lakehouse, Execute must wait for its SQL analytics endpoint
+// to provision (later items may resolve $sqlendpoint against it); a wait that
+// never succeeds becomes a warning, not an error.
+func TestExecuteWaitsForLakehouseSQLEndpoint(t *testing.T) {
+	restoreInterval := sqlEndpointPollInterval
+	restoreAttempts := sqlEndpointWaitAttempts
+	sqlEndpointPollInterval = 0
+	sqlEndpointWaitAttempts = 5
+	t.Cleanup(func() {
+		sqlEndpointPollInterval = restoreInterval
+		sqlEndpointWaitAttempts = restoreAttempts
+	})
+
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	lakehouse := PlannedItem{Action: ActionCreate, Item: LocalItem{
+		Type: "Lakehouse", DisplayName: "LH_A",
+		Parts: []Part{{Path: "lakehouse.metadata.json", Content: []byte(`{"defaultSchema":"dbo"}`)}},
+	}}
+
+	// Provisions on the third poll → success, no warning.
+	rf := &recordingFabric{sqlFailFirst: 2, fakeFabric: fakeFabric{itemsByWS: map[string][]fabric.Item{}}}
+	res, _, err := Execute(rf, "tok", target, []PlannedItem{lakehouse}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res[0].Err != nil || res[0].Warning != "" {
+		t.Errorf("expected clean result after provisioning succeeded, got %+v", res[0])
+	}
+	if rf.sqlPolls != 3 {
+		t.Errorf("expected 3 endpoint polls, got %d", rf.sqlPolls)
+	}
+
+	// Never provisions → published with a warning; updates must NOT wait.
+	rf = &recordingFabric{sqlFailFirst: 1 << 30, fakeFabric: fakeFabric{itemsByWS: map[string][]fabric.Item{}}}
+	update := lakehouse
+	update.Action = ActionUpdate
+	update.ExistingID = "lh-old"
+	res, _, err = Execute(rf, "tok", target, []PlannedItem{lakehouse, update}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res[0].Err != nil || !strings.Contains(res[0].Warning, "SQL endpoint") {
+		t.Errorf("expected SQL endpoint warning on create, got %+v", res[0])
+	}
+	if res[1].Warning != "" {
+		t.Errorf("update of existing lakehouse must not wait/warn, got %+v", res[1])
+	}
+	if rf.sqlPolls != sqlEndpointWaitAttempts {
+		t.Errorf("expected %d polls (create only), got %d", sqlEndpointWaitAttempts, rf.sqlPolls)
 	}
 }
 

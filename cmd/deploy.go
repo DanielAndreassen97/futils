@@ -514,14 +514,38 @@ func newItemSentinel(logicalID string) string {
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
 func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, rows []deploy.CompareRow, rb *deploy.Rebinder, skipSchedules bool) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
+	// Zero-part items (Warehouse, SQLDatabase — shell types with nothing but a
+	// .platform in git) have no definition to fetch or diff: getDefinition 400s
+	// with OperationNotSupportedForItem for them, which used to leave every such
+	// row as a noisy unverified Exists. The only deployable field is the
+	// description (synced via UpdateItem), so classify on that alone.
+	var shellDiffs []ItemDiff
 	var existsIdx []int
 	for i := range rows {
-		if rows[i].Class == deploy.ClassExists {
-			existsIdx = append(existsIdx, i)
+		if rows[i].Class != deploy.ClassExists {
+			continue
 		}
+		if len(rows[i].Local.Parts) == 0 {
+			if rows[i].Local.Description == rows[i].Deployed.Description {
+				rows[i].Class = deploy.ClassUnchanged
+			} else {
+				rows[i].Class = deploy.ClassChanged
+				shellDiffs = append(shellDiffs, ItemDiff{
+					Name: rows[i].Name(),
+					Type: rows[i].ItemType(),
+					Parts: []deploy.PartDiff{{
+						Path: "(item description)",
+						Old:  rows[i].Deployed.Description,
+						New:  rows[i].Local.Description,
+					}},
+				})
+			}
+			continue
+		}
+		existsIdx = append(existsIdx, i)
 	}
 	if len(existsIdx) == 0 {
-		return nil, nil, nil
+		return nil, nil, shellDiffs
 	}
 
 	total := len(existsIdx)
@@ -686,7 +710,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	var firstErr error
 	var unresolved []deploy.UnresolvedRef
 	var changes []deploy.RebindChange
-	var itemDiffs []ItemDiff
+	itemDiffs := shellDiffs
 	for j, idx := range existsIdx {
 		c := compared[j]
 		if results[j].err != nil {

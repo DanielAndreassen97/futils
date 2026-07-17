@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -78,7 +79,7 @@ func (f *fakeMoveAPI) GetItemDefinition(_, _, itemID, _ string) (*fabric.Definit
 	}
 	return &fabric.Definition{Parts: []fabric.DefinitionPart{{Path: "x", Payload: "Zm9v", PayloadType: "InlineBase64"}}}, nil
 }
-func (f *fakeMoveAPI) CreateItem(_, ws, name, typ string, _ *fabric.Definition) (fabric.Item, error) {
+func (f *fakeMoveAPI) CreateItem(_, ws, name, typ string, _ *fabric.Definition, _ json.RawMessage) (fabric.Item, error) {
 	f.createCalls++
 	f.lastCreateName = name
 	if f.createErr != nil {

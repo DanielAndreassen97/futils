@@ -28,14 +28,19 @@ type LocalItem struct {
 	FolderPath  string
 	Parts       []Part
 	Platform    []byte // raw .platform bytes; retained for the bulk backend (not a Part)
+	// CreationPayload is .platform's raw metadata.creationPayload — one-time
+	// create settings for shell types (Warehouse collation, Lakehouse
+	// enableSchemas). Sent on create only; nil when .platform has none.
+	CreationPayload json.RawMessage
 }
 
 // platformMeta is the subset of .platform we consume.
 type platformMeta struct {
-	Type        string
-	DisplayName string
-	Description string
-	LogicalID   string
+	Type            string
+	DisplayName     string
+	Description     string
+	LogicalID       string
+	CreationPayload json.RawMessage
 }
 
 // parsePlatform reads a Fabric .platform file. Type and displayName are
@@ -45,9 +50,10 @@ type platformMeta struct {
 func parsePlatform(raw []byte) (platformMeta, error) {
 	var p struct {
 		Metadata struct {
-			Type        string `json:"type"`
-			DisplayName string `json:"displayName"`
-			Description string `json:"description"`
+			Type            string          `json:"type"`
+			DisplayName     string          `json:"displayName"`
+			Description     string          `json:"description"`
+			CreationPayload json.RawMessage `json:"creationPayload"`
 		} `json:"metadata"`
 		Config struct {
 			LogicalID string `json:"logicalId"`
@@ -63,10 +69,11 @@ func parsePlatform(raw []byte) (platformMeta, error) {
 		return platformMeta{}, fmt.Errorf(".platform missing metadata.displayName")
 	}
 	return platformMeta{
-		Type:        p.Metadata.Type,
-		DisplayName: p.Metadata.DisplayName,
-		Description: p.Metadata.Description,
-		LogicalID:   p.Config.LogicalID,
+		Type:            p.Metadata.Type,
+		DisplayName:     p.Metadata.DisplayName,
+		Description:     p.Metadata.Description,
+		LogicalID:       p.Config.LogicalID,
+		CreationPayload: p.Metadata.CreationPayload,
 	}, nil
 }
 

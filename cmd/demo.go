@@ -571,7 +571,7 @@ func (c *demoClient) GetItemDefinition(token, workspaceID, itemID, format string
 	return nil, fmt.Errorf("item %q not found", itemID)
 }
 
-func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error) {
+func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
 	time.Sleep(700 * time.Millisecond)
 	return fabric.Item{
 		ID:          demoGUID("created", itemType, displayName, workspaceID),
@@ -641,7 +641,10 @@ func (c *demoClient) GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID str
 	if it, found := demoItemByID(workspaceID, lakehouseID); found && it.Type == "Lakehouse" {
 		return demoSQLHost(env), demoGUID("sqlendpoint", it.DisplayName, env), nil
 	}
-	return "", "", fmt.Errorf("lakehouse %q not found", lakehouseID)
+	// A lakehouse created earlier in this session isn't in the seed store —
+	// in demo-land it provisions instantly, so the deploy's post-create
+	// endpoint wait returns on the first poll instead of stalling.
+	return demoSQLHost(env), demoGUID("sqlendpoint", lakehouseID, env), nil
 }
 
 func (c *demoClient) BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {

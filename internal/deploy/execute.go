@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -126,7 +127,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 				deployedID = p.ExistingID
 			default:
 				var created fabric.Item
-				created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def)
+				created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def, p.Item.CreationPayload)
 				deployedID = created.ID
 			}
 			if err != nil {
@@ -136,6 +137,17 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			}
 			res.ID = deployedID
 
+			// A freshly created lakehouse provisions its SQL analytics endpoint
+			// asynchronously (~15s observed live). Later items in this same run may
+			// resolve $sqlendpoint against it (semantic-model rebind, substitutions),
+			// so block here until it's up — mirrors fabric-cicd. Timeout is a
+			// warning, not an error: the lakehouse itself deployed fine.
+			if p.Action != ActionUpdate && p.Item.Type == "Lakehouse" {
+				if werr := waitLakehouseSQLEndpoint(client, token, target.ID, deployedID); werr != nil {
+					res.Warning = werr.Error()
+				}
+			}
+
 			// Item metadata (description) lives in .platform, which is never part of
 			// the published definition — set it explicitly so git stays the source of
 			// truth for descriptions, mirroring fabric-cicd. A failure here is
@@ -143,7 +155,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			// Warning (not Err) — the item still counts as deployed, and a real
 			// failure later (e.g. a report rebind) can still set Err.
 			if err := client.UpdateItem(token, target.ID, deployedID, p.Item.DisplayName, p.Item.Description); err != nil {
-				res.Warning = fmt.Sprintf("description not synced: %v", err)
+				res.Warning = joinWarning(res.Warning, fmt.Sprintf("description not synced: %v", err))
 			}
 
 			if p.Item.LogicalID != "" {
@@ -271,6 +283,34 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 		})
 	}
 	return def, parts, nil
+}
+
+// sqlEndpointPollInterval / sqlEndpointWaitAttempts pace waitLakehouseSQLEndpoint:
+// ~2 minutes at 5s per attempt (provisioning was ~15s in live testing, but library
+// resolution can stretch it). Vars so tests can collapse the wait.
+var (
+	sqlEndpointPollInterval = 5 * time.Second
+	sqlEndpointWaitAttempts = 24
+)
+
+// waitLakehouseSQLEndpoint polls a freshly created lakehouse until its SQL
+// analytics endpoint is provisioned (GetLakehouseSqlEndpoint succeeds). Any
+// error — "still provisioning" or transient — just means another attempt;
+// exhausting the attempts returns the last error wrapped as a warning-grade
+// failure so the caller can surface it without failing the publish.
+func waitLakehouseSQLEndpoint(client FabricClient, token, wsID, lakehouseID string) error {
+	var lastErr error
+	for i := 0; i < sqlEndpointWaitAttempts; i++ {
+		if i > 0 {
+			time.Sleep(sqlEndpointPollInterval)
+		}
+		if _, _, err := client.GetLakehouseSqlEndpoint(token, wsID, lakehouseID); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return fmt.Errorf("SQL endpoint not confirmed after create: %v", lastErr)
 }
 
 // definitionFormat returns the definition-envelope format flag for item types

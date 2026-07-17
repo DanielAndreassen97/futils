@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,29 @@ func TestParsePlatform(t *testing.T) {
 	}
 	if meta.Description != "does foo" {
 		t.Errorf("description = %q", meta.Description)
+	}
+}
+
+func TestParsePlatformCreationPayload(t *testing.T) {
+	raw := []byte(`{
+	  "metadata": { "type": "Warehouse", "displayName": "WH_A",
+	    "creationPayload": { "defaultCollation": "Latin1_General_100_CI_AS_KS_WS_SC_UTF8" } },
+	  "config": { "logicalId": "11111111-1111-1111-1111-111111111111" }
+	}`)
+	meta, err := parsePlatform(raw)
+	if err != nil {
+		t.Fatalf("parsePlatform: %v", err)
+	}
+	if !strings.Contains(string(meta.CreationPayload), "defaultCollation") {
+		t.Errorf("creationPayload = %s", meta.CreationPayload)
+	}
+	// And absent creationPayload stays nil (create sends no such field).
+	meta, err = parsePlatform([]byte(`{"metadata":{"type":"Notebook","displayName":"NB"}}`))
+	if err != nil {
+		t.Fatalf("parsePlatform: %v", err)
+	}
+	if meta.CreationPayload != nil {
+		t.Errorf("expected nil creationPayload, got %s", meta.CreationPayload)
 	}
 }
 
