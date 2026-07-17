@@ -24,6 +24,17 @@ const schemaCompareConcurrency = 32
 // escape hatch in the source/target picker.
 const browseAllWorkspaces = "\x00browse-all"
 
+// newOneLakeAPI acquires the OneLake Table API client for a customer (a
+// storage-scope token, separate from the Fabric one). A package var so demo
+// mode can swap in the offline fake.
+var newOneLakeAPI = func(customerName string) (schemacompare.OneLakeTableAPI, error) {
+	storageToken, err := fabric.GetStorageToken(customerName)
+	if err != nil {
+		return nil, fmt.Errorf("acquire OneLake token: %w", err)
+	}
+	return schemacompare.NewClient(storageToken), nil
+}
+
 // intersectLakehousesByName returns the sorted display names that appear as a
 // Lakehouse in both workspaces — the paired set we can compare.
 func intersectLakehousesByName(src, tgt []fabric.Item) []string {
@@ -142,11 +153,11 @@ func SchemaCompare(configPath string) error {
 		return err
 	}
 
-	token, err := fabric.GetAccessToken(customerName)
+	token, err := DefaultAPI.GetAccessToken(customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
-	workspaces, err := fabric.ListWorkspaces(token)
+	workspaces, err := DefaultAPI.ListWorkspaces(token)
 	if err != nil {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
@@ -160,11 +171,11 @@ func SchemaCompare(configPath string) error {
 		return err
 	}
 
-	srcLakes, err := fabric.ListItemsByType(token, srcID, "Lakehouse")
+	srcLakes, err := DefaultAPI.ListItemsByType(token, srcID, "Lakehouse")
 	if err != nil {
 		return fmt.Errorf("list source lakehouses: %w", err)
 	}
-	tgtLakes, err := fabric.ListItemsByType(token, tgtID, "Lakehouse")
+	tgtLakes, err := DefaultAPI.ListItemsByType(token, tgtID, "Lakehouse")
 	if err != nil {
 		return fmt.Errorf("list destination lakehouses: %w", err)
 	}
@@ -181,12 +192,10 @@ func SchemaCompare(configPath string) error {
 		return nil
 	}
 
-	// Storage-scope token for the OneLake Table API.
-	storageToken, err := fabric.GetStorageToken(customerName)
+	api, err := newOneLakeAPI(customerName)
 	if err != nil {
-		return fmt.Errorf("acquire OneLake token: %w", err)
+		return err
 	}
-	api := schemacompare.NewClient(storageToken)
 
 	idByName := func(items []fabric.Item, name string) string {
 		for _, it := range items {
