@@ -549,8 +549,12 @@ func FindNotebookByName(token, workspaceID, name string) (Item, error) {
 // getDefinition and accepted by createItem / updateItemDefinition.
 // Each part is a base64 payload identified by a relative path
 // (e.g. "notebook-content.ipynb", "report.json", "model.bim").
+// Format disambiguates definition variants for the types that have several
+// (Notebook "ipynb" vs. the default .py form, SparkJobDefinition
+// "SparkJobDefinitionV2"); empty means the type's default format.
 type Definition struct {
-	Parts []DefinitionPart `json:"parts"`
+	Format string           `json:"format,omitempty"`
+	Parts  []DefinitionPart `json:"parts"`
 }
 
 // DefinitionPart is one file inside an item definition. PayloadType

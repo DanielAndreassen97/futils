@@ -140,6 +140,90 @@ func TestExecuteZeroPartItemOmitsDefinition(t *testing.T) {
 	}
 }
 
+// The notebook definition API processes parts in payload order and requires
+// the content file before any settings .json (fabric-cicd #869), and .ipynb
+// content must be flagged with format=ipynb in the definition envelope.
+func TestExecuteNotebookPartOrderAndIpynbFormat(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{{
+		Action: ActionCreate,
+		Item: LocalItem{
+			Type: "Notebook", DisplayName: "NB_A",
+			Parts: []Part{
+				{Path: "extra-settings.json", Content: []byte("{}")},
+				{Path: "environment.yml", Content: []byte("x: 1")},
+				{Path: "notebook-content.ipynb", Content: []byte(`{"cells":[]}`)},
+			},
+		},
+	}}
+
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	def := rf.created[0]
+	if def.Format != "ipynb" {
+		t.Errorf("Format = %q, want ipynb", def.Format)
+	}
+	var order []string
+	for _, p := range def.Parts {
+		order = append(order, p.Path)
+	}
+	want := []string{"notebook-content.ipynb", "environment.yml", "extra-settings.json"}
+	if fmt.Sprint(order) != fmt.Sprint(want) {
+		t.Errorf("part order = %v, want %v", order, want)
+	}
+}
+
+// A .py-format notebook carries no format flag, and non-notebook items keep
+// their discovery part order untouched.
+func TestExecuteFormatAndOrderLeftAloneForOtherShapes(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{
+			Type: "Notebook", DisplayName: "NB_Py",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}},
+		}},
+		{Action: ActionCreate, Item: LocalItem{
+			Type: "Report", DisplayName: "R_A",
+			Parts: []Part{
+				{Path: "report.json", Content: []byte("{}")},
+				{Path: "definition.pbir", Content: []byte("{}")},
+			},
+		}},
+		{Action: ActionCreate, Item: LocalItem{
+			Type: "SparkJobDefinition", DisplayName: "SJD_A",
+			Parts: []Part{{Path: "SparkJobDefinitionV1.json", Content: []byte("{}")}},
+		}},
+	}
+
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	byName := map[string]*fabric.Definition{}
+	for i, n := range rf.createdNames {
+		byName[n] = rf.created[i]
+	}
+	if f := byName["NB_Py"].Format; f != "" {
+		t.Errorf("py notebook Format = %q, want empty", f)
+	}
+	if got := byName["R_A"].Parts[0].Path; got != "report.json" {
+		t.Errorf("report part order changed, first = %q", got)
+	}
+	if f := byName["SJD_A"].Format; f != "SparkJobDefinitionV2" {
+		t.Errorf("SparkJobDefinition Format = %q, want SparkJobDefinitionV2", f)
+	}
+}
+
 func TestExecuteUpdatesExistingItem(t *testing.T) {
 	rf := &recordingFabric{fakeFabric: fakeFabric{
 		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},

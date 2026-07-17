@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -261,8 +262,8 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 	if len(item.Parts) == 0 {
 		return nil, parts, nil
 	}
-	def := &fabric.Definition{}
-	for _, part := range item.Parts { // preserve discovery order
+	def := &fabric.Definition{Format: definitionFormat(item)}
+	for _, part := range orderedParts(item) {
 		def.Parts = append(def.Parts, fabric.DefinitionPart{
 			Path:        part.Path,
 			Payload:     base64.StdEncoding.EncodeToString(parts[part.Path]),
@@ -270,6 +271,49 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 		})
 	}
 	return def, parts, nil
+}
+
+// definitionFormat returns the definition-envelope format flag for item types
+// with several definition variants: an .ipynb notebook must declare "ipynb"
+// (the API otherwise parses the payload as the .py git form), and
+// SparkJobDefinition always uses "SparkJobDefinitionV2" (mirrors fabric-cicd's
+// API_FORMAT_MAPPING). Empty for everything else.
+func definitionFormat(item LocalItem) string {
+	switch item.Type {
+	case "Notebook":
+		for _, p := range item.Parts {
+			if strings.HasSuffix(p.Path, ".ipynb") {
+				return "ipynb"
+			}
+		}
+	case "SparkJobDefinition":
+		return "SparkJobDefinitionV2"
+	}
+	return ""
+}
+
+// orderedParts returns the item's parts in publish order. The notebook API
+// processes parts in payload order and needs the content file before any
+// settings .json (fabric-cicd #869): content first, then other files, then
+// *.json — stable within each bucket, so discovery order still breaks ties.
+// Every other type keeps discovery order untouched.
+func orderedParts(item LocalItem) []Part {
+	if item.Type != "Notebook" {
+		return item.Parts // preserve discovery order
+	}
+	prio := func(p Part) int {
+		switch {
+		case strings.HasSuffix(p.Path, ".py"), strings.HasSuffix(p.Path, ".ipynb"):
+			return 0
+		case strings.HasSuffix(p.Path, ".json"):
+			return 2
+		default:
+			return 1
+		}
+	}
+	out := append([]Part(nil), item.Parts...)
+	sort.SliceStable(out, func(i, j int) bool { return prio(out[i]) < prio(out[j]) })
+	return out
 }
 
 // reportDatasetRef parses a report's definition.pbir dataset reference once and
