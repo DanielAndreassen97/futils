@@ -16,6 +16,9 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
   - **Schedules toggle** — optionally keep schedules out of compare and deploy, so schedules configured directly in TEST/PROD survive.
   - **Two backends** — stable per-item create/update (default), or the bulk-import backend (Fabric preview API) as an opt-in per customer.
   - **Variable libraries** — VariableLibrary items deploy first (anything may reference them), and after publish futils activates the value set named after the target environment — the same convention as fabric-cicd. No matching value set? The target's active-set choice is left untouched, by design.
+  - **Environments** — a deployed Environment only *stages* its sparkcompute settings and libraries; after the deploy, futils offers to run the environment publish (it can take minutes) and tracks it to completion. Declining leaves it staged for a manual publish.
+  - **Shell types done right** — Warehouse/SQLDatabase and other definitionless items are created as shells with their `.platform` `creationPayload` (collation, schema support) intact, compared on description instead of producing unverifiable rows, and a freshly created Lakehouse is held until its SQL analytics endpoint finishes provisioning so later rebinds resolve.
+  - **Notebook formats** — `.ipynb`-form notebooks publish with `format=ipynb`, and definition parts are ordered the way the notebook API requires (content before settings).
   - **Post-deploy runs** — register notebooks to be offered for execution right after a successful deploy.
   - **Deploy history** — a timestamped HTML deploy report written to a repo folder after each real deploy.
 - **Schema compare** — compare lakehouse table schemas between two workspaces (lakehouses paired by name) and see added/removed/changed tables and columns before you promote.
