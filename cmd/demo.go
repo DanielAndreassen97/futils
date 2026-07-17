@@ -105,6 +105,7 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 	if kind == "Config" {
 		items := []fabric.Item{
 			mk("VL_Settings", "VariableLibrary"),
+			mk("ENV_Spark", "Environment"),
 			mk("LH_Bronze", "Lakehouse"), sqlEndpoint("LH_Bronze"),
 			mk("LH_Silver", "Lakehouse"), sqlEndpoint("LH_Silver"),
 			mk("nb_ingest_sales", "Notebook"),
@@ -343,6 +344,27 @@ func demoVariableLibrary(current bool) (variables, settings string, valueSets ma
 	return variables, settings, valueSets
 }
 
+// demoSparkcompute renders ENV_Spark's Setting/Sparkcompute.yml. current bumps
+// the runtime and executor ceiling, so TEST shows a real Environment diff —
+// and the post-deploy staging→publish step has something to publish.
+func demoSparkcompute(current bool) string {
+	runtime, maxExec := "1.2", "6"
+	if current {
+		runtime, maxExec = "1.3", "9"
+	}
+	return `enable_native_execution_engine: false
+driver_cores: 4
+driver_memory: 28g
+executor_cores: 4
+executor_memory: 28g
+dynamic_executor_allocation:
+  enabled: true
+  min_executors: 1
+  max_executors: ` + maxExec + `
+runtime_version: ` + runtime + `
+`
+}
+
 // demoPlatform renders the .platform descriptor for a seeded repo item.
 func demoPlatform(itemType, displayName string) string {
 	return `{
@@ -374,6 +396,9 @@ func demoRepoFiles() map[string]string {
 
 		"Backend/LH_Bronze.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Bronze"),
 		"Backend/LH_Silver.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Silver"),
+
+		"Backend/ENV_Spark.Environment/.platform":                demoPlatform("Environment", "ENV_Spark"),
+		"Backend/ENV_Spark.Environment/Setting/Sparkcompute.yml": demoSparkcompute(true),
 
 		"Backend/nb_ingest_sales.Notebook/.platform":               demoPlatform("Notebook", "nb_ingest_sales"),
 		"Backend/nb_ingest_sales.Notebook/notebook-content.py":     demoNotebookIngest("DEV", true),
@@ -414,6 +439,10 @@ func demoDefinition(env string, item fabric.Item) *fabric.Definition {
 			part("settings.json", vlSettings),
 			part("valueSets/TEST.json", vlSets["TEST"]),
 			part("valueSets/PROD.json", vlSets["PROD"]),
+		}}
+	case "Environment/ENV_Spark":
+		return &fabric.Definition{Parts: []fabric.DefinitionPart{
+			part("Setting/Sparkcompute.yml", demoSparkcompute(false)),
 		}}
 	case "Notebook/nb_ingest_sales":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{part("notebook-content.py", demoNotebookIngest(env, false))}}
@@ -482,12 +511,13 @@ func demoIpynb() []byte {
 // fixed small sleeps: long enough that spinners visibly spin, short enough
 // that a demo stays snappy.
 type demoClient struct {
-	mu    sync.Mutex
-	polls map[string]int // job instance URL -> poll count
+	mu       sync.Mutex
+	polls    map[string]int // job instance URL -> poll count
+	envPolls map[string]int // environment itemID -> publish-state poll count
 }
 
 func newDemoClient() *demoClient {
-	return &demoClient{polls: map[string]int{}}
+	return &demoClient{polls: map[string]int{}, envPolls: map[string]int{}}
 }
 
 func (c *demoClient) GetAccessToken(profile string) (string, error) {
@@ -693,6 +723,27 @@ func demoBulkItem(p fabric.DefinitionPart) (name, typ string, ok bool) {
 func (c *demoClient) SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName string) error {
 	time.Sleep(350 * time.Millisecond)
 	return nil
+}
+
+// PublishEnvironment succeeds after a beat, like the other demo mutations.
+func (c *demoClient) PublishEnvironment(token, workspaceID, itemID string) error {
+	time.Sleep(400 * time.Millisecond)
+	return nil
+}
+
+// GetEnvironmentPublishState walks Running → Success in one poll cycle, so the
+// deploy's publish spinner gets a visible in-progress phase without stalling a
+// demo recording for a full extra poll interval.
+func (c *demoClient) GetEnvironmentPublishState(token, workspaceID, itemID string) (string, error) {
+	time.Sleep(250 * time.Millisecond)
+	c.mu.Lock()
+	c.envPolls[itemID]++
+	n := c.envPolls[itemID]
+	c.mu.Unlock()
+	if n < 2 {
+		return "running", nil
+	}
+	return "success", nil
 }
 
 // NewOneLakeAPI implements the flow's optional oneLakeProvider interface, so

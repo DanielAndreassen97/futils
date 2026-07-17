@@ -340,6 +340,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	// Before the post-deploy notebooks: they may consume the variables, so the
 	// right value set must be active when they run.
 	activateVariableLibraries(client, token, alias, groups, results)
+	// Also before the post-deploy notebooks: a notebook attached to a deployed
+	// environment should run against its published settings, not stale ones.
+	publishEnvironments(client, token, results, ui.Confirm)
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
 	saveDeployHistory(configPath, customerName, customer, groups, results, runOutcomes, ui.Confirm)
 	return nil
@@ -1807,6 +1810,98 @@ func printDeployResults(results []deploy.Result) {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("%s, %d failure(s)\n%s", summary, failed, b)))
 	} else {
 		fmt.Println(successStyle.Render(summary + "\n" + b))
+	}
+}
+
+// envPublishPollInterval / envPublishMaxPolls pace the environment publish
+// wait: staging→publish resolves libraries server-side and commonly takes
+// single-digit minutes; 10s × 180 caps the wait at 30 minutes. Vars so tests
+// can collapse them.
+var (
+	envPublishPollInterval = 10 * time.Second
+	envPublishMaxPolls     = 180
+)
+
+// publishEnvironments submits staging→publish for every successfully deployed
+// Environment item, then waits for the publishes to settle. Deploying an
+// Environment's definition only STAGES sparkcompute/libraries — nothing takes
+// effect until the environment-specific publish API runs (mirrors
+// fabric-cicd). Because a publish can take many minutes on a real tenant, the
+// user confirms first; declining leaves the staged state for a manual publish
+// in the portal. All failures are warnings — the definitions deployed fine.
+func publishEnvironments(client APIClient, token string, results []deploy.Result, confirm func(string) (bool, error)) {
+	var envs []deploy.Result
+	for _, res := range results {
+		if res.Type == "Environment" && res.Action != deploy.ActionDelete && res.Err == nil && res.ID != "" {
+			envs = append(envs, res)
+		}
+	}
+	if len(envs) == 0 {
+		return
+	}
+
+	ok, err := confirm(fmt.Sprintf(
+		"Publish %d environment(s) now? Deployed settings/libraries are only staged until published — publishing can take several minutes.",
+		len(envs)))
+	if err != nil || !ok {
+		fmt.Println(infoStyle.Render("Environments left staged — publish them from the workspace when ready."))
+		return
+	}
+
+	// Submit every publish first (fire-and-forget), then watch them together.
+	pending := map[string]deploy.Result{} // itemID -> result
+	for _, e := range envs {
+		if err := client.PublishEnvironment(token, e.WorkspaceID, e.ID); err != nil {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("%s: publish not submitted: %v", e.Name, err)))
+			continue
+		}
+		pending[e.ID] = e
+	}
+	if len(pending) == 0 {
+		return
+	}
+
+	total := len(pending)
+	var settled int64
+	sp := ui.NewSpinner("")
+	sp.SetMessageFunc(func() string {
+		return fmt.Sprintf("Publishing %d environment(s)… %d/%d done", total, atomic.LoadInt64(&settled), total)
+	})
+	sp.Start()
+	var failures []string
+	for i := 0; i < envPublishMaxPolls && len(pending) > 0; i++ {
+		if i > 0 {
+			time.Sleep(envPublishPollInterval)
+		}
+		for id, e := range pending {
+			state, err := client.GetEnvironmentPublishState(token, e.WorkspaceID, id)
+			if err != nil {
+				continue // transient read failure — poll again next round
+			}
+			switch strings.ToLower(state) {
+			case "success":
+				delete(pending, id)
+			case "failed", "cancelled":
+				failures = append(failures, fmt.Sprintf("%s: publish %s — check the environment in its workspace", e.Name, strings.ToLower(state)))
+				delete(pending, id)
+			}
+		}
+		atomic.StoreInt64(&settled, int64(total-len(pending)))
+	}
+	sp.Stop()
+
+	for _, e := range pending {
+		failures = append(failures, fmt.Sprintf("%s: publish still running after %s — it continues server-side; check the workspace later",
+			e.Name, time.Duration(envPublishMaxPolls)*envPublishPollInterval))
+	}
+	sort.Strings(failures)
+	for _, f := range failures {
+		fmt.Println(warningStyle.Render(f))
+	}
+	if succeeded := total - len(failures); len(failures) == 0 {
+		fmt.Println(infoStyle.Render(fmt.Sprintf("%d environment(s) published.", total)))
+	} else if succeeded > 0 {
+		fmt.Println(infoStyle.Render(fmt.Sprintf("%d of %d environment(s) published.", succeeded, total)))
 	}
 }
 

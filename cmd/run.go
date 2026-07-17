@@ -76,6 +76,8 @@ type APIClient interface {
 	GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (host, id string, err error)
 	BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error)
 	SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName string) error
+	PublishEnvironment(token, workspaceID, itemID string) error
+	GetEnvironmentPublishState(token, workspaceID, itemID string) (string, error)
 }
 
 // RealAPIClient just forwards to the internal/fabric package functions.
@@ -146,6 +148,12 @@ func (RealAPIClient) BulkImportDefinitions(token, workspaceID string, parts []fa
 }
 func (RealAPIClient) SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName string) error {
 	return fabric.SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName)
+}
+func (RealAPIClient) PublishEnvironment(token, workspaceID, itemID string) error {
+	return fabric.PublishEnvironment(token, workspaceID, itemID)
+}
+func (RealAPIClient) GetEnvironmentPublishState(token, workspaceID, itemID string) (string, error) {
+	return fabric.GetEnvironmentPublishState(token, workspaceID, itemID)
 }
 
 // DefaultAPI is what Run() uses when called from the main menu. Test code

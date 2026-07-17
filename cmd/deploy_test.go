@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,6 +46,11 @@ type deployFakeAPI struct {
 	bulkParts  [][]fabric.DefinitionPart     // parts passed per bulk call
 	bulkOpts   []fabric.BulkImportOptions
 	bulkResult *fabric.BulkImportResult // returned from each bulk call (nil → empty)
+
+	envPublished  []string            // itemIDs passed to PublishEnvironment
+	envPublishErr error               // when set, PublishEnvironment fails
+	envStates     map[string][]string // itemID -> publish-state sequence (last repeats)
+	envStatePolls int                 // GetEnvironmentPublishState call count
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -1427,6 +1433,29 @@ func (f *deployFakeAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName 
 	return nil
 }
 
+func (f *deployFakeAPI) PublishEnvironment(token, ws, id string) error {
+	if f.envPublishErr != nil {
+		return f.envPublishErr
+	}
+	f.envPublished = append(f.envPublished, id)
+	return nil
+}
+
+// GetEnvironmentPublishState pops the next state from the item's primed
+// sequence, holding the final entry once the sequence is exhausted.
+func (f *deployFakeAPI) GetEnvironmentPublishState(token, ws, id string) (string, error) {
+	f.envStatePolls++
+	seq := f.envStates[id]
+	if len(seq) == 0 {
+		return "success", nil
+	}
+	state := seq[0]
+	if len(seq) > 1 {
+		f.envStates[id] = seq[1:]
+	}
+	return state, nil
+}
+
 // TestActivateVariableLibraries: a deployed VariableLibrary whose settings.json
 // names a value set after the target env gets it activated; no match leaves the
 // target untouched; deletes and failures are never activated.
@@ -1460,6 +1489,51 @@ func TestActivateVariableLibraries(t *testing.T) {
 	if got := fake.activated[0]; got != [3]string{"ws-1", "id-1", "TEST"} {
 		t.Errorf("activated %v", got)
 	}
+}
+
+// TestPublishEnvironments: every successfully deployed Environment is
+// submitted for staging→publish and polled to a settled state; deletes,
+// failures and other types are never submitted; declining the confirm
+// submits nothing.
+func TestPublishEnvironments(t *testing.T) {
+	restoreInterval, restorePolls := envPublishPollInterval, envPublishMaxPolls
+	envPublishPollInterval, envPublishMaxPolls = 0, 10
+	t.Cleanup(func() { envPublishPollInterval, envPublishMaxPolls = restoreInterval, restorePolls })
+
+	results := []deploy.Result{
+		{Name: "ENV_A", Type: "Environment", Action: deploy.ActionUpdate, ID: "env-a", WorkspaceID: "ws-1"},
+		{Name: "ENV_B", Type: "Environment", Action: deploy.ActionCreate, ID: "env-b", WorkspaceID: "ws-1"},
+		{Name: "ENV_Err", Type: "Environment", Action: deploy.ActionUpdate, Err: errors.New("boom"), WorkspaceID: "ws-1"},
+		{Name: "ENV_Del", Type: "Environment", Action: deploy.ActionDelete, ID: "env-del", WorkspaceID: "ws-1"},
+		{Name: "nb_x", Type: "Notebook", Action: deploy.ActionUpdate, ID: "nb-1", WorkspaceID: "ws-1"},
+	}
+	fake := &deployFakeAPI{envStates: map[string][]string{
+		"env-a": {"running", "running", "success"},
+		"env-b": {"running", "failed"},
+	}}
+	publishEnvironments(fake, "tok", results, func(string) (bool, error) { return true, nil })
+
+	if !reflect.DeepEqual(fake.envPublished, []string{"env-a", "env-b"}) {
+		t.Errorf("published = %v, want [env-a env-b]", fake.envPublished)
+	}
+	// Both must be polled to their settled state (success resp. failed) —
+	// 3 + 2 sequenced polls, no polls after settling.
+	if fake.envStatePolls < 5 {
+		t.Errorf("expected ≥5 state polls, got %d", fake.envStatePolls)
+	}
+
+	// Declining the confirm leaves everything staged.
+	fake = &deployFakeAPI{}
+	publishEnvironments(fake, "tok", results, func(string) (bool, error) { return false, nil })
+	if len(fake.envPublished) != 0 {
+		t.Errorf("declined confirm must not publish, got %v", fake.envPublished)
+	}
+
+	// No environments in the results → the confirm must not even be asked.
+	publishEnvironments(fake, "tok", results[4:], func(string) (bool, error) {
+		t.Fatal("confirm called with no environments deployed")
+		return false, nil
+	})
 }
 
 // activationFakeAPI records SetVariableLibraryActiveSet calls; everything else

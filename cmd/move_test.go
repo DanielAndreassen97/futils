@@ -558,3 +558,8 @@ func TestMove_RebindPicker_DestinationModelsFirst(t *testing.T) {
 func (f *fakeMoveAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName string) error {
 	return nil
 }
+
+func (f *fakeMoveAPI) PublishEnvironment(token, ws, id string) error { return nil }
+func (f *fakeMoveAPI) GetEnvironmentPublishState(token, ws, id string) (string, error) {
+	return "success", nil
+}
