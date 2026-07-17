@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 )
@@ -18,7 +19,13 @@ import (
 // when something changed.
 func DemoSeed(dir string) error {
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "futils-demo")
+		// A stable, typeable default beats os.TempDir(): on macOS that is a
+		// /var/folders/... path nobody can retype from the docs. /tmp exists
+		// on every unix; Windows falls back to the real temp dir.
+		dir = filepath.Join("/tmp", "futils-demo")
+		if runtime.GOOS == "windows" {
+			dir = filepath.Join(os.TempDir(), "futils-demo")
+		}
 	}
 	repo := filepath.Join(dir, "fabrikam-repo")
 	originDir := filepath.Join(dir, "fabrikam-origin.git")
