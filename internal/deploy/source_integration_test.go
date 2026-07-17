@@ -59,3 +59,47 @@ func TestDiscoverItemsRealGit(t *testing.T) {
 		t.Errorf("read working-tree content %q; must read committed content", items[0].Parts[0].Content)
 	}
 }
+
+// TestNewSourceAtPinnedBranch: an explicit branch must skip default-branch
+// detection entirely — a repo whose origin has no main/master (only a pinned
+// branch like dev) is otherwise unusable.
+func TestNewSourceAtPinnedBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "dev")
+
+	// Auto-detection has nothing to find: no origin at all — and a pinned
+	// branch doesn't excuse a missing remote either.
+	if _, err := NewSource(repo); err == nil {
+		t.Fatal("NewSource should fail without origin/main or origin/master")
+	}
+	if _, err := NewSourceAt(repo, "dev"); err == nil {
+		t.Fatal("NewSourceAt should fail when the repo has no origin remote")
+	}
+
+	// With an origin whose only branch is dev, the pin resolves — while
+	// auto-detection still has no main/master to find.
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	cmd := exec.Command("git", "init", "-q", "--bare", origin)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	run("remote", "add", "origin", origin)
+
+	s, err := NewSourceAt(repo, "dev")
+	if err != nil {
+		t.Fatalf("NewSourceAt: %v", err)
+	}
+	if s.Ref() != "origin/dev" {
+		t.Errorf("Ref() = %q, want origin/dev", s.Ref())
+	}
+}

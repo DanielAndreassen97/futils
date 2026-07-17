@@ -44,6 +44,9 @@ Type "1"
 Sleep 2.5s
 
 # highlight "Baseline environment" and open its ? info box
+# (six rows down: DEV, TEST, PROD, Add env, Primary repo path, Deploy branch)
+Down
+Sleep 0.3s
 Down
 Sleep 0.3s
 Down

@@ -59,7 +59,14 @@ type Source struct {
 }
 
 // NewSource validates the repo and resolves the deploy ref to origin/<default>.
-func NewSource(repo string) (*Source, error) {
+func NewSource(repo string) (*Source, error) { return NewSourceAt(repo, "") }
+
+// NewSourceAt is NewSource with an explicit branch: a non-empty branch pins
+// the deploy ref to origin/<branch> (a customer deploying from origin/dev, a
+// release branch, or a default branch that isn't main/master), skipping
+// default-branch detection entirely. The pinned ref may not exist locally yet
+// — Fetch verifies it once the remote has been consulted.
+func NewSourceAt(repo, branch string) (*Source, error) {
 	g := realGitRunner(repo)
 	if _, err := g("rev-parse", "--git-dir"); err != nil {
 		return nil, fmt.Errorf("%q is not inside a git repository: %w", repo, err)
@@ -68,9 +75,16 @@ func NewSource(repo string) (*Source, error) {
 		repo = root
 		g = realGitRunner(root)
 	}
-	branch, err := detectDefaultBranch(g)
-	if err != nil {
-		return nil, err
+	if branch == "" {
+		detected, err := detectDefaultBranch(g)
+		if err != nil {
+			return nil, err
+		}
+		branch = detected
+	} else if _, err := g("remote", "get-url", "origin"); err != nil {
+		// A pinned branch skips default-branch detection — the only other
+		// check that an origin exists at all — so assert the remote here.
+		return nil, fmt.Errorf("%q has no 'origin' remote — deploys read from origin/<branch>", repo)
 	}
 	return &Source{
 		repo:     repo,
@@ -117,10 +131,15 @@ func (s *Source) Ref() string { return s.ref }
 func (s *Source) Repo() string { return s.repo }
 
 // Fetch updates remote-tracking refs so the deploy ref reflects the latest
-// merged state. Always run before discovery.
+// merged state, then verifies the ref actually exists — the clear error beats
+// the git-flavored one discovery would produce for a mistyped or deleted
+// branch. Always run before discovery.
 func (s *Source) Fetch() error {
 	if _, err := s.git("fetch", "origin"); err != nil {
 		return fmt.Errorf("git fetch failed (check network and your git credentials): %w", err)
+	}
+	if _, err := s.git("rev-parse", "--verify", s.ref); err != nil {
+		return fmt.Errorf("deploy ref %s not found after fetch — check that the branch exists on origin and that this clone fetches it (a single-branch clone only fetches one)", s.ref)
 	}
 	return nil
 }

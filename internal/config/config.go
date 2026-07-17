@@ -77,6 +77,11 @@ type Customer struct {
 	Environments        []Environment       `json:"environments"`
 	Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
 	RepoPath            string              `json:"repo_path,omitempty"`
+	// DeployBranch pins which origin branch deploys read from. The pin covers
+	// the primary repo only — per-mapping repos are other products with their
+	// own branch layouts and keep auto-detection (see BranchForRepo). Empty =
+	// auto-detect the remote's default (origin/HEAD, then main, then master).
+	DeployBranch        string              `json:"deploy_branch,omitempty"`
 	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
@@ -158,6 +163,17 @@ func (c Customer) DeployMappings(alias string) ([]DeployMapping, bool) {
 		}
 	}
 	return nil, false
+}
+
+// BranchForRepo resolves the deploy branch for one repo: the customer's pin
+// when the repo IS the primary one, otherwise "" (auto-detect). The single
+// home of the pin-covers-primary-only policy — call sites pass the result to
+// deploy.NewSourceAt instead of restating the rule.
+func (c Customer) BranchForRepo(repo string) string {
+	if repo != "" && repo == c.RepoPath {
+		return c.DeployBranch
+	}
+	return ""
 }
 
 // MappingRepo resolves which repo a deployment mapping's folder lives in: the
@@ -242,6 +258,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		Environments        []json.RawMessage   `json:"environments"`
 		Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
 		RepoPath            string              `json:"repo_path,omitempty"`
+		DeployBranch        string              `json:"deploy_branch,omitempty"`
 		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
 		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
@@ -257,6 +274,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	}
 	c.Favorites = aux.Favorites
 	c.RepoPath = aux.RepoPath
+	c.DeployBranch = aux.DeployBranch
 	c.BaselineEnvironment = aux.BaselineEnvironment
 	c.ReferenceOverrides = aux.ReferenceOverrides
 	c.IgnoredReferences = aux.IgnoredReferences

@@ -307,6 +307,29 @@ func TestDetectDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestFetchVerifiesRef: a pinned branch that doesn't exist on origin must fail
+// Fetch with a human error, not surface later as gitese from discovery.
+func TestFetchVerifiesRef(t *testing.T) {
+	g := &fakeGit{responses: map[string]string{
+		"fetch origin": "",
+		// no canned response for rev-parse --verify origin/dev -> error
+	}}
+	s := &Source{ref: "origin/dev", git: g.run}
+	err := s.Fetch()
+	if err == nil || !strings.Contains(err.Error(), "origin/dev not found after fetch") {
+		t.Fatalf("want missing-ref error, got %v", err)
+	}
+
+	ok := &fakeGit{responses: map[string]string{
+		"fetch origin":                  "",
+		"rev-parse --verify origin/dev": "deadbeef\n",
+	}}
+	s = &Source{ref: "origin/dev", git: ok.run}
+	if err := s.Fetch(); err != nil {
+		t.Fatalf("fetch with existing ref: %v", err)
+	}
+}
+
 func TestSourceRepoAccessor(t *testing.T) {
 	s := &Source{repo: "/repo/warehouse", ref: "origin/main"}
 	if s.Repo() != "/repo/warehouse" {

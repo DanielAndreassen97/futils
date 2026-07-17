@@ -24,10 +24,19 @@ const schemaCompareConcurrency = 32
 // escape hatch in the source/target picker.
 const browseAllWorkspaces = "\x00browse-all"
 
-// newOneLakeAPI acquires the OneLake Table API client for a customer (a
-// storage-scope token, separate from the Fabric one). A package var so demo
-// mode can swap in the offline fake.
-var newOneLakeAPI = func(customerName string) (schemacompare.OneLakeTableAPI, error) {
+// oneLakeProvider is the optional interface an APIClient implements to supply
+// its own OneLake Table API (demo mode's offline fake). The real client stays
+// oblivious: OneLake needs a storage-scope token, a concern of this flow only.
+type oneLakeProvider interface {
+	NewOneLakeAPI(customerName string) (schemacompare.OneLakeTableAPI, error)
+}
+
+// oneLakeAPIFor acquires the OneLake Table API for a customer: the client's
+// own implementation when it has one, otherwise a real storage-scope token.
+func oneLakeAPIFor(client APIClient, customerName string) (schemacompare.OneLakeTableAPI, error) {
+	if p, ok := client.(oneLakeProvider); ok {
+		return p.NewOneLakeAPI(customerName)
+	}
 	storageToken, err := fabric.GetStorageToken(customerName)
 	if err != nil {
 		return nil, fmt.Errorf("acquire OneLake token: %w", err)
@@ -143,7 +152,11 @@ func pickSchemaCompareWorkspace(side string, customer config.Customer, workspace
 }
 
 // SchemaCompare runs the interactive schema-compare flow.
-func SchemaCompare(configPath string) error {
+func SchemaCompare(configPath string) error { return SchemaCompareWithAPI(configPath, DefaultAPI) }
+
+// SchemaCompareWithAPI is SchemaCompare with an injected client — the same
+// constructor-injection pattern as every other command's XWithAPI sibling.
+func SchemaCompareWithAPI(configPath string, client APIClient) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
@@ -153,11 +166,11 @@ func SchemaCompare(configPath string) error {
 		return err
 	}
 
-	token, err := DefaultAPI.GetAccessToken(customerName)
+	token, err := client.GetAccessToken(customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
-	workspaces, err := DefaultAPI.ListWorkspaces(token)
+	workspaces, err := client.ListWorkspaces(token)
 	if err != nil {
 		return fmt.Errorf("list workspaces: %w", err)
 	}
@@ -171,11 +184,11 @@ func SchemaCompare(configPath string) error {
 		return err
 	}
 
-	srcLakes, err := DefaultAPI.ListItemsByType(token, srcID, "Lakehouse")
+	srcLakes, err := client.ListItemsByType(token, srcID, "Lakehouse")
 	if err != nil {
 		return fmt.Errorf("list source lakehouses: %w", err)
 	}
-	tgtLakes, err := DefaultAPI.ListItemsByType(token, tgtID, "Lakehouse")
+	tgtLakes, err := client.ListItemsByType(token, tgtID, "Lakehouse")
 	if err != nil {
 		return fmt.Errorf("list destination lakehouses: %w", err)
 	}
@@ -192,7 +205,7 @@ func SchemaCompare(configPath string) error {
 		return nil
 	}
 
-	api, err := newOneLakeAPI(customerName)
+	api, err := oneLakeAPIFor(client, customerName)
 	if err != nil {
 		return err
 	}

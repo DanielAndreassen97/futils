@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -58,6 +57,11 @@ func DemoSeed(dir string) error {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git init --bare: %v\n%s", err, out)
 		}
+	}
+	// Wire the remote idempotently: repo and origin are created independently,
+	// so a partial cleanup (only one of them deleted) must heal, not error.
+	// set-url fails when the remote doesn't exist yet — then add it.
+	if err := git("remote", "set-url", "origin", originDir); err != nil {
 		if err := git("remote", "add", "origin", originDir); err != nil {
 			return err
 		}
@@ -115,9 +119,5 @@ func writeDemoConfig(path, repo string) error {
 			},
 		},
 	}}
-	b, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	return config.Save(path, cfg)
 }

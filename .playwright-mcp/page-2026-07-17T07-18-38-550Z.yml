@@ -1,0 +1,41 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - heading "futils deploy report" [level=1] [ref=e3]
+    - generic [ref=e4]: 2026-07-17 09:16
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - generic [ref=e7]: "1"
+      - generic [ref=e8]: New
+    - generic [ref=e9]:
+      - generic [ref=e10]: "3"
+      - generic [ref=e11]: Changed
+    - generic [ref=e12]:
+      - generic [ref=e13]: "1"
+      - generic [ref=e14]: Orphan
+    - generic [ref=e15]:
+      - generic [ref=e16]: "4"
+      - generic [ref=e17]: Unchanged
+  - generic [ref=e18]:
+    - heading "Content diffs — deployed → local · 3 changed item(s)" [level=2] [ref=e19]:
+      - text: Content diffs
+      - generic [ref=e20]: — deployed → local · 3 changed item(s)
+    - generic [ref=e21]:
+      - button "Expand all" [ref=e22] [cursor=pointer]
+      - button "Collapse all" [ref=e23] [cursor=pointer]
+  - generic [ref=e24]: DW - TEST - Config
+  - group [ref=e25]:
+    - generic "nb_ingest_sales Notebook ▾" [ref=e26] [cursor=pointer]:
+      - text: nb_ingest_sales
+      - generic [ref=e28]: Notebook
+      - generic [ref=e29]: ▾
+  - generic [ref=e30]: DW - TEST - SemMod
+  - group [ref=e31]:
+    - generic "Sales Model SemanticModel ▾" [ref=e32] [cursor=pointer]:
+      - text: Sales Model
+      - generic [ref=e34]: SemanticModel
+      - generic [ref=e35]: ▾
+  - group [ref=e36]:
+    - generic "Sales Overview Report ▾" [ref=e37] [cursor=pointer]:
+      - text: Sales Overview
+      - generic [ref=e39]: Report
+      - generic [ref=e40]: ▾

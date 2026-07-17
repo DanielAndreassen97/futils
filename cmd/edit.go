@@ -25,6 +25,7 @@ const (
 	editActionSubstitutions = "__substitutions"
 	editActionExcludeTypes  = "__exclude_types"
 	editActionDeployHistory = "__deploy_history"
+	editActionSetBranch     = "__deploy_branch"
 	editActionSchedules     = "__schedules"
 	editActionBulkBackend   = "__bulk_backend"
 	editActionPostDeploy    = "__post_deploy_runs"
@@ -127,6 +128,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := editPostDeployRuns(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionSetBranch:
+			if err := setDeployBranch(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionDeployHistory:
 			if err := setDeployHistoryPath(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
@@ -180,6 +185,10 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	if customer.RepoPath != "" {
 		repoBadge = filepath.Base(customer.RepoPath)
 	}
+	branchBadge := "AUTO"
+	if customer.DeployBranch != "" {
+		branchBadge = customer.DeployBranch
+	}
 	schedulesBadge := "DEPLOYED"
 	if customer.SkipSchedules {
 		schedulesBadge = "KEPT IN TARGET"
@@ -218,6 +227,13 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Badge:       repoBadge,
 			Description: "The customer's main Fabric git repo. Deployment mappings are edited under each environment above, not here.",
 			Info:        "futils reads your Fabric items from this repo's origin/<default-branch> (never the working tree) when it compares and deploys. Setting it here also lets the Exclude-item-types and Post-deploy pickers scan the repo right away — otherwise the path is only captured the first time you run a deploy, and those pickers can't work until then. Folder→workspace deployment mappings — including ones living in other repos — are managed per environment: Edit <env> → Add/Remove deployment mapping.",
+		},
+		ui.MenuOption{
+			Label:       "Deploy branch",
+			Value:       editActionSetBranch,
+			Badge:       branchBadge,
+			Description: "Which origin branch deploys read from. AUTO = the remote's default branch.",
+			Info:        "Deploys always read from origin/<branch>, never your working tree. AUTO resolves the remote's default branch (origin/HEAD, falling back to main, then master) — right for almost everyone. Pin a branch here to deploy from something else: origin/dev, a release branch, or a default branch with a different name. The pin applies to the primary repo; per-mapping repos keep auto-detection.",
 		},
 		ui.MenuOption{
 			Label:       "Baseline environment",
@@ -697,6 +713,8 @@ func addDeploymentMapping(configPath string, client APIClient, customerName, ali
 			if perr != nil {
 				return perr
 			}
+			// Mapping repos keep default-branch auto-detection — the customer
+			// pin applies to the primary repo only (see DeployWithAPI).
 			src, serr := deploy.NewSource(picked)
 			if serr != nil {
 				return fmt.Errorf("not a usable git repo: %w", serr)
@@ -1414,7 +1432,7 @@ func setRepoPath(configPath, customerName string) error {
 	if err != nil {
 		return err
 	}
-	src, err := deploy.NewSource(picked)
+	src, err := deploy.NewSourceAt(picked, customer.DeployBranch)
 	if err != nil {
 		return fmt.Errorf("not a usable git repo: %w", err)
 	}
@@ -1423,6 +1441,41 @@ func setRepoPath(configPath, customerName string) error {
 		return fmt.Errorf("save repo path: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Saved repo path: " + src.Repo()))
+	return nil
+}
+
+// setDeployBranch pins (or clears) which origin branch this customer's deploys
+// read from. Empty input restores auto-detection of the remote's default.
+func setDeployBranch(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	branch := customer.DeployBranch
+	if err := runFormStep(huh.NewInput().
+		Title("Deploy branch (empty = auto-detect the remote's default)").
+		Value(&branch)); err != nil {
+		return err
+	}
+	// Users naturally type "origin/dev" — the ref prefix is implied, strip it.
+	branch = strings.TrimPrefix(strings.TrimSpace(branch), "origin/")
+	if strings.ContainsAny(branch, " \t") {
+		fmt.Println(warningStyle.Render("Branch names can't contain whitespace — nothing saved."))
+		return nil
+	}
+	customer.DeployBranch = branch
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save deploy branch: %w", err)
+	}
+	if customer.DeployBranch == "" {
+		fmt.Println(infoStyle.Render("Deploy branch set to auto-detect (origin's default branch)."))
+	} else {
+		fmt.Println(infoStyle.Render("Deploys now read from origin/" + customer.DeployBranch + "."))
+	}
 	return nil
 }
 

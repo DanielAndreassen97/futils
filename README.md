@@ -6,7 +6,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
 
 ## Features
 
-- **Deploy from git** — deploy a Fabric git repo to target workspaces, straight from `origin/<default-branch>` (never your working tree). Self-contained: no `parameter.yml` or deployment pipelines needed.
+- **Deploy from git** — deploy a Fabric git repo to target workspaces, straight from origin (never your working tree). The branch is auto-detected from `origin/HEAD` (falling back to `main`, then `master`), or pinned per customer — deploy from `origin/dev`, a release branch, whatever fits your flow. Self-contained: no `parameter.yml` or deployment pipelines needed.
   - **Folder → workspace mappings** per environment: each top-level repo folder deploys to its own workspace, or one mapping covers the whole repo. A customer can deploy from multiple repos, and a first-run guided setup walks you through repo → baseline environment → mappings, challenging cross-environment slips (mapping a TEST folder to a DEV workspace) and rejecting duplicate mappings.
   - **Compare first, always** — every deploy starts as a dry-run: new / changed / orphan summary per mapping, per-part content diffs, and an HTML report (line numbers, folded context) that opens in your browser. Reports are compared on their *semantic* dataset binding, so Fabric's import-time normalization of `definition.pbir` doesn't flag every rebound report as changed forever.
   - **Name-based auto-rebind** — GUIDs baked into git (lakehouses, workspaces, SQL endpoints — in both GUID and name form) are translated to the target environment by item name: notebooks, Direct Lake semantic models (OneLake and SQL-endpoint flavours), and report dataset bindings. References that can't be resolved are listed with **likely causes** and fixed interactively: register the workspace they live in, map an override to a specific item, or ignore.
@@ -91,7 +91,7 @@ futils                 # explore everything, no tenant or login needed
 
 - A workspace on **Fabric (F SKU)**, **Premium (P SKU)**, **Premium Per User (PPU)**, or **Embedded (A/EM SKU)** capacity. Notebook execution and item copy use Fabric APIs that aren't available on Power BI Pro.
 - An Entra ID account with Contributor (or higher) permissions on the workspaces you target.
-- For **Deploy**: a local clone of a [Fabric git-integrated](https://learn.microsoft.com/en-us/fabric/cicd/git-integration/intro-to-git-integration) repo. futils deploys what's on `origin/<default-branch>`, so commit and push first.
+- For **Deploy**: a local clone of a [Fabric git-integrated](https://learn.microsoft.com/en-us/fabric/cicd/git-integration/intro-to-git-integration) repo. futils deploys what's on origin (default branch, or one you pin per customer), so commit and push first.
 
 ## Usage
 
@@ -119,7 +119,7 @@ Config is stored at `~/.config/futils/config.json` (macOS/Linux) or `%APPDATA%\f
 Everything is managed from the TUI (`futils` → Manage customers). Each customer has:
 
 - **Environments** — an alias (e.g. `DEV`, `TEST`, `PROD`) mapping to one or more workspace names (e.g. `DW - TEST - Config`, `DW - TEST - SemMod`). Reference-only workspaces (looked up during rebind, never deployed to) belong here too.
-- **Deploy setup** (all optional, only needed for the deploy flow) — primary repo path, baseline environment (which env the git code belongs to), per-environment folder→workspace mappings, excluded item types, schedules toggle, bulk-import backend toggle, reference overrides, and custom substitutions.
+- **Deploy setup** (all optional, only needed for the deploy flow) — primary repo path, deploy branch (auto-detected or pinned), baseline environment (which env the git code belongs to), per-environment folder→workspace mappings, excluded item types, schedules toggle, bulk-import backend toggle, reference overrides, and custom substitutions.
 - **After deploy** — post-deploy notebook runs and a deploy-history folder.
 - **Favourites** — pinned notebooks and parameters for the run flow.
 
@@ -128,7 +128,7 @@ First-time deploy setup is guided: pick the repo, pick the baseline environment,
 ## How it works
 
 ### Deploy
-1. Reads Fabric items from `origin/<default-branch>` of the mapped repo(s) — the working tree is never deployed.
+1. Reads Fabric items from `origin/<branch>` of the mapped repo(s) — the working tree is never deployed. The branch is the remote's default unless the customer pins one.
 2. Resolves each folder→workspace mapping and compares every local item against the target workspace: new, changed (per-part content diff), or orphan (exists only in the target).
 3. Translates baseline-environment references to the target environment by item name: lakehouse/workspace/SQL-endpoint GUIDs in notebooks, Direct Lake connections in semantic models (OneLake and SQL-endpoint forms), and report dataset bindings in `definition.pbir`. Unresolved references are surfaced with likely causes and can be fixed interactively.
 4. Shows the full compare (optionally as an HTML diff report in the browser) and asks before continuing — every deploy is a dry-run until you confirm.

@@ -152,7 +152,8 @@ func DeployWithAPI(configPath string, client APIClient) error {
 		if perr != nil {
 			return perr
 		}
-		src, serr := deploy.NewSource(picked)
+		// The picked repo becomes the primary one, so the branch pin applies.
+		src, serr := deploy.NewSourceAt(picked, customer.DeployBranch)
 		if serr != nil {
 			return serr
 		}
@@ -188,7 +189,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	itemsByRepo := make(map[string][]deploy.LocalItem, len(repoInputs))
 	totalItems := 0
 	for _, input := range repoInputs {
-		src, serr := deploy.NewSource(input)
+		src, serr := deploy.NewSourceAt(input, customer.BranchForRepo(input))
 		if serr != nil {
 			return fmt.Errorf("repo %q: %w", input, serr)
 		}

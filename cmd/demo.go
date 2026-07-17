@@ -29,9 +29,6 @@ import (
 // main when FUTILS_DEMO is set, before any command runs.
 func EnableDemoMode() {
 	DefaultAPI = newDemoClient()
-	newOneLakeAPI = func(string) (schemacompare.OneLakeTableAPI, error) {
-		return demoOneLake{}, nil
-	}
 }
 
 // ── identity ───────────────────────────────────────────────────────────────
@@ -112,11 +109,12 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 			mk("nb_ingest_sales", "Notebook"),
 			mk("nb_quality_checks", "Notebook"),
 		}
-		if env != "TEST" {
-			items = append(items, mk("nb_transform_orders", "Notebook"))
-		}
+		// TEST lags the repo: transform doesn't exist there yet (deploys as
+		// New) and only TEST still has the legacy export (the Orphan).
 		if env == "TEST" {
 			items = append(items, mk("nb_legacy_export", "Notebook"))
+		} else {
+			items = append(items, mk("nb_transform_orders", "Notebook"))
 		}
 		return items, true
 	}
@@ -428,15 +426,13 @@ func newDemoClient() *demoClient {
 	return &demoClient{polls: map[string]int{}}
 }
 
-func demoDelay(d time.Duration) { time.Sleep(d) }
-
 func (c *demoClient) GetAccessToken(profile string) (string, error) {
-	demoDelay(250 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	return "demo-token", nil
 }
 
 func (c *demoClient) GetWorkspaceID(token, workspaceName string) (string, error) {
-	demoDelay(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	for _, ws := range demoWorkspaces() {
 		if ws.DisplayName == workspaceName {
 			return ws.ID, nil
@@ -446,12 +442,12 @@ func (c *demoClient) GetWorkspaceID(token, workspaceName string) (string, error)
 }
 
 func (c *demoClient) ListWorkspaces(token string) ([]fabric.Workspace, error) {
-	demoDelay(400 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	return demoWorkspaces(), nil
 }
 
 func (c *demoClient) ListItems(token, workspaceID string) ([]fabric.Item, error) {
-	demoDelay(350 * time.Millisecond)
+	time.Sleep(350 * time.Millisecond)
 	items, ok := demoItems(workspaceID)
 	if !ok {
 		return nil, fmt.Errorf("workspace %q not found", workspaceID)
@@ -478,17 +474,17 @@ func (c *demoClient) ListNotebooks(token, workspaceID string) ([]fabric.Item, er
 }
 
 func (c *demoClient) GetNotebookIpynb(token, workspaceID, itemID string) ([]byte, error) {
-	demoDelay(450 * time.Millisecond)
+	time.Sleep(450 * time.Millisecond)
 	return demoIpynb(), nil
 }
 
 func (c *demoClient) RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error) {
-	demoDelay(600 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 	return "demo://jobs/" + itemID, nil
 }
 
 func (c *demoClient) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
-	demoDelay(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	c.mu.Lock()
 	c.polls[instanceURL]++
 	n := c.polls[instanceURL]
@@ -500,22 +496,19 @@ func (c *demoClient) GetJobInstance(token, instanceURL string) (fabric.JobInstan
 }
 
 func (c *demoClient) GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error) {
-	demoDelay(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	env, _, ok := demoEnvOfWS(workspaceID)
 	if !ok {
 		return nil, fmt.Errorf("workspace %q not found", workspaceID)
 	}
-	items, _ := demoItems(workspaceID)
-	for _, it := range items {
-		if it.ID == itemID {
-			return demoDefinition(env, it), nil
-		}
+	if it, found := demoItemByID(workspaceID, itemID); found {
+		return demoDefinition(env, it), nil
 	}
 	return nil, fmt.Errorf("item %q not found", itemID)
 }
 
 func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition) (fabric.Item, error) {
-	demoDelay(700 * time.Millisecond)
+	time.Sleep(700 * time.Millisecond)
 	return fabric.Item{
 		ID:          demoGUID("created", itemType, displayName, workspaceID),
 		DisplayName: displayName,
@@ -525,22 +518,22 @@ func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string
 }
 
 func (c *demoClient) UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error {
-	demoDelay(650 * time.Millisecond)
+	time.Sleep(650 * time.Millisecond)
 	return nil
 }
 
 func (c *demoClient) UpdateItem(token, workspaceID, itemID, displayName, description string) error {
-	demoDelay(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	return nil
 }
 
 func (c *demoClient) DeleteItem(token, workspaceID, itemID string) error {
-	demoDelay(400 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 	return nil
 }
 
 func (c *demoClient) RebindReport(token, workspaceID, reportID, datasetID string) error {
-	demoDelay(350 * time.Millisecond)
+	time.Sleep(350 * time.Millisecond)
 	return nil
 }
 
@@ -557,7 +550,7 @@ func (c *demoClient) ListDatasets(token, workspaceID string) ([]fabric.Dataset, 
 }
 
 func (c *demoClient) QueryRefreshableTables(token, workspaceID, datasetID string) ([]string, error) {
-	demoDelay(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	return []string{
 		"DimCustomer", "DimDate", "DimProduct", "DimStore",
 		"FaktaSales", "FaktaOrders", "FaktaInventory",
@@ -566,44 +559,34 @@ func (c *demoClient) QueryRefreshableTables(token, workspaceID, datasetID string
 }
 
 func (c *demoClient) TriggerRefresh(token, workspaceID, datasetID string, tables []string) (string, error) {
-	demoDelay(550 * time.Millisecond)
+	time.Sleep(550 * time.Millisecond)
 	return "demo-refresh-" + datasetID, nil
 }
 
 func (c *demoClient) WaitForRefresh(token, workspaceID, datasetID, requestID string) (fabric.RefreshStatus, error) {
-	demoDelay(2200 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
 	return fabric.RefreshStatus{Status: "Completed"}, nil
 }
 
 func (c *demoClient) GetLakehouseSqlEndpoint(token, workspaceID, lakehouseID string) (string, string, error) {
-	demoDelay(250 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	env, _, ok := demoEnvOfWS(workspaceID)
 	if !ok {
 		return "", "", fmt.Errorf("workspace %q not found", workspaceID)
 	}
-	items, _ := demoItems(workspaceID)
-	for _, it := range items {
-		if it.ID == lakehouseID && it.Type == "Lakehouse" {
-			return demoSQLHost(env), demoGUID("sqlendpoint", it.DisplayName, env), nil
-		}
+	if it, found := demoItemByID(workspaceID, lakehouseID); found && it.Type == "Lakehouse" {
+		return demoSQLHost(env), demoGUID("sqlendpoint", it.DisplayName, env), nil
 	}
 	return "", "", fmt.Errorf("lakehouse %q not found", lakehouseID)
 }
 
 func (c *demoClient) BulkImportDefinitions(token, workspaceID string, parts []fabric.DefinitionPart, opts fabric.BulkImportOptions) (*fabric.BulkImportResult, error) {
-	demoDelay(1200 * time.Millisecond)
-	seen := map[string]bool{}
+	time.Sleep(1200 * time.Millisecond)
 	var details []fabric.BulkImportDetail
 	for _, p := range parts {
-		folder := strings.SplitN(strings.TrimPrefix(p.Path, "/"), "/", 2)[0]
-		if seen[folder] {
+		name, typ, ok := demoBulkItem(p)
+		if !ok {
 			continue
-		}
-		seen[folder] = true
-		name := folder
-		typ := "Notebook"
-		if i := strings.LastIndex(folder, "."); i >= 0 {
-			name, typ = folder[:i], folder[i+1:]
 		}
 		details = append(details, fabric.BulkImportDetail{
 			ItemDisplayName: name,
@@ -615,6 +598,35 @@ func (c *demoClient) BulkImportDefinitions(token, workspaceID string, parts []fa
 	return &fabric.BulkImportResult{Details: details}, nil
 }
 
+// demoBulkItem identifies the item a bulk part belongs to the same way the
+// real backend does: every item's payload carries exactly one .platform part,
+// and its metadata names the item — no type list to keep in sync.
+func demoBulkItem(p fabric.DefinitionPart) (name, typ string, ok bool) {
+	if !strings.HasSuffix(p.Path, "/.platform") {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(p.Payload)
+	if err != nil {
+		return "", "", false
+	}
+	var platform struct {
+		Metadata struct {
+			Type        string `json:"type"`
+			DisplayName string `json:"displayName"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(raw, &platform) != nil || platform.Metadata.Type == "" {
+		return "", "", false
+	}
+	return platform.Metadata.DisplayName, platform.Metadata.Type, true
+}
+
+// NewOneLakeAPI implements the flow's optional oneLakeProvider interface, so
+// schema compare gets the offline fake without a second injection global.
+func (c *demoClient) NewOneLakeAPI(string) (schemacompare.OneLakeTableAPI, error) {
+	return demoOneLake{}, nil
+}
+
 // ── schema compare fake ────────────────────────────────────────────────────
 
 // demoOneLake serves lakehouse table schemas. DEV is one migration ahead of
@@ -622,7 +634,7 @@ func (c *demoClient) BulkImportDefinitions(token, workspaceID string, parts []fa
 type demoOneLake struct{}
 
 func (demoOneLake) ListSchemas(wsID, lhID string) ([]string, error) {
-	demoDelay(300 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	if demoLakehouseName(wsID, lhID) == "LH_Bronze" {
 		return []string{"dbo", "staging"}, nil
 	}
@@ -630,7 +642,7 @@ func (demoOneLake) ListSchemas(wsID, lhID string) ([]string, error) {
 }
 
 func (demoOneLake) ListTables(wsID, lhID, schema string) ([]string, error) {
-	demoDelay(250 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 	if demoLakehouseName(wsID, lhID) == "LH_Bronze" {
 		if schema == "staging" {
 			return []string{"raw_sales"}, nil
@@ -641,7 +653,7 @@ func (demoOneLake) ListTables(wsID, lhID, schema string) ([]string, error) {
 }
 
 func (demoOneLake) GetTable(wsID, lhID, schema, table string) ([]schemacompare.ColumnSchema, error) {
-	demoDelay(200 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	env, _, _ := demoEnvOfWS(wsID)
 	col := func(pos int, name, typ string) schemacompare.ColumnSchema {
 		return schemacompare.ColumnSchema{Name: name, Type: typ, Nullable: true, Position: pos}
@@ -686,16 +698,23 @@ func (demoOneLake) GetTable(wsID, lhID, schema, table string) ([]schemacompare.C
 	return nil, fmt.Errorf("table %s.%s not found", schema, table)
 }
 
-// demoLakehouseName reverses a lakehouse ID to its display name.
-func demoLakehouseName(wsID, lhID string) string {
+// demoItemByID finds an item in a workspace by its GUID — the shared lookup
+// behind definition serving, endpoint resolution, and lakehouse naming.
+func demoItemByID(wsID, itemID string) (fabric.Item, bool) {
 	items, ok := demoItems(wsID)
 	if !ok {
-		return ""
+		return fabric.Item{}, false
 	}
 	for _, it := range items {
-		if it.ID == lhID {
-			return it.DisplayName
+		if it.ID == itemID {
+			return it, true
 		}
 	}
-	return ""
+	return fabric.Item{}, false
+}
+
+// demoLakehouseName reverses a lakehouse ID to its display name.
+func demoLakehouseName(wsID, lhID string) string {
+	it, _ := demoItemByID(wsID, lhID)
+	return it.DisplayName
 }
