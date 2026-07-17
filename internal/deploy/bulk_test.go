@@ -89,7 +89,7 @@ func TestBulkResultsToResultsStatusMapping(t *testing.T) {
 		{ItemDisplayName: "B", ItemType: "Report", ItemID: "b", OperationType: "Create", OperationStatus: "SucceededDespiteFailures"},
 		{ItemDisplayName: "C", ItemType: "Report", ItemID: "c", OperationType: "Create", OperationStatus: "Failed"},
 	}
-	got := bulkResultsToResults(details)
+	got := bulkResultsToResults(details, "ws-1")
 	if got[0].Action != ActionUpdate || got[0].Err != nil || got[0].Warning != "" {
 		t.Errorf("A = %+v", got[0])
 	}

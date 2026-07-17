@@ -54,7 +54,7 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 		return nil, err
 	}
 
-	out := bulkResultsToResults(res.Details)
+	out := bulkResultsToResults(res.Details, target.ID)
 
 	// The report is built from the API's returned details, so an item the beta API
 	// silently omits would vanish from the report/history. Flag any sent item with
@@ -104,10 +104,12 @@ func actionFromOpType(op string) Action {
 // SucceededDespiteFailures is a non-fatal Warning (the item was published but the
 // API reported partial issues); anything other than Succeeded/SucceededDespiteFailures
 // is a per-item Err. Empty Err+Warning means a clean success.
-func bulkResultsToResults(details []fabric.BulkImportDetail) []Result {
+func bulkResultsToResults(details []fabric.BulkImportDetail, workspaceID string) []Result {
 	out := make([]Result, 0, len(details))
 	for _, d := range details {
-		r := Result{Name: d.ItemDisplayName, Type: d.ItemType, ID: d.ItemID, Action: actionFromOpType(d.OperationType)}
+		// WorkspaceID comes from the request, not the detail: post-publish
+		// passes (variable-library activation) need it on every result.
+		r := Result{Name: d.ItemDisplayName, Type: d.ItemType, ID: d.ItemID, WorkspaceID: workspaceID, Action: actionFromOpType(d.OperationType)}
 		switch d.OperationStatus {
 		case "Succeeded":
 			// clean
