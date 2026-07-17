@@ -185,9 +185,16 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	if customer.RepoPath != "" {
 		repoBadge = filepath.Base(customer.RepoPath)
 	}
+	// AUTO alone answers "what happens", not "which branch" — when a repo is
+	// configured, resolve the default so the badge shows what a deploy would
+	// actually read (a few local git calls, no network).
 	branchBadge := "AUTO"
 	if customer.DeployBranch != "" {
 		branchBadge = customer.DeployBranch
+	} else if customer.RepoPath != "" {
+		if src, err := deploy.NewSource(customer.RepoPath); err == nil {
+			branchBadge = "AUTO → " + strings.TrimPrefix(src.Ref(), "origin/")
+		}
 	}
 	schedulesBadge := "DEPLOYED"
 	if customer.SkipSchedules {
