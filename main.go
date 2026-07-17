@@ -33,6 +33,12 @@ var version = "dev"
 func main() {
 	ui.Version = version
 	fabric.SetUserAgent(version)
+	// FUTILS_DEMO=1 swaps the Fabric API for a self-contained fake tenant —
+	// every flow works offline. Seed the matching config and git repo with
+	// `futils demoseed`.
+	if os.Getenv("FUTILS_DEMO") != "" {
+		cmd.EnableDemoMode()
+	}
 	configPath := config.GetConfigPath()
 	args := os.Args[1:]
 
@@ -70,6 +76,12 @@ func main() {
 		err = cmd.List(configPath)
 	case "logout":
 		err = cmd.Logout(configPath)
+	case "demoseed":
+		var dir string
+		if len(args) > 1 {
+			dir = args[1]
+		}
+		err = cmd.DemoSeed(dir)
 	case "help", "--help", "-h":
 		cmd.Help()
 	case "version", "--version", "-v":

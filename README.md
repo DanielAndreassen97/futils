@@ -77,6 +77,16 @@ gh attestation verify futils_Darwin_arm64.tar.gz --repo DanielAndreassen97/futil
 
 A successful verification proves the file's provenance back to the tagged commit and workflow — useful since this tool handles your Entra ID OAuth tokens.
 
+## Try it — no tenant required
+
+futils ships a demo mode: a self-contained fake Fabric tenant for a fictional customer, with three environments that tell a coherent DEV → TEST → PROD story. Every flow works against it offline — including a full deploy with compare, auto-rebind, and post-deploy runs.
+
+```sh
+futils demoseed        # seed a sandbox config + git repo under /tmp/futils-demo
+export FUTILS_DEMO=1 FUTILS_CONFIG=/tmp/futils-demo/config.json
+futils                 # explore everything, no tenant or login needed
+```
+
 ## Prerequisites
 
 - A workspace on **Fabric (F SKU)**, **Premium (P SKU)**, **Premium Per User (PPU)**, or **Embedded (A/EM SKU)** capacity. Notebook execution and item copy use Fabric APIs that aren't available on Power BI Pro.

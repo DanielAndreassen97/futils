@@ -24,6 +24,7 @@ Settings:
   logout         Clear cached OAuth tokens from the OS keychain
 
 Other:
+  demoseed       Seed the offline demo sandbox (then set FUTILS_DEMO=1)
   help           Show this help message
   version        Print the current version
 
