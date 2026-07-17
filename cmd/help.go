@@ -9,21 +9,23 @@ func Help() {
 	fmt.Println(`Usage: futils [command]
 
 Actions:
-  run         Select a customer, environment, notebook, and parameters to run
-  refresh     Refresh tables in a semantic model via the Enhanced Refresh API
-  move        Copy a Report, Semantic Model, or Notebook between workspaces
+  run            Select a customer, environment, notebook, and parameters to run
+  refresh        Refresh tables in a semantic model via the Enhanced Refresh API
+  move           Copy a Report, Semantic Model, or Notebook between workspaces
+  deploy         Deploy a Fabric git repo to target workspaces (compare first)
+  schemacompare  Compare lakehouse table schemas between two workspaces
 
 Settings:
-  favourites  Pin a customer's favourite notebooks and parameters for the run menu
-  add         Add a new customer configuration
-  edit        Edit an existing customer's workspace pattern or environments
-  remove      Remove a customer configuration
-  list        Show all configured customers
-  logout      Clear cached OAuth tokens from the OS keychain
+  favourites     Pin a customer's favourite notebooks and parameters for the run menu
+  add            Add a new customer configuration
+  edit           Edit a customer's environments, deploy setup, and favourites
+  remove         Remove a customer configuration
+  list           Show all configured customers
+  logout         Clear cached OAuth tokens from the OS keychain
 
 Other:
-  help        Show this help message
-  version     Print the current version
+  help           Show this help message
+  version        Print the current version
 
 Run without arguments to use the interactive menu.`)
 }
