@@ -86,21 +86,21 @@ A successful verification proves the file's provenance back to the tagged commit
 ## Usage
 
 ```sh
-futils              # Interactive menu (Actions / Settings)
-futils run          # Run a notebook
-futils refresh      # Refresh semantic-model tables
-futils move         # Copy an item between workspaces
-futils favourites   # Manage favourite notebooks/parameters
-futils add          # Add a customer
-futils edit         # Edit a customer (environments, deploy setup, favourites)
-futils remove       # Remove a customer
-futils list         # List customers
-futils logout       # Clear cached OAuth tokens
-futils version      # Show version
-futils help         # Show available commands
+futils                # Interactive menu (Actions / Settings)
+futils run            # Run a notebook
+futils refresh        # Refresh semantic-model tables
+futils move           # Copy an item between workspaces
+futils deploy         # Deploy a Fabric git repo to target workspaces
+futils schemacompare  # Compare lakehouse schemas between workspaces
+futils favourites     # Manage favourite notebooks/parameters
+futils add            # Add a customer
+futils edit           # Edit a customer (environments, deploy setup, favourites)
+futils remove         # Remove a customer
+futils list           # List customers
+futils logout         # Clear cached OAuth tokens
+futils version        # Show version
+futils help           # Show available commands
 ```
-
-**Deploy** and **Schema compare** live in the interactive menu — run `futils` and pick them under Actions.
 
 ## Configuration
 

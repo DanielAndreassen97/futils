@@ -54,6 +54,10 @@ func main() {
 		err = cmd.Refresh(configPath)
 	case "move":
 		err = cmd.Move(configPath)
+	case "deploy":
+		err = cmd.Deploy(configPath)
+	case "schemacompare", "schema-compare":
+		err = cmd.SchemaCompare(configPath)
 	case "favorites", "favourites":
 		err = cmd.Favorites(configPath)
 	case "add":
