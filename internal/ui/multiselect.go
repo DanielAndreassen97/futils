@@ -42,15 +42,129 @@ type checkboxModel struct {
 	goBack     bool
 	quit       bool
 	goHome     bool
+	// filter enables the always-on type-to-filter mode: printable keys build a
+	// query, the list narrows to matching rows, and the single-letter shortcuts
+	// (a/j/k/g/G/b/q/m) are unavailable — arrows navigate, ctrl+a bulk-toggles.
+	// The cursor then addresses a position in the FILTERED view, not items.
+	filter bool
+	query  string
 }
 
 func (m checkboxModel) Init() tea.Cmd { return nil }
+
+// visibleIdx returns the indices of items whose label matches the query
+// (case-insensitive substring; empty query = everything), in list order.
+func (m checkboxModel) visibleIdx() []int {
+	if !m.filter || m.query == "" {
+		out := make([]int, len(m.items))
+		for i := range m.items {
+			out[i] = i
+		}
+		return out
+	}
+	q := strings.ToLower(m.query)
+	var out []int
+	for i, it := range m.items {
+		if strings.Contains(strings.ToLower(it.label), q) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// updateFiltered is the KeyMsg handler in filter mode. Selections persist
+// across query changes — filtering only affects visibility, never checked
+// state — so a selection can be built across several searches (same contract
+// as the refresh table picker).
+func (m checkboxModel) updateFiltered(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	visible := m.visibleIdx()
+	clamp := func() {
+		if m.cursor >= len(visible) {
+			m.cursor = len(visible) - 1
+		}
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	}
+	switch msg.String() {
+	case "up":
+		if len(visible) > 0 {
+			m.cursor = (m.cursor - 1 + len(visible)) % len(visible)
+		}
+	case "down":
+		if len(visible) > 0 {
+			m.cursor = (m.cursor + 1) % len(visible)
+		}
+	case "alt+up", "pgup":
+		m.cursor -= checkboxJumpSize
+		clamp()
+	case "alt+down", "pgdown":
+		m.cursor += checkboxJumpSize
+		clamp()
+	case "home":
+		m.cursor = 0
+	case "end":
+		m.cursor = len(visible) - 1
+		clamp()
+	case " ":
+		if m.cursor < len(visible) {
+			i := visible[m.cursor]
+			m.items[i].checked = !m.items[i].checked
+		}
+	case "ctrl+a":
+		// Toggle the VISIBLE rows only: check all matches, or clear them when
+		// they're already all checked. Bulk-excluded rows stay untouched.
+		allChecked := true
+		for _, i := range visible {
+			if !m.items[i].skipBulk && !m.items[i].checked {
+				allChecked = false
+				break
+			}
+		}
+		for _, i := range visible {
+			if !m.items[i].skipBulk {
+				m.items[i].checked = !allChecked
+			}
+		}
+	case "enter":
+		m.done = true
+		return m, tea.Quit
+	case "esc":
+		if m.query != "" {
+			m.query = ""
+			m.cursor = 0
+			return m, nil
+		}
+		m.goBack = true
+		m.done = true
+		return m, tea.Quit
+	case "ctrl+c":
+		m.quit = true
+		m.done = true
+		return m, tea.Quit
+	case "backspace":
+		if m.query != "" {
+			r := []rune(m.query)
+			m.query = string(r[:len(r)-1])
+			m.cursor = 0
+		}
+	default:
+		if r := msg.Runes; len(r) == 1 && msg.Type == tea.KeyRunes {
+			m.query += string(r)
+			m.cursor = 0
+		}
+	}
+	return m, nil
+}
 
 func (m checkboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.termHeight = msg.Height
 	case tea.KeyMsg:
+		if m.filter {
+			return m.updateFiltered(msg)
+		}
 		switch msg.String() {
 		case "up", "k":
 			m.cursor = (m.cursor - 1 + len(m.items)) % len(m.items)
@@ -114,8 +228,14 @@ func (m checkboxModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m checkboxModel) renderItem(i int) string {
+	return m.renderRow(i, i == m.cursor)
+}
+
+// renderRow renders one item row; isCursor is passed explicitly because in
+// filter mode the cursor addresses a position in the filtered view, so the
+// caller decides which item is under it.
+func (m checkboxModel) renderRow(i int, isCursor bool) string {
 	item := m.items[i]
-	isCursor := i == m.cursor
 
 	pointer := "  "
 	if isCursor {
@@ -183,6 +303,10 @@ func (m checkboxModel) View() string {
 			fmt.Sprintf("  %s: %d selected", m.title, n)) + "\n"
 	}
 
+	if m.filter {
+		return m.viewFiltered()
+	}
+
 	var b strings.Builder
 	hint := "space toggle • enter confirm • alt+↑↓ jump • a select all • esc back • m main menu • q quit"
 	fmt.Fprintf(&b, "  %s\n", m.title)
@@ -232,6 +356,66 @@ func (m checkboxModel) View() string {
 			checkboxHintStyle.Render(fmt.Sprintf("↓ %d more below", len(m.items)-end)))
 	}
 
+	return b.String()
+}
+
+// viewFiltered renders the type-to-filter variant: query line under the hint,
+// only matching rows, and a live selected-count so selections made under
+// earlier queries stay visible even when their rows are filtered out.
+func (m checkboxModel) viewFiltered() string {
+	var b strings.Builder
+	hint := "type to filter • space toggle • ctrl+a select visible • enter confirm • esc clear/back • ↑↓ navigate"
+	fmt.Fprintf(&b, "  %s\n", m.title)
+	fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(hint))
+
+	query := m.query
+	if query == "" {
+		query = checkboxHintStyle.Render("filter…")
+	}
+	fmt.Fprintf(&b, "  %s %s   %s\n\n",
+		checkboxPointerStyle.Render("›"), query,
+		checkboxHintStyle.Render(fmt.Sprintf("%d selected", m.countChecked())))
+
+	visible := m.visibleIdx()
+	if len(visible) == 0 {
+		fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render("(no matches)"))
+		return b.String()
+	}
+
+	headerRows := 4
+	maxVisible := m.termHeight - headerRows - 1
+	if maxVisible <= 0 || maxVisible >= len(visible) {
+		for pos, i := range visible {
+			fmt.Fprintf(&b, "%s\n", m.renderRow(i, pos == m.cursor))
+		}
+		return b.String()
+	}
+
+	itemSlots := maxVisible - 2
+	if itemSlots < 1 {
+		itemSlots = 1
+	}
+	start := m.cursor - itemSlots/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + itemSlots
+	if end > len(visible) {
+		end = len(visible)
+		start = end - itemSlots
+		if start < 0 {
+			start = 0
+		}
+	}
+	if start > 0 {
+		fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(fmt.Sprintf("↑ %d more above", start)))
+	}
+	for pos := start; pos < end; pos++ {
+		fmt.Fprintf(&b, "%s\n", m.renderRow(visible[pos], pos == m.cursor))
+	}
+	if end < len(visible) {
+		fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(fmt.Sprintf("↓ %d more below", len(visible)-end)))
+	}
 	return b.String()
 }
 
@@ -286,16 +470,19 @@ func MultiSelectRich(title string, items []CheckItem) ([]int, error) {
 // (not selection order), so favourites look the same regardless of
 // whether the user clicked top-to-bottom or bottom-to-top.
 //
-// Navigation:
+// The list has an always-on type-to-filter search (like the refresh table
+// picker): printable keys narrow the list, selections persist across query
+// changes, and a live selected-count shows what's checked outside the current
+// match set. Because typing owns the letter keys, navigation is arrows-only:
 //
-//	↑/↓ k/j        single row
-//	alt+↑/↓ pgup/pgdown / alt+k/j   jump 5 rows
-//	home/g • end/G jump to first / last
+//	↑/↓            single row (within the filtered view)
+//	alt+↑/↓ pgup/pgdown   jump 5 rows
+//	home/end       first / last
 //	space          toggle cursor row
-//	a              select all (or clear if already full)
-//	enter          confirm • esc/b go back • ctrl+c/q quit
+//	ctrl+a         select all visible (or clear them if already all checked)
+//	enter          confirm • esc clear filter, then go back • ctrl+c quit
 //
-// Returns ErrGoBack on esc, ErrQuit on ctrl+c/q.
+// Returns ErrGoBack on esc, ErrQuit on ctrl+c.
 func MultiSelect(title string, options []string, initial []string) ([]string, error) {
 	initialSet := make(map[string]bool, len(initial))
 	for _, s := range initial {
@@ -306,7 +493,7 @@ func MultiSelect(title string, options []string, initial []string) ([]string, er
 		items[i] = checkboxItem{label: o, checked: initialSet[o]}
 	}
 
-	model := checkboxModel{title: title, items: items}
+	model := checkboxModel{title: title, items: items, filter: true}
 	p := tea.NewProgram(model)
 	final, err := p.Run()
 	if err != nil {

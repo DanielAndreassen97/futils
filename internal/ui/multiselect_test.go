@@ -160,3 +160,75 @@ func TestSelectAllSkipsBulkExcluded(t *testing.T) {
 			got.items[0].checked, got.items[1].checked, got.items[2].checked)
 	}
 }
+
+// press drives one arbitrary KeyMsg through Update.
+func press(m checkboxModel, msg tea.KeyMsg) checkboxModel {
+	next, _ := m.Update(msg)
+	return next.(checkboxModel)
+}
+
+func typeString(m checkboxModel, s string) checkboxModel {
+	for _, r := range s {
+		m = press(m, keyMsg(string(r)))
+	}
+	return m
+}
+
+func TestMultiSelectFilter_QueryNarrowsAndSpaceToggles(t *testing.T) {
+	m := newTestModel([]string{"DP - TEST - Config", "FUTILSTest", "Rapport - Test"}, nil)
+	m.filter = true
+	m = typeString(m, "fut")
+	vis := m.visibleIdx()
+	if len(vis) != 1 || m.items[vis[0]].label != "FUTILSTest" {
+		t.Fatalf("visible after 'fut' = %v", vis)
+	}
+	m = pressSpace(m)
+	if !m.items[1].checked {
+		t.Errorf("space must toggle the visible match, items=%+v", m.items)
+	}
+}
+
+func TestMultiSelectFilter_SelectionsPersistAcrossQueries(t *testing.T) {
+	m := newTestModel([]string{"alpha", "beta", "gamma"}, nil)
+	m.filter = true
+	m = typeString(m, "alp")
+	m = pressSpace(m) // check alpha
+	// New query hides alpha; its selection must survive.
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	m = typeString(m, "gam")
+	m = pressSpace(m) // check gamma
+	if !m.items[0].checked || !m.items[2].checked || m.items[1].checked {
+		t.Errorf("selections across queries wrong: %+v", m.items)
+	}
+}
+
+func TestMultiSelectFilter_CtrlAToglesVisibleOnly(t *testing.T) {
+	m := newTestModel([]string{"test-a", "test-b", "prod-a"}, nil)
+	m.filter = true
+	m = typeString(m, "test")
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyCtrlA}))
+	if !m.items[0].checked || !m.items[1].checked || m.items[2].checked {
+		t.Fatalf("ctrl+a must check only visible rows: %+v", m.items)
+	}
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyCtrlA}))
+	if m.items[0].checked || m.items[1].checked {
+		t.Errorf("second ctrl+a must clear the visible rows: %+v", m.items)
+	}
+}
+
+func TestMultiSelectFilter_EscClearsQueryThenBacks(t *testing.T) {
+	m := newTestModel([]string{"x"}, nil)
+	m.filter = true
+	m = typeString(m, "zz")
+	if len(m.visibleIdx()) != 0 {
+		t.Fatal("query zz should match nothing")
+	}
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	if m.query != "" || m.goBack {
+		t.Fatalf("first esc must clear the query only: query=%q goBack=%v", m.query, m.goBack)
+	}
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyEsc}))
+	if !m.goBack {
+		t.Error("second esc must go back")
+	}
+}
