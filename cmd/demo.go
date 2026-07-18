@@ -499,6 +499,12 @@ func demoRepoFiles() map[string]string {
 		"Backend/PL_master.DataPipeline/.platform":             demoPlatform("DataPipeline", "PL_master"),
 		"Backend/PL_master.DataPipeline/pipeline-content.json": demoPipelineMaster(),
 
+		// A nested item: lives under Backend/Notebooks/Staging in git, so a
+		// deploy to a fresh workspace reproduces that folder path. It's absent
+		// from the tenant (see demoItems) → always New → placed in the folder.
+		"Backend/Notebooks/Staging/nb_stage_sales.Notebook/.platform":           demoPlatform("Notebook", "nb_stage_sales"),
+		"Backend/Notebooks/Staging/nb_stage_sales.Notebook/notebook-content.py": demoNotebookQuality("DEV"),
+
 		"Backend/nb_ingest_sales.Notebook/.platform":               demoPlatform("Notebook", "nb_ingest_sales"),
 		"Backend/nb_ingest_sales.Notebook/notebook-content.py":     demoNotebookIngest("DEV", true),
 		"Backend/nb_transform_orders.Notebook/.platform":           demoPlatform("Notebook", "nb_transform_orders"),
@@ -622,12 +628,13 @@ func demoIpynb() []byte {
 // that a demo stays snappy.
 type demoClient struct {
 	mu       sync.Mutex
-	polls    map[string]int // job instance URL -> poll count
-	envPolls map[string]int // environment itemID -> publish-state poll count
+	polls    map[string]int             // job instance URL -> poll count
+	envPolls map[string]int             // environment itemID -> publish-state poll count
+	folders  map[string][]fabric.Folder // workspaceID -> created folders
 }
 
 func newDemoClient() *demoClient {
-	return &demoClient{polls: map[string]int{}, envPolls: map[string]int{}}
+	return &demoClient{polls: map[string]int{}, envPolls: map[string]int{}, folders: map[string][]fabric.Folder{}}
 }
 
 func (c *demoClient) GetAccessToken(profile string) (string, error) {
@@ -716,7 +723,7 @@ func (c *demoClient) GetItemDefinition(token, workspaceID, itemID, format string
 	return nil, fmt.Errorf("item %q not found", itemID)
 }
 
-func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
+func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage, folderID string) (fabric.Item, error) {
 	time.Sleep(700 * time.Millisecond)
 	return fabric.Item{
 		ID:          demoGUID("created", itemType, displayName, workspaceID),
@@ -724,6 +731,29 @@ func (c *demoClient) CreateItem(token, workspaceID, displayName, itemType string
 		Type:        itemType,
 		WorkspaceID: workspaceID,
 	}, nil
+}
+
+// demoFolders is the in-memory workspace folder store per workspace, so a demo
+// deploy that reproduces repo subfolders shows folders being created once and
+// reused on a re-run.
+func (c *demoClient) ListFolders(token, workspaceID string) ([]fabric.Folder, error) {
+	time.Sleep(200 * time.Millisecond)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]fabric.Folder(nil), c.folders[workspaceID]...), nil
+}
+
+func (c *demoClient) CreateFolder(token, workspaceID, displayName, parentFolderID string) (fabric.Folder, error) {
+	time.Sleep(250 * time.Millisecond)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	f := fabric.Folder{
+		ID:             demoGUID("folder", workspaceID, parentFolderID, displayName),
+		DisplayName:    displayName,
+		ParentFolderID: parentFolderID,
+	}
+	c.folders[workspaceID] = append(c.folders[workspaceID], f)
+	return f, nil
 }
 
 func (c *demoClient) UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error {

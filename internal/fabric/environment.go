@@ -1,6 +1,7 @@
 package fabric
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 )
@@ -58,4 +59,52 @@ func GetEnvironmentPublishState(token, workspaceID, itemID string) (string, erro
 		return "", fmt.Errorf("parse environment: %w", err)
 	}
 	return env.Properties.PublishDetails.State, nil
+}
+
+// Folder is a workspace folder. ParentFolderID is empty for a root-level folder.
+type Folder struct {
+	ID             string `json:"id"`
+	DisplayName    string `json:"displayName"`
+	ParentFolderID string `json:"parentFolderId,omitempty"`
+}
+
+// ListFolders returns every folder in a workspace (paged). futils reproduces a
+// repo's directory structure as workspace folders on deploy — Fabric's own git
+// integration does NOT track workspace folders, so this is the only way new
+// items land where the repo says they should.
+func ListFolders(token, workspaceID string) ([]Folder, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/folders", baseURL, workspaceID)
+	return pagedGet[Folder](token, url, "folders")
+}
+
+// CreateFolder creates one workspace folder. parentFolderID nests it under an
+// existing folder; empty creates it at the workspace root. Synchronous (201).
+func CreateFolder(token, workspaceID, displayName, parentFolderID string) (Folder, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return Folder{}, err
+	}
+	body := struct {
+		DisplayName    string `json:"displayName"`
+		ParentFolderID string `json:"parentFolderId,omitempty"`
+	}{DisplayName: displayName, ParentFolderID: parentFolderID}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return Folder{}, fmt.Errorf("marshal create-folder body: %w", err)
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/folders", baseURL, workspaceID)
+	resp, respBody, err := doPost(token, url, bytes.NewReader(payload))
+	if err != nil {
+		return Folder{}, err
+	}
+	if resp.StatusCode >= 400 {
+		return Folder{}, fmt.Errorf("create folder %q %d: %s", displayName, resp.StatusCode, string(respBody))
+	}
+	var f Folder
+	if err := json.Unmarshal(respBody, &f); err != nil {
+		return Folder{}, fmt.Errorf("parse created folder: %w", err)
+	}
+	return f, nil
 }

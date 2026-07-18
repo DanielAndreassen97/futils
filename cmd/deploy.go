@@ -959,7 +959,7 @@ func runDeploy(
 				if len(items) == 0 {
 					continue
 				}
-				plan := deploy.BuildPlan(items, g.Deployed)
+				plan := deploy.BuildPlan(items, g.Deployed, g.Folder)
 				// done advances once per published item (Execute increments it); the
 				// render func reads it concurrently every frame, so the spinner shows
 				// "Publishing X/Y" live and — when a 429 stalls the workers — the green

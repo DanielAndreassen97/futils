@@ -51,6 +51,10 @@ type deployFakeAPI struct {
 	envPublishErr error               // when set, PublishEnvironment fails
 	envStates     map[string][]string // itemID -> publish-state sequence (last repeats)
 	envStatePolls int                 // GetEnvironmentPublishState call count
+
+	folders        map[string][]fabric.Folder // workspaceID -> folders (pre-seeded + created)
+	createdFolders []fabric.Folder            // folders created via CreateFolder, in order
+	createdFolder  map[string]string          // item name -> folderID passed to CreateItem
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -74,13 +78,29 @@ func (f *deployFakeAPI) GetItemDefinition(token, ws, id, format string) (*fabric
 	}
 	return &fabric.Definition{}, nil
 }
-func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
+func (f *deployFakeAPI) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage, folderID string) (fabric.Item, error) {
 	f.created = append(f.created, name)
 	if f.createdWS == nil {
 		f.createdWS = map[string]string{}
 	}
 	f.createdWS[name] = ws
+	if f.createdFolder == nil {
+		f.createdFolder = map[string]string{}
+	}
+	f.createdFolder[name] = folderID
 	return fabric.Item{ID: name + "-id", DisplayName: name, Type: typ, WorkspaceID: ws}, nil
+}
+func (f *deployFakeAPI) ListFolders(token, ws string) ([]fabric.Folder, error) {
+	return f.folders[ws], nil
+}
+func (f *deployFakeAPI) CreateFolder(token, ws, name, parentID string) (fabric.Folder, error) {
+	fld := fabric.Folder{ID: "fld-" + ws + "-" + name, DisplayName: name, ParentFolderID: parentID}
+	if f.folders == nil {
+		f.folders = map[string][]fabric.Folder{}
+	}
+	f.folders[ws] = append(f.folders[ws], fld)
+	f.createdFolders = append(f.createdFolders, fld)
+	return fld, nil
 }
 func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
 	return nil

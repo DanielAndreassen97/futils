@@ -82,7 +82,7 @@ func (f *fakeMoveAPI) GetItemDefinition(_, _, itemID, _ string) (*fabric.Definit
 	}
 	return &fabric.Definition{Parts: []fabric.DefinitionPart{{Path: "x", Payload: "Zm9v", PayloadType: "InlineBase64"}}}, nil
 }
-func (f *fakeMoveAPI) CreateItem(_, ws, name, typ string, _ *fabric.Definition, _ json.RawMessage) (fabric.Item, error) {
+func (f *fakeMoveAPI) CreateItem(_, ws, name, typ string, _ *fabric.Definition, _ json.RawMessage, _ string) (fabric.Item, error) {
 	f.createCalls++
 	f.lastCreateName = name
 	if f.createErr != nil {
@@ -565,4 +565,8 @@ func (f *fakeMoveAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetName st
 func (f *fakeMoveAPI) PublishEnvironment(token, ws, id string) error { return nil }
 func (f *fakeMoveAPI) GetEnvironmentPublishState(token, ws, id string) (string, error) {
 	return "success", nil
+}
+func (f *fakeMoveAPI) ListFolders(string, string) ([]fabric.Folder, error) { return nil, nil }
+func (f *fakeMoveAPI) CreateFolder(_, _, name, parentID string) (fabric.Folder, error) {
+	return fabric.Folder{ID: "fld-" + name, DisplayName: name, ParentFolderID: parentID}, nil
 }

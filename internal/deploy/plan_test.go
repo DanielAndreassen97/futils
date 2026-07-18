@@ -14,7 +14,7 @@ func TestBuildPlanActionsAndOrder(t *testing.T) {
 	deployed := []fabric.Item{
 		{ID: "m-id", Type: "SemanticModel", DisplayName: "M"}, // exists -> Update
 	}
-	plan := BuildPlan(selected, deployed)
+	plan := BuildPlan(selected, deployed, "")
 
 	if len(plan) != 2 {
 		t.Fatalf("want 2 planned, got %d", len(plan))

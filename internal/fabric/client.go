@@ -399,7 +399,9 @@ func ListItemsByType(token, workspaceID, itemType string) ([]Item, error) {
 // creationPayload field — type-specific one-time settings that only exist at
 // create time (Warehouse collation, Lakehouse enableSchemas). Fabric git-sync
 // stores it in .platform's metadata block, which is where the deploy reads it.
-func CreateItem(token, workspaceID, displayName, itemType string, def *Definition, creationPayload json.RawMessage) (Item, error) {
+// folderID, when non-empty, places the new item in that workspace folder;
+// empty creates it at the workspace root.
+func CreateItem(token, workspaceID, displayName, itemType string, def *Definition, creationPayload json.RawMessage, folderID string) (Item, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return Item{}, err
 	}
@@ -411,11 +413,13 @@ func CreateItem(token, workspaceID, displayName, itemType string, def *Definitio
 		Type            string          `json:"type"`
 		Definition      *Definition     `json:"definition,omitempty"`
 		CreationPayload json.RawMessage `json:"creationPayload,omitempty"`
+		FolderID        string          `json:"folderId,omitempty"`
 	}{
 		DisplayName:     displayName,
 		Type:            itemType,
 		Definition:      def,
 		CreationPayload: creationPayload,
+		FolderID:        folderID,
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

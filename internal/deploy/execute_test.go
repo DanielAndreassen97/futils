@@ -36,7 +36,7 @@ func (r *recordingFabric) UpdateItem(token, ws, id, displayName, description str
 	return r.updateItemErr
 }
 
-func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
+func (r *recordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage, folderID string) (fabric.Item, error) {
 	if r.createErr != nil {
 		return fabric.Item{}, r.createErr
 	}
@@ -541,7 +541,7 @@ func TestExecuteRebindReportToModelInSameRun(t *testing.T) {
 	report := LocalItem{Type: "Report", DisplayName: "MyReport", LogicalID: "lid-r",
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
-	plan := BuildPlan([]LocalItem{report, model}, nil) // ordered: model then report
+	plan := BuildPlan([]LocalItem{report, model}, nil, "") // ordered: model then report
 	modelsByWS := map[string]map[string]string{}
 	runRebindPass(t, rf, target, plan, modelsByWS)
 
@@ -590,7 +590,7 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 		modelsByWS := map[string]map[string]string{}
 		var pending []PendingReportRebind
 		for _, g := range groups {
-			plan := BuildPlan(g, nil)
+			plan := BuildPlan(g, nil, "")
 			_, p, err := Execute(rf, "tok", target, plan, nil, modelsByWS, nil)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
@@ -636,11 +636,11 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	modelsByWS := map[string]map[string]string{}
 	var pending []PendingReportRebind
 	// Model deploys to W1; report deploys to W2.
-	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil), nil, modelsByWS, nil)
+	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w1: %v", err)
 	}
-	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
+	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w2: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestRebindReportsByConnectionNoWarning(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestRebindReportsModelMissingSkipsSilently(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MissingModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestRebindReportsByConnectionCoDeployedBindsEndToEnd(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}} // initial catalog=HR
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -853,7 +853,7 @@ func TestRebindReportsStructuredByConnectionCoDeployedBinds(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: structuredByConnectionPBIR(devHRModel)}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -901,7 +901,7 @@ func TestRebindReportsByConnectionStaleCatalogPrefersBaseline(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: stalePBIR}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{hr, hrOld, report}, nil), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{hr, hrOld, report}, nil, ""), rb, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestExecutePendingRebindUsesSubstitutedPBIR(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: pbir}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -994,4 +994,71 @@ func TestDeleteItems(t *testing.T) {
 	if ActionDelete.String() != "Delete" {
 		t.Errorf("ActionDelete.String() = %q, want Delete", ActionDelete.String())
 	}
+}
+
+// New items land in the workspace folder derived from their repo path: the
+// folder tree is created top-down (parent before child) and each create gets
+// the right folderId; existing items are never placed. A re-run reuses folders
+// already present.
+func TestExecuteCreatesAndUsesWorkspaceFolders(t *testing.T) {
+	// A recordingFabric variant that tracks folders + the folderId per create.
+	rf := &folderRecordingFabric{recordingFabric: recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws", DisplayName: "T"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}}
+	target := fabric.Workspace{ID: "ws", DisplayName: "T"}
+	plan := []PlannedItem{
+		{Action: ActionCreate, WorkspaceFolder: "Notebooks/Config",
+			Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}},
+		{Action: ActionCreate, WorkspaceFolder: "Notebooks/Config",
+			Item: LocalItem{Type: "Notebook", DisplayName: "NB_B", Parts: []Part{{Path: "notebook-content.py", Content: []byte("y=1")}}}},
+		{Action: ActionCreate, WorkspaceFolder: "", // root
+			Item: LocalItem{Type: "Notebook", DisplayName: "NB_root", Parts: []Part{{Path: "notebook-content.py", Content: []byte("z=1")}}}},
+	}
+
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatalf("%s: %v", r.Name, r.Err)
+		}
+	}
+	// Two folders created (Notebooks, then Notebooks/Config), parent first.
+	if len(rf.createdFolderPaths) != 2 || rf.createdFolderPaths[0] != "Notebooks" || rf.createdFolderPaths[1] != "Config" {
+		t.Errorf("folder create order = %v, want [Notebooks Config]", rf.createdFolderPaths)
+	}
+	// Both NBs in Config share the same folderId; the root item gets "".
+	configID := rf.itemFolder["NB_A"]
+	if configID == "" || rf.itemFolder["NB_B"] != configID {
+		t.Errorf("NB_A/NB_B should share the Config folderId, got %q / %q", configID, rf.itemFolder["NB_B"])
+	}
+	if rf.itemFolder["NB_root"] != "" {
+		t.Errorf("root item must get empty folderId, got %q", rf.itemFolder["NB_root"])
+	}
+}
+
+type folderRecordingFabric struct {
+	recordingFabric
+	folders            []fabric.Folder
+	createdFolderPaths []string          // DisplayName of each folder created, in order
+	itemFolder         map[string]string // item name -> folderId passed to CreateItem
+}
+
+func (f *folderRecordingFabric) ListFolders(token, ws string) ([]fabric.Folder, error) {
+	return f.folders, nil
+}
+func (f *folderRecordingFabric) CreateFolder(token, ws, name, parentID string) (fabric.Folder, error) {
+	fld := fabric.Folder{ID: "id-" + name, DisplayName: name, ParentFolderID: parentID}
+	f.folders = append(f.folders, fld)
+	f.createdFolderPaths = append(f.createdFolderPaths, name)
+	return fld, nil
+}
+func (f *folderRecordingFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, cp json.RawMessage, folderID string) (fabric.Item, error) {
+	if f.itemFolder == nil {
+		f.itemFolder = map[string]string{}
+	}
+	f.itemFolder[name] = folderID
+	return f.recordingFabric.CreateItem(token, ws, name, typ, def, cp, folderID)
 }

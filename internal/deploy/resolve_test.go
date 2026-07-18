@@ -30,8 +30,12 @@ func (f *fakeFabric) ListItemsByType(token, ws, typ string) ([]fabric.Item, erro
 func (f *fakeFabric) GetItemDefinition(token, ws, id, format string) (*fabric.Definition, error) {
 	return &fabric.Definition{}, nil
 }
-func (f *fakeFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error) {
+func (f *fakeFabric) CreateItem(token, ws, name, typ string, def *fabric.Definition, creationPayload json.RawMessage, folderID string) (fabric.Item, error) {
 	return fabric.Item{ID: "new-" + name, DisplayName: name, Type: typ, WorkspaceID: ws}, nil
+}
+func (f *fakeFabric) ListFolders(token, ws string) ([]fabric.Folder, error) { return nil, nil }
+func (f *fakeFabric) CreateFolder(token, ws, name, parentID string) (fabric.Folder, error) {
+	return fabric.Folder{ID: "folder-" + name, DisplayName: name, ParentFolderID: parentID}, nil
 }
 func (f *fakeFabric) UpdateItemDefinition(token, ws, id string, def *fabric.Definition) error {
 	return nil

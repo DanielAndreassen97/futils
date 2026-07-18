@@ -103,6 +103,13 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 		}
 	}
 
+	// Reproduce the repo's directory structure as workspace folders before
+	// publishing, so newly-created items land where the repo says. Best-effort:
+	// if folder setup fails, publishing continues at the workspace root and a
+	// warning rides on the affected items (a folder isn't worth aborting a
+	// deploy). Existing items are never moved — only ActionCreate consults it.
+	folderIDByPath, folderErr := ensureWorkspaceFolders(client, token, target.ID, plan)
+
 	for _, p := range plan {
 		func() {
 			defer markDone()
@@ -126,8 +133,12 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 				}
 				deployedID = p.ExistingID
 			default:
+				folderID := folderIDByPath[p.WorkspaceFolder]
+				if p.WorkspaceFolder != "" && folderID == "" && folderErr != nil {
+					res.Warning = joinWarning(res.Warning, fmt.Sprintf("workspace folder %q unavailable (%v) — created at root", p.WorkspaceFolder, folderErr))
+				}
 				var created fabric.Item
-				created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def, p.Item.CreationPayload)
+				created, err = client.CreateItem(token, target.ID, p.Item.DisplayName, p.Item.Type, def, p.Item.CreationPayload, folderID)
 				deployedID = created.ID
 			}
 			if err != nil {

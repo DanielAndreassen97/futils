@@ -14,7 +14,9 @@ type FabricClient interface {
 	ListItemsByType(token, workspaceID, itemType string) ([]fabric.Item, error)
 	ListWorkspaces(token string) ([]fabric.Workspace, error)
 	GetItemDefinition(token, workspaceID, itemID, format string) (*fabric.Definition, error)
-	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage) (fabric.Item, error)
+	CreateItem(token, workspaceID, displayName, itemType string, def *fabric.Definition, creationPayload json.RawMessage, folderID string) (fabric.Item, error)
+	ListFolders(token, workspaceID string) ([]fabric.Folder, error)
+	CreateFolder(token, workspaceID, displayName, parentFolderID string) (fabric.Folder, error)
 	UpdateItemDefinition(token, workspaceID, itemID string, def *fabric.Definition) error
 	UpdateItem(token, workspaceID, itemID, displayName, description string) error
 	DeleteItem(token, workspaceID, itemID string) error
