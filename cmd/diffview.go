@@ -244,6 +244,11 @@ const deployReportStyle = `<style>
       radial-gradient(1100px 480px at 12% -8%, rgba(34,197,94,.16), transparent 60%),
       radial-gradient(900px 520px at 100% 0%, rgba(45,212,191,.08), transparent 55%),
       linear-gradient(165deg,#0c1611 0%,#0a0f0c 55%,#080b09 100%);
+    /* Solid fallback AFTER the shorthand (which resets background-color):
+       with background-attachment:fixed the gradients only paint the first
+       viewport in print/PDF/full-page captures — everything below went white
+       and the alpha-blended diff colors became unreadable. */
+    background-color:#080b09;
     background-attachment:fixed;min-height:100vh;
   }
   code,pre,.mono{font-family:"SF Mono",Menlo,Consolas,monospace}
@@ -337,7 +342,53 @@ const deployReportStyle = `<style>
             margin:.9rem 0 .3rem;padding:.18rem .5rem;
             border-left:2px solid var(--green-deep);
             background:linear-gradient(90deg,rgba(34,197,94,.07),transparent)}
+  .pm{margin-left:auto;display:flex;gap:.45rem;font-family:"SF Mono",Menlo,monospace;font-size:.74rem;font-weight:600}
+  .pm .plus{color:var(--addfg)} .pm .minus{color:var(--delfg)}
+  .item summary .pm+.chev{margin-left:.2rem}
 </style>`
+
+// reportHead emits the shared document head: doctype, charset, viewport, an
+// inline emoji favicon (no 404 noise in the console), and the page title.
+func reportHead(title string) string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+		`<meta name="viewport" content="width=device-width, initial-scale=1">` +
+		`<link rel="icon" href="data:image/svg+xml,` +
+		`%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9F%A2%3C/text%3E%3C/svg%3E">` +
+		`<title>` + html.EscapeString(title) + `</title>`
+}
+
+// deployReportContext is the run metadata the report hero shows — who deployed
+// what, from where. Zero-value fields are simply omitted, and a nil context
+// (the in-browser compare preview) renders no context line at all.
+type deployReportContext struct {
+	Customer    string
+	Environment string
+	Source      string // e.g. "origin/feature/daniel @ ab12cd3"
+	Backend     string // "per-item" or "bulk-import (preview)"
+}
+
+// heroContextLine renders the hero's context line from the non-empty fields.
+func (c *deployReportContext) heroContextLine() string {
+	if c == nil {
+		return ""
+	}
+	var parts []string
+	if c.Customer != "" && c.Environment != "" {
+		parts = append(parts, "<b>"+html.EscapeString(c.Customer)+"</b> → <b>"+html.EscapeString(c.Environment)+"</b>")
+	} else if c.Customer != "" {
+		parts = append(parts, "<b>"+html.EscapeString(c.Customer)+"</b>")
+	}
+	if c.Source != "" {
+		parts = append(parts, `<span class="mono">`+html.EscapeString(c.Source)+`</span>`)
+	}
+	if c.Backend != "" {
+		parts = append(parts, html.EscapeString(c.Backend)+" backend")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return `<div class="sub">` + strings.Join(parts, " · ") + `</div>`
+}
 
 // renderDeployReport builds a self-contained HTML deploy report. When results
 // is non-nil it leads with a per-item outcome section (✓ deployed / ⚠ warning /
@@ -346,18 +397,25 @@ const deployReportStyle = `<style>
 // "Post-deploy runs" section reports each notebook run (✓ completed / ✗ failed
 // / ⊘ skipped). All content is HTML-escaped. With results==nil it is the
 // compare-only viewer the browser preview shows.
-func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, ts time.Time) string {
+func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, ts time.Time, ctx *deployReportContext) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>futils deploy report</title>`)
+	b.WriteString(reportHead("futils deploy report"))
 	b.WriteString(deployReportStyle)
 	b.WriteString(`</head><body>`)
 
-	// Hero header with the deploy timestamp.
+	// Hero header: run context (who → where, from what) + the deploy timestamp.
 	b.WriteString(`<div class="hero"><h1>futils deploy report</h1>`)
+	b.WriteString(ctx.heroContextLine())
 	b.WriteString(`<div class="when">` + ts.Format("2006-01-02 15:04") + `</div></div>`)
 
 	// Summary cards.
 	b.WriteString(renderSummaryCards(groups, results))
+
+	// Workspace display names for grouping result rows; results carry only IDs.
+	wsName := map[string]string{}
+	for _, g := range groups {
+		wsName[g.Target.ID] = g.Target.DisplayName
+	}
 
 	if results != nil {
 		var deployed, deleted []deploy.Result
@@ -372,24 +430,47 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			if len(rs) == 0 {
 				return
 			}
-			b.WriteString(`<h2>` + heading + `</h2><div class="panel"><table>`)
+			// Group rows per target workspace (first-seen order) so a
+			// multi-workspace deploy shows where each item landed; a
+			// single-workspace run skips the sub-headings.
+			var wsOrder []string
+			byWS := map[string][]deploy.Result{}
 			for _, r := range rs {
-				markCls, mark, detailCls, detail := "ok", "✓", "detail", r.Action.String()
-				switch {
-				case r.Err != nil:
-					markCls, mark, detailCls, detail = "efail", "✗", "detail efail", r.Err.Error()
-				case r.Warning != "":
-					markCls, mark, detailCls, detail = "ewarn", "⚠", "detail ewarn", r.Warning
-				case r.Action == deploy.ActionUpdate:
-					markCls = "upd"
-				case r.Action == deploy.ActionDelete:
-					markCls = "del"
+				if _, seen := byWS[r.WorkspaceID]; !seen {
+					wsOrder = append(wsOrder, r.WorkspaceID)
 				}
-				b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
-				b.WriteString(`<td class="name">` + html.EscapeString(r.Name) + ` <span class="type">` + html.EscapeString(r.Type) + `</span></td>`)
-				b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
+				byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], r)
 			}
-			b.WriteString(`</table></div>`)
+			b.WriteString(`<h2>` + heading + `</h2>`)
+			for _, ws := range wsOrder {
+				if len(wsOrder) > 1 {
+					label := wsName[ws]
+					if label == "" {
+						label = ws
+					}
+					b.WriteString(`<div class="wsgroup">` + html.EscapeString(label) + `</div>`)
+				}
+				b.WriteString(`<div class="panel"><table>`)
+				for _, r := range byWS[ws] {
+					markCls, mark, detailCls, detail := "ok", "✓", "detail", r.Action.String()
+					switch {
+					case r.Err != nil:
+						markCls, mark, detailCls, detail = "efail", "✗", "detail efail", r.Err.Error()
+					case r.Warning != "":
+						// Keep the action visible — a warning is a footnote to a
+						// publish that DID happen, not a replacement for it.
+						markCls, mark, detailCls, detail = "ewarn", "⚠", "detail ewarn", r.Action.String()+" · "+r.Warning
+					case r.Action == deploy.ActionUpdate:
+						markCls = "upd"
+					case r.Action == deploy.ActionDelete:
+						markCls = "del"
+					}
+					b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
+					b.WriteString(`<td class="name">` + html.EscapeString(r.Name) + ` <span class="type">` + html.EscapeString(r.Type) + `</span></td>`)
+					b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
+				}
+				b.WriteString(`</table></div>`)
+			}
 		}
 		renderRows("Deployed items", deployed)
 		renderRows("Deleted items", deleted)
@@ -483,11 +564,11 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			if !itemRenderable(it) {
 				continue
 			}
-			b.WriteString(`<details class="item changed">`)
-			b.WriteString(`<summary><span class="dot changed"></span>`)
-			b.WriteString(html.EscapeString(it.Name))
-			b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
-			b.WriteString(`<span class="chev">▾</span></summary>`)
+			// Render the parts into a buffer first, counting added/removed lines,
+			// so the collapsed summary can show a +N −N chip — enough to gauge a
+			// change's size without expanding the card.
+			var parts strings.Builder
+			added, removed := 0, 0
 			for _, p := range it.Parts {
 				oldPretty, oldIsJSON := prettyForDiff(p.Old)
 				newPretty, newIsJSON := prettyForDiff(p.New)
@@ -495,21 +576,30 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 				if oldIsJSON || newIsJSON {
 					badge = ` <span class="badge">json · prettified</span>`
 				}
-				b.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
+				parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
 				for _, ln := range cappedLineDiff(oldPretty, newPretty) {
 					cls, prefix := "ctx", " "
 					switch ln.Op {
 					case '-':
 						cls, prefix = "rem", "-"
+						removed++
 					case '+':
 						cls, prefix = "add", "+"
+						added++
 					case '@':
 						cls, prefix = "fold", " "
 					}
-					b.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
+					parts.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
 				}
-				b.WriteString(`</pre></div>`)
+				parts.WriteString(`</pre></div>`)
 			}
+			b.WriteString(`<details class="item changed">`)
+			b.WriteString(`<summary><span class="dot changed"></span>`)
+			b.WriteString(html.EscapeString(it.Name))
+			b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
+			fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
+			b.WriteString(`<span class="chev">▾</span></summary>`)
+			b.WriteString(parts.String())
 			b.WriteString(`</details>`)
 		}
 	}
@@ -523,7 +613,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
 // in-browser preview.
 func renderDeployDiffHTML(groups []deployGroup) string {
-	return renderDeployReport(groups, nil, nil, time.Now())
+	return renderDeployReport(groups, nil, nil, time.Now(), nil)
 }
 
 // renderSummaryCards builds the colored summary-card row. With results it shows

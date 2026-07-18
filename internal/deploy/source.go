@@ -50,6 +50,17 @@ func realGitBatchRunner(repo string) gitBatchRunner {
 	}
 }
 
+// Head returns the short commit SHA the deploy ref currently points at —
+// the "what exactly was deployed" line for reports. Requires the ref to be
+// known locally (any deploy has already fetched it).
+func (s *Source) Head() (string, error) {
+	out, err := s.git("rev-parse", "--short", s.ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // shellOnlyPublish marks item types whose definition CANNOT go through the
 // item APIs: create-with-definition fails with UnsupportedItemType and
 // updateDefinition with OperationNotSupportedForItem (both verified live).

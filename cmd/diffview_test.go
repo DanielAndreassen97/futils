@@ -314,7 +314,7 @@ func TestRenderDeployReportBigFileSmallChangeShowsDiff(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: oldB.String(), New: newB.String()}},
 		}},
 	}}
-	out := renderDeployReport(groups, nil, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
 	if strings.Contains(out, "too large to diff") {
 		t.Error("big file with a tiny change must render a real diff, not the cap message")
 	}
@@ -360,7 +360,7 @@ func TestRenderDeployReportIncludesResults(t *testing.T) {
 		// NB_Config must be a deployed result so its diff renders under the deployed-only [6] gate.
 		{Name: "NB_Config", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 
 	if !strings.Contains(out, "<!doctype html>") {
 		t.Errorf("expected a doctype")
@@ -394,7 +394,7 @@ func TestRenderDeployReportHasCardsAndCollapse(t *testing.T) {
 		{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_A", Type: "Notebook", Action: deploy.ActionUpdate}}
-	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 	if !strings.Contains(out, `class="cards"`) {
 		t.Error("report must include the summary cards")
 	}
@@ -415,7 +415,7 @@ func TestRenderDeployReportDeleteOnlyHasNoContentDiffs(t *testing.T) {
 		{Name: "NB_Changed", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "c.py", Old: "a", New: "b"}}},
 	}}}
 	results := []deploy.Result{{Name: "NB_Gone", Type: "Notebook", Action: deploy.ActionDelete}}
-	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 	if strings.Contains(out, "NB_Changed") {
 		t.Error("delete-only run must not render content diffs for items that were not deployed")
 	}
@@ -485,7 +485,7 @@ func TestRenderDeployReportGatesDiffByTypeAndName(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-only-marker.py", Old: "a", New: "b"}},
 		}},
 	}}
-	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 	if strings.Contains(out, "notebook-only-marker.py") {
 		t.Error("Notebook diff for type=Notebook name=X must not render when only type=DataPipeline name=X was deployed (gate must key by type+name)")
 	}
@@ -514,7 +514,7 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate},
 		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	out := renderDeployReport(groups, results, nil, time.Unix(0, 0))
+	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 	if !strings.Contains(out, "WS Alpha") {
 		t.Error("multi-group report must include workspace heading for WS Alpha")
 	}
@@ -538,7 +538,7 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 	singleResults := []deploy.Result{
 		{Name: "NB_Sole", Type: "Notebook", Action: deploy.ActionUpdate},
 	}
-	singleOut := renderDeployReport(singleGroups, singleResults, nil, time.Unix(0, 0))
+	singleOut := renderDeployReport(singleGroups, singleResults, nil, time.Unix(0, 0), nil)
 	if strings.Contains(singleOut, `class="wsgroup"`) {
 		t.Error("single-group report must NOT include wsgroup element")
 	}
@@ -551,14 +551,14 @@ func TestRenderDeployReportPostDeploySection(t *testing.T) {
 		{Run: postDeployRun{Name: "NB_B", WorkspaceName: "WS One"}, Status: fabric.JobStatusFailed, Err: errors.New("job Failed: boom")},
 		{Run: postDeployRun{Name: "NB_C", WorkspaceName: "WS One"}, Status: postDeployStatusSkipped},
 	}
-	html := renderDeployReport(nil, results, postRuns, time.Unix(0, 0))
+	html := renderDeployReport(nil, results, postRuns, time.Unix(0, 0), nil)
 	for _, want := range []string{"Post-deploy runs", "NB_A", "Completed in 14s", "job Failed: boom", "skipped — earlier run failed"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("report missing %q", want)
 		}
 	}
 	// No section when nothing ran.
-	if strings.Contains(renderDeployReport(nil, results, nil, time.Unix(0, 0)), "Post-deploy runs") {
+	if strings.Contains(renderDeployReport(nil, results, nil, time.Unix(0, 0), nil), "Post-deploy runs") {
 		t.Fatal("report must omit the Post-deploy runs section when no runs happened")
 	}
 }

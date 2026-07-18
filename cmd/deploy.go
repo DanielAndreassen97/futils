@@ -344,7 +344,11 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	// environment should run against its published settings, not stale ones.
 	publishEnvironments(client, token, results, ui.Confirm)
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
-	saveDeployHistory(configPath, customerName, customer, groups, results, runOutcomes, ui.Confirm)
+	backendLabel := "per-item"
+	if useBulk {
+		backendLabel = "bulk-import (preview)"
+	}
+	saveDeployHistory(configPath, customerName, customer, alias, backendLabel, groups, results, runOutcomes, ui.Confirm)
 	return nil
 }
 
@@ -1112,7 +1116,7 @@ func targetsSummary(groups []deployGroup) string {
 // while the results section reflects what was actually deployed (a cherry-picked
 // subset shows fewer results than diffs). A write failure is non-fatal — the
 // deploy already happened.
-func saveDeployHistory(configPath, customerName string, customer config.Customer, groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, confirm func(string) (bool, error)) {
+func saveDeployHistory(configPath, customerName string, customer config.Customer, alias, backendLabel string, groups []deployGroup, results []deploy.Result, postRuns []postDeployOutcome, confirm func(string) (bool, error)) {
 	if len(results) == 0 {
 		return // nothing was published — no report to write
 	}
@@ -1145,13 +1149,36 @@ func saveDeployHistory(configPath, customerName string, customer config.Customer
 	// when a deploy spans multiple repos; an absolute DeployHistoryPath is used verbatim.
 	dir := historyDir(customer.RepoPath, customer.DeployHistoryPath)
 	ts := time.Now()
-	htmlDoc := renderDeployReport(groups, results, postRuns, ts)
+	htmlDoc := renderDeployReport(groups, results, postRuns, ts, &deployReportContext{
+		Customer:    customerName,
+		Environment: alias,
+		Source:      deploySourceLabel(customer),
+		Backend:     backendLabel,
+	})
 	path, err := writeHistoryReport(dir, ts, htmlDoc)
 	if err != nil {
 		fmt.Println(warningStyle.Render("Couldn't save deploy report: " + err.Error()))
 		return
 	}
 	fmt.Println(infoStyle.Render("Saved deploy report: ") + terminalLink("file://"+path, path))
+}
+
+// deploySourceLabel renders "origin/<branch> @ <short-sha>" for the customer's
+// primary repo — the report's audit line for what exactly was deployed.
+// Best-effort: git trouble degrades to just the ref, or "" with no repo.
+func deploySourceLabel(customer config.Customer) string {
+	if customer.RepoPath == "" {
+		return ""
+	}
+	src, err := deploy.NewSourceAt(customer.RepoPath, customer.DeployBranch)
+	if err != nil {
+		return ""
+	}
+	label := src.Ref()
+	if sha, err := src.Head(); err == nil {
+		label += " @ " + sha
+	}
+	return label
 }
 
 // historyDir resolves the deploy-history folder. A relative DeployHistoryPath is

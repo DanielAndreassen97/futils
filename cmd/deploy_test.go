@@ -586,13 +586,13 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 	decline := func(string) (bool, error) { return false, nil }
 
 	// Nothing published (empty results) → no report, no folder created.
-	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, groups, nil, nil, decline) })
+	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, "TEST", "per-item", groups, nil, nil, decline) })
 	if entries, _ := os.ReadDir(filepath.Join(repo, "history")); len(entries) != 0 {
 		t.Errorf("empty results must write no report, found %d file(s)", len(entries))
 	}
 
 	// Items deployed → a .html report appears in the configured folder.
-	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, groups, results, nil, decline) })
+	_ = captureStdout(t, func() { saveDeployHistory("", "acme", customer, "TEST", "per-item", groups, results, nil, decline) })
 	entries, err := os.ReadDir(filepath.Join(repo, "history"))
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("expected 1 report file, got %d (err %v)", len(entries), err)
@@ -603,7 +603,7 @@ func TestSaveDeployHistoryWritesOnlyWhenDeployed(t *testing.T) {
 
 	// Deployed but history unconfigured → the offer declined → skip notice.
 	out := captureStdout(t, func() {
-		saveDeployHistory("", "acme", config.Customer{RepoPath: repo}, groups, results, nil, decline)
+		saveDeployHistory("", "acme", config.Customer{RepoPath: repo}, "TEST", "per-item", groups, results, nil, decline)
 	})
 	if !strings.Contains(out, "No deploy-history folder set") {
 		t.Errorf("expected skip notice when unconfigured, got %q", out)
@@ -625,7 +625,7 @@ func TestSaveDeployHistoryOffersSetupOnFirstDeploy(t *testing.T) {
 
 	accept := func(string) (bool, error) { return true, nil }
 	_ = captureStdout(t, func() {
-		saveDeployHistory(configPath, "acme", customer, groups, results, nil, accept)
+		saveDeployHistory(configPath, "acme", customer, "TEST", "per-item", groups, results, nil, accept)
 	})
 
 	entries, err := os.ReadDir(filepath.Join(repo, "docs", "deploys"))

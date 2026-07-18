@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/schemacompare"
 )
@@ -32,6 +33,8 @@ const schemaCompareStyle = `<style>
   .sc-cols .arrow{color:#5d6b61;padding:0 .35rem}
   .sc-cols .from{color:var(--delfg)} .sc-cols .to{color:var(--addfg)}
   .sc-pill{font-family:"SF Mono",Menlo,monospace;font-size:.7rem;border-radius:20px;padding:.12rem .6rem;font-weight:600;color:var(--addfg);border:1px solid rgba(134,239,172,.3);background:rgba(34,197,94,.1)}
+  .item.ok::before{background:linear-gradient(#5eead4,#0d9488)}
+  .dot.ok{background:var(--exists);box-shadow:0 0 8px rgba(45,212,191,.55)}
 </style>`
 
 // renderSchemaCompareReport builds a self-contained HTML report. It reuses the
@@ -41,7 +44,7 @@ const schemaCompareStyle = `<style>
 // an explicit from → to for type changes. All content is HTML-escaped.
 func renderSchemaCompareReport(srcLabel, tgtLabel string, diffs []schemacompare.LakehouseDiff) string {
 	var b strings.Builder
-	b.WriteString(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>futils schema compare</title>`)
+	b.WriteString(reportHead("futils schema compare"))
 	b.WriteString(deployReportStyle)
 	b.WriteString(schemaCompareStyle)
 	b.WriteString(`</head><body>`)
@@ -50,20 +53,58 @@ func renderSchemaCompareReport(srcLabel, tgtLabel string, diffs []schemacompare.
 	fmt.Fprintf(&b, `<div class="sub"><b>%s</b> → <b>%s</b> · `+
 		`<span style="color:var(--addfg)">+ only in %s</span> · `+
 		`<span style="color:var(--delfg)">− only in %s</span> · `+
-		`<span style="color:var(--changed)">~ type changed</span></div></div>`,
+		`<span style="color:var(--changed)">~ type changed</span></div>`,
 		es, et, es, et)
+	b.WriteString(`<div class="when">` + time.Now().Format("2006-01-02 15:04") + `</div></div>`)
+
+	// Summary cards: table-level counts across every compared lakehouse, so the
+	// verdict is readable before scrolling any card.
+	var newT, remT, chgT, identical int
+	for _, lh := range diffs {
+		if len(lh.Tables) == 0 {
+			identical++
+		}
+		for _, td := range lh.Tables {
+			switch td.Kind {
+			case schemacompare.TableNew:
+				newT++
+			case schemacompare.TableRemoved:
+				remT++
+			case schemacompare.TableChanged:
+				chgT++
+			}
+		}
+	}
+	b.WriteString(`<div class="cards">`)
+	for _, c := range []struct {
+		n          int
+		label, cls string
+	}{
+		{newT, "New tables", "new"},
+		{chgT, "Changed tables", "changed"},
+		{remT, "Removed tables", "deleted"},
+		{identical, "Identical lakehouses", "exists"},
+	} {
+		fmt.Fprintf(&b, `<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`, c.cls, c.n, c.label)
+	}
+	b.WriteString(`</div>`)
 
 	for _, lh := range diffs {
-		b.WriteString(`<details class="item changed" open><summary><span class="dot changed"></span>`)
-		b.WriteString(html.EscapeString(lh.Lakehouse))
 		scope := html.EscapeString(strings.Join(lh.Schemas, ", "))
 
 		if len(lh.Tables) == 0 {
+			// Identical lakehouses get the calm teal treatment — the amber
+			// "changed" dot on a ✓-card read as a false alarm.
+			b.WriteString(`<details class="item ok" open><summary><span class="dot ok"></span>`)
+			b.WriteString(html.EscapeString(lh.Lakehouse))
 			fmt.Fprintf(&b, ` <span class="t">%s</span>`+
 				`<span class="sc-pill" style="margin-left:auto">✓ identical · %d tables</span>`+
 				`<span class="chev">▾</span></summary></details>`, scope, lh.Matching)
 			continue
 		}
+
+		b.WriteString(`<details class="item changed" open><summary><span class="dot changed"></span>`)
+		b.WriteString(html.EscapeString(lh.Lakehouse))
 
 		fmt.Fprintf(&b, ` <span class="t">%s · %d unchanged</span><span class="chev">▾</span></summary>`, scope, lh.Matching)
 		for _, td := range lh.Tables {
