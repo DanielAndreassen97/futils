@@ -54,9 +54,21 @@ func TestDemoTenantCoherent(t *testing.T) {
 		}
 	}
 
-	// Every DEV GUID baked into the seeded repo content must exist as an item
-	// (or workspace) in the fake DEV tenant, so the baseline index can name it.
+	// logicalId references (e.g. PL_master invoking PL_refresh_sales) are
+	// resolved by the deploy's logicalId→GUID substitution, not the baseline
+	// index — collect them from the repo's .platform files as known too.
 	guidAnywhere := regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+	for path, content := range demoRepoFiles() {
+		if strings.HasSuffix(path, ".platform") {
+			for _, g := range guidAnywhere.FindAllString(content, -1) {
+				known[g] = true
+			}
+		}
+	}
+
+	// Every other DEV GUID baked into the seeded repo content must exist as an
+	// item (or workspace) in the fake DEV tenant, so the baseline index can
+	// name it.
 	for path, content := range demoRepoFiles() {
 		if strings.HasSuffix(path, ".platform") {
 			continue // logicalIds live only in git, never in the tenant

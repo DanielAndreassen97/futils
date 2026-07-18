@@ -376,6 +376,29 @@ func demoPipeline(env string, current bool) string {
 `
 }
 
+// demoPipelineMaster renders PL_master — an orchestrator that invokes
+// PL_refresh_sales by its logicalId, exactly how Fabric git-sync serializes a
+// sibling InvokePipeline reference. It exists only in the repo (New in every
+// target), so a full deploy demonstrates the dependency ordering: the invoked
+// pipeline must be created first for the logicalId substitution to resolve.
+func demoPipelineMaster() string {
+	return `{
+  "properties": {
+    "activities": [
+      {
+        "name": "Run sales refresh",
+        "type": "InvokePipeline",
+        "typeProperties": {
+          "pipelineId": "` + demoGUID("logical", "DataPipeline", "PL_refresh_sales") + `",
+          "waitOnCompletion": true
+        }
+      }
+    ]
+  }
+}
+`
+}
+
 // demoSparkcompute renders ENV_Spark's Setting/Sparkcompute.yml. current bumps
 // the runtime and executor ceiling, so TEST shows a real Environment diff —
 // and the post-deploy staging→publish step has something to publish.
@@ -434,6 +457,9 @@ func demoRepoFiles() map[string]string {
 
 		"Backend/PL_refresh_sales.DataPipeline/.platform":             demoPlatform("DataPipeline", "PL_refresh_sales"),
 		"Backend/PL_refresh_sales.DataPipeline/pipeline-content.json": demoPipeline("DEV", true),
+
+		"Backend/PL_master.DataPipeline/.platform":             demoPlatform("DataPipeline", "PL_master"),
+		"Backend/PL_master.DataPipeline/pipeline-content.json": demoPipelineMaster(),
 
 		"Backend/nb_ingest_sales.Notebook/.platform":               demoPlatform("Notebook", "nb_ingest_sales"),
 		"Backend/nb_ingest_sales.Notebook/notebook-content.py":     demoNotebookIngest("DEV", true),
