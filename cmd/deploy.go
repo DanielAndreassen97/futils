@@ -1024,6 +1024,24 @@ func runDeploy(
 			fmt.Println("Deletes skipped.")
 			return allResults, nil
 		}
+		// Data-bearing types (a lakehouse, warehouse, etc.) hold tables and files
+		// that vanish with the item — a far bigger deal than deleting a notebook.
+		// Call them out explicitly and take a SECOND confirm naming each one, so a
+		// bulk "yes" above can't quietly drop a database full of data.
+		if dataBearing := dataBearingDeletes(deletesByGroup); len(dataBearing) > 0 {
+			fmt.Println(warningStyle.Render("⚠ Some deletes are DATA-BEARING — their tables/files are destroyed too:"))
+			for _, d := range dataBearing {
+				fmt.Println(warningStyle.Render("    " + d))
+			}
+			ok, derr := confirm(fmt.Sprintf("Permanently delete these %d data-bearing item(s) and all their data?", len(dataBearing)))
+			if derr != nil {
+				return allResults, derr
+			}
+			if !ok {
+				fmt.Println("Deletes skipped.")
+				return allResults, nil
+			}
+		}
 		for i, g := range groups {
 			dels := deletesByGroup[i]
 			if len(dels) == 0 {
@@ -1036,6 +1054,32 @@ func runDeploy(
 		}
 	}
 	return allResults, nil
+}
+
+// dataBearingItemTypes hold data (tables, files) that is destroyed with the
+// item — deleting one is irreversible in a way deleting a notebook is not, so
+// futils takes an extra confirm for them (mirrors fabric-cicd's stricter gate).
+var dataBearingItemTypes = map[string]bool{
+	"Lakehouse":   true,
+	"Warehouse":   true,
+	"SQLDatabase": true,
+	"Eventhouse":  true,
+	"KQLDatabase": true,
+}
+
+// dataBearingDeletes returns "Type Name" for every data-bearing delete target
+// across all groups, sorted, for the second delete confirm's warning list.
+func dataBearingDeletes(deletesByGroup map[int][]deploy.DeleteTarget) []string {
+	var out []string
+	for _, dels := range deletesByGroup {
+		for _, d := range dels {
+			if dataBearingItemTypes[d.Type] {
+				out = append(out, d.Type+" "+d.Name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // runBulkPublish publishes selected items using the bulk-import backend. The

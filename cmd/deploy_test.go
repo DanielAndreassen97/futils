@@ -55,6 +55,7 @@ type deployFakeAPI struct {
 	folders        map[string][]fabric.Folder // workspaceID -> folders (pre-seeded + created)
 	createdFolders []fabric.Folder            // folders created via CreateFolder, in order
 	createdFolder  map[string]string          // item name -> folderID passed to CreateItem
+	deleted        []string                   // itemIDs passed to DeleteItem, in order
 }
 
 func (f *deployFakeAPI) ListWorkspaces(token string) ([]fabric.Workspace, error) {
@@ -106,7 +107,10 @@ func (f *deployFakeAPI) UpdateItemDefinition(token, ws, id string, def *fabric.D
 	return nil
 }
 func (f *deployFakeAPI) UpdateItem(token, ws, id, displayName, description string) error { return nil }
-func (f *deployFakeAPI) DeleteItem(token, ws, id string) error                           { return nil }
+func (f *deployFakeAPI) DeleteItem(token, ws, id string) error {
+	f.deleted = append(f.deleted, id)
+	return nil
+}
 func (f *deployFakeAPI) RebindReport(token, ws, reportID, datasetID string) error {
 	f.rebinds = append(f.rebinds, [3]string{ws, reportID, datasetID})
 	return nil
@@ -1236,6 +1240,43 @@ func TestRunDeployDeleteConfirmNamesWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(deletePrompt, "WS-Prod") {
 		t.Errorf("delete confirm must name the target workspace, got %q", deletePrompt)
+	}
+}
+
+// Deleting a data-bearing orphan (lakehouse/warehouse/…) takes a SECOND
+// confirm that names it — and declining that second confirm must delete
+// nothing, even though the first delete confirm was accepted.
+func TestRunDeployDataBearingDeleteSecondConfirm(t *testing.T) {
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS-Prod"}}}
+	groups := []deployGroup{makeGroup("F", "ws1", "WS-Prod", nil, nil)}
+	selectDel := func(gs []deployGroup) (map[int][]deploy.LocalItem, map[int][]deploy.DeleteTarget, error) {
+		return map[int][]deploy.LocalItem{}, map[int][]deploy.DeleteTarget{0: {
+			{ID: "nb", Name: "NB_Gone", Type: "Notebook"},
+			{ID: "lh", Name: "LH_Bronze", Type: "Lakehouse"},
+		}}, nil
+	}
+
+	// Accept the first delete confirm, decline the data-bearing one.
+	var sawFirst, sawData bool
+	_, err := runDeploy(fake, "tok", groups, selectDel, func(p string) (bool, error) {
+		switch {
+		case strings.Contains(p, "data-bearing"):
+			sawData = true
+			return false, nil // decline
+		case strings.Contains(p, "DELETE"):
+			sawFirst = true
+			return true, nil
+		}
+		return true, nil
+	}, false)
+	if err != nil {
+		t.Fatalf("runDeploy: %v", err)
+	}
+	if !sawFirst || !sawData {
+		t.Fatalf("expected both delete confirms (first=%v, data-bearing=%v)", sawFirst, sawData)
+	}
+	if len(fake.deleted) != 0 {
+		t.Errorf("declining the data-bearing confirm must delete nothing, deleted %v", fake.deleted)
 	}
 }
 
