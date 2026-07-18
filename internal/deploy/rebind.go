@@ -264,7 +264,60 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 	if item.Type == "Report" && path.Base(partPath) == "definition.pbir" {
 		return rb.RebindReportConnection(item, content)
 	}
+	if item.Type == "Lakehouse" && path.Base(partPath) == "shortcuts.metadata.json" {
+		return rb.RebindShortcuts(content)
+	}
 	return content, RebindOutcome{}
+}
+
+// RebindShortcuts rewrites the OneLake target GUIDs in a lakehouse's
+// shortcuts.metadata.json from baseline to target, by name. shortcuts.metadata.json
+// is a Lakehouse definition part, so it already deploys with the item — but the
+// items API stores the targets verbatim (unlike Fabric's own deployment
+// pipelines, it does NOT auto-remap internal shortcuts), so a shortcut pointing
+// at a baseline lakehouse would keep pointing there after deploy. For each
+// OneLake target we resolve itemId (a baseline GUID) to the same-named item in
+// the target env and rewrite both itemId and its workspaceId. Self-references
+// (empty/zero GUIDs, which Fabric maps to the current lakehouse), external
+// targets (ADLS/S3/etc.), and unparseable content are left untouched; an
+// unresolvable OneLake target is surfaced as UnresolvedRef and left as-is.
+func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
+	var shortcuts []struct {
+		Name   string `json:"name"`
+		Target struct {
+			OneLake *struct {
+				WorkspaceID string `json:"workspaceId"`
+				ItemID      string `json:"itemId"`
+			} `json:"oneLake"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(content, &shortcuts); err != nil {
+		return content, RebindOutcome{} // not the array shape we rewrite — leave it
+	}
+	var out RebindOutcome
+	seen := map[string]bool{}
+	for _, sc := range shortcuts {
+		ol := sc.Target.OneLake
+		if ol == nil || isZeroOrEmptyGUID(ol.ItemID) {
+			continue // external target, or self-reference Fabric maps itself
+		}
+		it, ok, reason := rb.resolveGUIDReason(ol.ItemID, "")
+		if !ok {
+			out.AddUnresolved(UnresolvedRef{GUID: ol.ItemID, ItemType: "Lakehouse", Location: "shortcut target", Reason: reason})
+			continue
+		}
+		addChange(&out, seen, "Shortcut", it.Name, ol.ItemID, it.GUID)
+		if ol.WorkspaceID != "" && it.WorkspaceID != "" {
+			addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), ol.WorkspaceID, it.WorkspaceID)
+		}
+	}
+	return []byte(applyChanges(string(content), out.Changes)), out
+}
+
+// isZeroOrEmptyGUID reports whether a shortcut GUID is a self-reference: empty,
+// or the all-zeros GUID Fabric maps to the current lakehouse/workspace.
+func isZeroOrEmptyGUID(guid string) bool {
+	return guid == "" || guid == "00000000-0000-0000-0000-000000000000"
 }
 
 // RebindNotebookLakehouses rewrites the lakehouse dependency GUIDs in a Fabric

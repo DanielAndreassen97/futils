@@ -488,3 +488,62 @@ func TestRebindReportConnectionCatalogGUIDNoBaselineMiss(t *testing.T) {
 		t.Fatalf("catalog-GUID miss must be ReasonNameUnknown (never pass the GUID as a name), got %+v", outcome.Unresolved)
 	}
 }
+
+// A lakehouse's shortcuts.metadata.json OneLake targets carry baseline
+// workspace+item GUIDs that must rebind to the target env by name, exactly
+// like a notebook's lakehouse block. External targets and self-references
+// (empty/zero GUIDs) are left untouched.
+func TestRebindShortcutsOneLakeTargets(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	shortcuts := []byte(`[
+	  {"name": "silver_orders", "path": "Tables",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "` + devConfigWS + `-data-placeholder",
+	     "itemId": "` + devSilverLH + `",
+	     "path": "Tables/orders"}}},
+	  {"name": "self_ref", "path": "Files",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "00000000-0000-0000-0000-000000000000",
+	     "itemId": "00000000-0000-0000-0000-000000000000",
+	     "path": "Files/local"}}},
+	  {"name": "external", "path": "Files",
+	   "target": {"type": "AmazonS3", "amazonS3": {
+	     "location": "https://bucket.s3.amazonaws.com", "subpath": "/data"}}}
+	]`)
+	item := LocalItem{Type: "Lakehouse", DisplayName: "LH_Bronze"}
+	out, outcome := rb.RebindPart(item, "shortcuts.metadata.json", shortcuts)
+	s := string(out)
+
+	if !strings.Contains(s, "test-silver-lh") || strings.Contains(s, devSilverLH) {
+		t.Errorf("OneLake itemId not rebound baseline→target:\n%s", s)
+	}
+	if !strings.Contains(s, "test-data") {
+		t.Errorf("OneLake workspaceId not rebound to target workspace:\n%s", s)
+	}
+	if !strings.Contains(s, "00000000-0000-0000-0000-000000000000") {
+		t.Errorf("self-reference (zero GUID) must be left untouched:\n%s", s)
+	}
+	if !strings.Contains(s, "bucket.s3.amazonaws.com") {
+		t.Errorf("external target must be left untouched:\n%s", s)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("expected clean resolve, got %#v", outcome.Unresolved)
+	}
+}
+
+// A OneLake shortcut whose target item resolves in neither env is left
+// unchanged and surfaced as unresolved.
+func TestRebindShortcutsUnresolved(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	unknown := "99999999-9999-9999-9999-999999999999"
+	shortcuts := []byte(`[{"name": "x", "path": "Tables",
+	  "target": {"type": "OneLake", "oneLake": {
+	    "workspaceId": "` + devConfigWS + `", "itemId": "` + unknown + `", "path": "Tables/x"}}}]`)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	if !strings.Contains(string(out), unknown) {
+		t.Error("unresolved shortcut target should be left unchanged")
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Location != "shortcut target" {
+		t.Fatalf("unresolved = %#v", outcome.Unresolved)
+	}
+}

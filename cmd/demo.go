@@ -376,6 +376,43 @@ func demoPipeline(env string, current bool) string {
 `
 }
 
+// demoShortcuts renders LH_Bronze's shortcuts.metadata.json: one OneLake
+// shortcut into LH_Silver (GUIDs in the given env's family, so a DEV→TEST
+// deploy rebinds them by name) and one external S3 shortcut (left untouched).
+// current bumps the target subpath so the previous release differs — the diff
+// then shows a clean path change with the GUIDs already normalized to target.
+func demoShortcuts(env string) string { return demoShortcutsAt(env, true) }
+
+func demoShortcutsAt(env string, current bool) string {
+	subpath := "Tables/orders"
+	if current {
+		subpath = "Tables/orders_enriched"
+	}
+	return `[
+  {
+    "name": "silver_orders",
+    "path": "Tables",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "workspaceId": "` + demoGUID("workspace", demoConfigWS(env)) + `",
+        "itemId": "` + demoItemGUID("Lakehouse", "LH_Silver", env) + `",
+        "path": "` + subpath + `"
+      }
+    }
+  },
+  {
+    "name": "vendor_feed",
+    "path": "Files",
+    "target": {
+      "type": "AmazonS3",
+      "amazonS3": { "location": "https://vendor-bucket.s3.amazonaws.com", "subpath": "/daily" }
+    }
+  }
+]
+`
+}
+
 // demoPipelineMaster renders PL_master — an orchestrator that invokes
 // PL_refresh_sales by its logicalId, exactly how Fabric git-sync serializes a
 // sibling InvokePipeline reference. It exists only in the repo (New in every
@@ -449,8 +486,9 @@ func demoRepoFiles() map[string]string {
 		"Backend/VL_Settings.VariableLibrary/valueSets/TEST.json": vlSets["TEST"],
 		"Backend/VL_Settings.VariableLibrary/valueSets/PROD.json": vlSets["PROD"],
 
-		"Backend/LH_Bronze.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Bronze"),
-		"Backend/LH_Silver.Lakehouse/.platform": demoPlatform("Lakehouse", "LH_Silver"),
+		"Backend/LH_Bronze.Lakehouse/.platform":               demoPlatform("Lakehouse", "LH_Bronze"),
+		"Backend/LH_Bronze.Lakehouse/shortcuts.metadata.json": demoShortcuts("DEV"),
+		"Backend/LH_Silver.Lakehouse/.platform":               demoPlatform("Lakehouse", "LH_Silver"),
 
 		"Backend/ENV_Spark.Environment/.platform":                demoPlatform("Environment", "ENV_Spark"),
 		"Backend/ENV_Spark.Environment/Setting/Sparkcompute.yml": demoSparkcompute(true),
@@ -508,6 +546,13 @@ func demoDefinition(env string, item fabric.Item) *fabric.Definition {
 	case "DataPipeline/PL_refresh_sales":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{
 			part("pipeline-content.json", demoPipeline(env, false)),
+		}}
+	case "Lakehouse/LH_Bronze":
+		// Previous release: target-env GUIDs already (a prior deploy rebound
+		// them) but the older subpath — so the diff is a clean path change and
+		// the shortcut rebind resolves to an unchanged target GUID.
+		return &fabric.Definition{Parts: []fabric.DefinitionPart{
+			part("shortcuts.metadata.json", demoShortcutsAt(env, false)),
 		}}
 	case "Notebook/nb_ingest_sales":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{part("notebook-content.py", demoNotebookIngest(env, false))}}
