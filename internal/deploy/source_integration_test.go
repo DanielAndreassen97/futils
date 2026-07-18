@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +147,75 @@ func TestListRemoteBranches(t *testing.T) {
 	want := []string{"feature/daniel", "main"}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("branches = %v, want %v", got, want)
+	}
+}
+
+// TestDiscoverShellOnlyTypeDropsParts: a git-synced Warehouse folder is a SQL
+// database project (.sql per object), but the item APIs reject any Warehouse
+// definition (verified live: UnsupportedItemType on create, OperationNot-
+// SupportedForItem on update) — so discovery must yield the item with ZERO
+// parts, making it a clean shell create / metadata-only update downstream.
+func TestDiscoverShellOnlyTypeDropsParts(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-b", "main")
+	whDir := filepath.Join(repo, "WH_Main.Warehouse")
+	if err := os.MkdirAll(filepath.Join(whDir, "Futils", "Tables"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		".platform":                     `{"metadata":{"type":"Warehouse","displayName":"WH_Main","creationPayload":{"defaultCollation":"Latin1_General_100_CI_AS_KS_WS_SC_UTF8"}},"config":{"logicalId":"bbb"}}`,
+		"Futils/Tables/dim_product.sql": "CREATE TABLE Futils.dim_product (product_id int NOT NULL);",
+	}
+	for rel, content := range files {
+		if err := os.WriteFile(filepath.Join(whDir, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A notebook alongside proves the guard is per-type, not global.
+	nbDir := filepath.Join(repo, "NB_A.Notebook")
+	if err := os.MkdirAll(nbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nbDir, ".platform"),
+		[]byte(`{"metadata":{"type":"Notebook","displayName":"NB_A"},"config":{"logicalId":"ccc"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nbDir, "notebook-content.py"), []byte("x=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "seed")
+
+	s := &Source{repo: repo, ref: "main", git: realGitRunner(repo), gitBatch: realGitBatchRunner(repo)}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("DiscoverItems: %v", err)
+	}
+	byName := map[string]LocalItem{}
+	for _, it := range items {
+		byName[it.DisplayName] = it
+	}
+	wh := byName["WH_Main"]
+	if len(wh.Parts) != 0 {
+		t.Errorf("Warehouse must discover with zero parts, got %d: %+v", len(wh.Parts), wh.Parts)
+	}
+	if !strings.Contains(string(wh.CreationPayload), "defaultCollation") {
+		t.Errorf("creationPayload must survive the part drop, got %s", wh.CreationPayload)
+	}
+	if len(byName["NB_A"].Parts) != 1 {
+		t.Errorf("Notebook parts must be untouched, got %+v", byName["NB_A"].Parts)
 	}
 }

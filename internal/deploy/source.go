@@ -50,6 +50,21 @@ func realGitBatchRunner(repo string) gitBatchRunner {
 	}
 }
 
+// shellOnlyPublish marks item types whose definition CANNOT go through the
+// item APIs: create-with-definition fails with UnsupportedItemType and
+// updateDefinition with OperationNotSupportedForItem (both verified live).
+// Their git folders may still carry content — a git-synced Warehouse or
+// SQLDatabase is a full SQL database project (.sql per object) that only
+// Fabric's own git-sync or SqlPackage/dacpac can deploy — so discovery drops
+// every part and futils manages just the item shell: create (with
+// creationPayload), description sync, and description-based compare.
+// Lakehouse is deliberately NOT here: it has full definition-API support.
+var shellOnlyPublish = map[string]bool{
+	"Warehouse":    true,
+	"SQLDatabase":  true,
+	"MLExperiment": true,
+}
+
 // ListRemoteBranches returns origin's branch names (without any origin/
 // prefix), sorted. It asks the remote directly (git ls-remote) so branches
 // pushed from elsewhere — e.g. a Fabric workspace committing straight to
@@ -275,6 +290,9 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			CreationPayload: meta.CreationPayload,
 		}
 		for _, p := range filesByFolder[folder] {
+			if shellOnlyPublish[meta.Type] {
+				break // shell-only types publish no definition; see shellOnlyPublish
+			}
 			rel := strings.TrimPrefix(p, folder+"/")
 			// .platform is consumed separately (metadata + bulk payload).
 			// notebook-settings.json / fs-settings.json are written into git by
