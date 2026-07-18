@@ -852,6 +852,35 @@ func deleteCount(m map[int][]deploy.DeleteTarget) int {
 	return n
 }
 
+// printSelectedItems lists exactly what the deploy confirm is about to
+// publish, grouped per target workspace — the picker's collapsed summary only
+// says "N selected", which is not enough to sanity-check before committing.
+// Long selections are capped so a full-repo deploy doesn't scroll the compare
+// table away.
+func printSelectedItems(groups []deployGroup, selected map[int][]deploy.LocalItem) {
+	const maxLines = 20
+	shown := 0
+	remaining := 0
+	for gi, g := range groups {
+		items := selected[gi]
+		if len(items) == 0 {
+			continue
+		}
+		fmt.Println(infoStyle.Render(fmt.Sprintf("→ %s:", g.Target.DisplayName)))
+		for _, it := range items {
+			if shown >= maxLines {
+				remaining++
+				continue
+			}
+			fmt.Printf("    %-18s %s\n", it.Type, it.DisplayName)
+			shown++
+		}
+	}
+	if remaining > 0 {
+		fmt.Printf("    … and %d more\n", remaining)
+	}
+}
+
 // runDeploy lets the user cherry-pick across groups, confirms, and executes each
 // group against its own workspace. Returns the aggregated per-item results. On a
 // mid-run Execute failure it returns the results accumulated so far alongside the
@@ -892,6 +921,7 @@ func runDeploy(
 		if bulk {
 			modeLabel = "bulk-import (preview)"
 		}
+		printSelectedItems(groups, selected)
 		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s) using the %s backend?", total, wsCount, modeLabel))
 		if err != nil {
 			return nil, err
