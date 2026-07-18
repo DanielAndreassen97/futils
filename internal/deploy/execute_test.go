@@ -17,16 +17,16 @@ type recordingFabric struct {
 	fakeFabric
 	created         []*fabric.Definition
 	createdNames    []string
-	createdPayloads []json.RawMessage // creationPayload per CreateItem call
-	sqlPolls        int               // GetLakehouseSqlEndpoint call count
-	sqlFailFirst    int               // fail the first N endpoint polls
-	updates       map[string]fabric.Definition // existingID -> def
-	rebinds       [][3]string                  // {workspaceID, reportID, datasetID}
-	rebindErr     error                        // when set, RebindReport returns it
-	metaUpdates   []metaUpdate                 // UpdateItem (PATCH) calls
-	deletes       []string                     // DeleteItem(id) calls
-	updateItemErr error                        // when set, UpdateItem returns it (description-sync failure)
-	createErr     error                        // when set, CreateItem returns it (publish failure)
+	createdPayloads []json.RawMessage            // creationPayload per CreateItem call
+	sqlPolls        int                          // GetLakehouseSqlEndpoint call count
+	sqlFailFirst    int                          // fail the first N endpoint polls
+	updates         map[string]fabric.Definition // existingID -> def
+	rebinds         [][3]string                  // {workspaceID, reportID, datasetID}
+	rebindErr       error                        // when set, RebindReport returns it
+	metaUpdates     []metaUpdate                 // UpdateItem (PATCH) calls
+	deletes         []string                     // DeleteItem(id) calls
+	updateItemErr   error                        // when set, UpdateItem returns it (description-sync failure)
+	createErr       error                        // when set, CreateItem returns it (publish failure)
 }
 
 type metaUpdate struct{ id, displayName, description string }

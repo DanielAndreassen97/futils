@@ -1364,15 +1364,20 @@ func editPostDeployRuns(configPath, customerName string) error {
 	if err != nil {
 		return fmt.Errorf("scan repo for notebooks: %w", err)
 	}
-	// Union of repo notebooks and already-registered names, so a registered
-	// notebook missing from the current scan isn't silently dropped on save.
+	pipelines, err := deploy.RepoItemNamesMulti(repos, "DataPipeline")
+	if err != nil {
+		return fmt.Errorf("scan repo for pipelines: %w", err)
+	}
+	names = append(names, pipelines...)
+	// Union of repo notebooks/pipelines and already-registered names, so a
+	// registered name missing from the current scan isn't silently dropped on save.
 	options := mergeSorted(names, customer.PostDeployRuns)
 	if len(options) == 0 {
-		fmt.Println(infoStyle.Render("No notebooks found under the repo path."))
+		fmt.Println(infoStyle.Render("No notebooks or pipelines found under the repo path."))
 		return ui.ErrGoBack
 	}
 
-	chosen, err := ui.MultiSelect("Select notebooks to offer as post-deploy runs (only deployed ones are offered per run)", options, customer.PostDeployRuns)
+	chosen, err := ui.MultiSelect("Select notebooks/pipelines to offer as post-deploy runs (only deployed ones are offered per run)", options, customer.PostDeployRuns)
 	if err != nil {
 		return err
 	}

@@ -113,7 +113,7 @@ func writeDemoConfig(path, repo string) error {
 			RepoPath:            repo,
 			BaselineEnvironment: "DEV",
 			DeployHistoryPath:   "deploy-history",
-			PostDeployRuns:      []string{"nb_ingest_sales"},
+			PostDeployRuns:      []string{"nb_ingest_sales", "PL_refresh_sales"},
 			Favorites: []config.NotebookFavorite{
 				{Name: "nb_ingest_sales", Parameters: []string{"run_date", "full_reload"}},
 			},

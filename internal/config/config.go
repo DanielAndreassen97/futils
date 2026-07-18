@@ -74,9 +74,9 @@ type Environment struct {
 // A customer with zero Environments is valid — they just can't run
 // notebooks until they add at least one via `futils edit`.
 type Customer struct {
-	Environments        []Environment       `json:"environments"`
-	Favorites           []NotebookFavorite  `json:"favorites,omitempty"`
-	RepoPath            string              `json:"repo_path,omitempty"`
+	Environments []Environment      `json:"environments"`
+	Favorites    []NotebookFavorite `json:"favorites,omitempty"`
+	RepoPath     string             `json:"repo_path,omitempty"`
 	// DeployBranch pins which origin branch deploys read from. The pin covers
 	// the primary repo only — per-mapping repos are other products with their
 	// own branch layouts and keep auto-detection (see BranchForRepo). Empty =

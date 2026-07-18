@@ -1134,6 +1134,33 @@ func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse
 	return loc, nil
 }
 
+// RunPipeline submits a data-pipeline job (jobType=Pipeline) and returns the
+// job-instance URL from the Location header — poll it with GetJobInstance,
+// exactly like a notebook run. Pipelines take no run payload here; parameter
+// support can ride on executionData later if a flow needs it.
+func RunPipeline(token, workspaceID, itemID string) (string, error) {
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return "", err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return "", err
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s/jobs/instances?jobType=Pipeline",
+		baseURL, workspaceID, itemID)
+	resp, respBody, err := doPost(token, url, strings.NewReader("{}"))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != 202 {
+		return "", fmt.Errorf("RunPipeline %d: %s", resp.StatusCode, string(respBody))
+	}
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", fmt.Errorf("RunPipeline 202 missing Location header")
+	}
+	return loc, nil
+}
+
 // JobInstanceStatus is the minimal shape we care about when polling a job.
 type JobInstanceStatus struct {
 	Status         string `json:"status"`

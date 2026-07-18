@@ -25,8 +25,8 @@ func TestPostDeployCandidates(t *testing.T) {
 
 	got := postDeployCandidates(registered, results, wsNames)
 	want := []postDeployRun{
-		{Name: "NB_A", ItemID: "id-a", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
-		{Name: "NB_B", ItemID: "id-b", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
+		{Name: "NB_A", Type: "Notebook", ItemID: "id-a", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
+		{Name: "NB_B", Type: "Notebook", ItemID: "id-b", WorkspaceID: "ws-1", WorkspaceName: "DW - TEST - Config"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %+v, want %+v", got, want)
@@ -42,8 +42,8 @@ func TestPostDeployCandidatesMultiWorkspace(t *testing.T) {
 	}
 	got := postDeployCandidates([]string{"NB_A"}, results, wsNames)
 	want := []postDeployRun{
-		{Name: "NB_A", ItemID: "id-1", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
-		{Name: "NB_A", ItemID: "id-2", WorkspaceID: "ws-2", WorkspaceName: "WS Two"},
+		{Name: "NB_A", Type: "Notebook", ItemID: "id-1", WorkspaceID: "ws-1", WorkspaceName: "WS One"},
+		{Name: "NB_A", Type: "Notebook", ItemID: "id-2", WorkspaceID: "ws-2", WorkspaceName: "WS Two"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %+v, want %+v", got, want)
@@ -59,13 +59,19 @@ func TestPostDeployCandidatesEmpty(t *testing.T) {
 	}
 }
 
-// fakeRunner scripts RunNotebook/GetJobInstance per item ID.
+// fakeRunner scripts RunNotebook/RunPipeline/GetJobInstance per item ID.
 type fakeRunner struct {
-	submitErr  map[string]error  // itemID -> error from RunNotebook
+	submitErr  map[string]error  // itemID -> error from RunNotebook/RunPipeline
 	status     map[string]string // itemID -> terminal job status
 	failReason map[string]any    // itemID -> FailureReason on the terminal status
 	pollErr    map[string]error  // itemID -> error from GetJobInstance
 	submitted  []string          // itemIDs actually submitted, in order
+	pipelines  []string          // itemIDs submitted via RunPipeline specifically
+}
+
+func (f *fakeRunner) RunPipeline(token, workspaceID, itemID string) (string, error) {
+	f.pipelines = append(f.pipelines, itemID)
+	return f.RunNotebook(token, workspaceID, itemID, nil, nil)
 }
 
 func (f *fakeRunner) RunNotebook(token, workspaceID, itemID string, _ []fabric.JobInput, _ *fabric.DefaultLakehouse) (string, error) {
@@ -248,5 +254,32 @@ func TestRunPostDeployRunsHooks(t *testing.T) {
 	}
 	if len(out) != 3 || out[2].Status != postDeployStatusSkipped {
 		t.Fatalf("outcomes = %+v", out)
+	}
+}
+
+// Pipelines are post-deploy runnable alongside notebooks: candidates include
+// deployed DataPipeline results, and the runner submits them through the
+// pipeline job API, not the notebook one.
+func TestPostDeployPipelines(t *testing.T) {
+	results := []deploy.Result{
+		{Name: "nb_ingest", Type: "Notebook", Action: deploy.ActionUpdate, ID: "nb-1", WorkspaceID: "ws-1"},
+		{Name: "PL_refresh", Type: "DataPipeline", Action: deploy.ActionUpdate, ID: "pl-1", WorkspaceID: "ws-1"},
+		{Name: "WH_x", Type: "Warehouse", Action: deploy.ActionCreate, ID: "wh-1", WorkspaceID: "ws-1"},
+	}
+	runs := postDeployCandidates([]string{"PL_refresh", "nb_ingest", "WH_x"}, results, map[string]string{"ws-1": "WS"})
+	if len(runs) != 2 {
+		t.Fatalf("candidates = %+v, want pipeline+notebook (never the warehouse)", runs)
+	}
+	if runs[0].Name != "PL_refresh" || runs[0].Type != "DataPipeline" {
+		t.Errorf("registered order must win and carry the type: %+v", runs[0])
+	}
+
+	f := &fakeRunner{status: map[string]string{"pl-1": fabric.JobStatusCompleted, "nb-1": fabric.JobStatusCompleted}}
+	outcomes := runPostDeployRuns(f, "tok", runs, nil, nil)
+	if len(outcomes) != 2 || outcomes[0].Err != nil || outcomes[1].Err != nil {
+		t.Fatalf("outcomes: %+v", outcomes)
+	}
+	if len(f.pipelines) != 1 || f.pipelines[0] != "pl-1" {
+		t.Errorf("pipeline must be submitted via RunPipeline, got %v", f.pipelines)
 	}
 }

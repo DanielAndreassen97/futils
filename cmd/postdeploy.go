@@ -11,18 +11,23 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// postDeployRun identifies one notebook to run after a deploy: the deployed
-// item and the workspace it landed in.
+// postDeployRun identifies one notebook or data pipeline to run after a
+// deploy: the deployed item, its type, and the workspace it landed in.
 type postDeployRun struct {
 	Name          string
+	Type          string // "Notebook" or "DataPipeline" — picks the job API
 	ItemID        string
 	WorkspaceID   string
 	WorkspaceName string
 }
 
+// postDeployRunnableTypes are the item types the post-deploy runner can
+// submit as jobs — notebooks via RunNotebook, pipelines via RunPipeline.
+var postDeployRunnableTypes = map[string]bool{"Notebook": true, "DataPipeline": true}
+
 // postDeployCandidates intersects the customer's registered post-deploy
-// notebooks with what THIS deploy actually published: successful (Err == nil)
-// create/update results of type Notebook whose name is registered and whose
+// items with what THIS deploy actually published: successful (Err == nil)
+// create/update results of a runnable type whose name is registered and whose
 // deployed item ID is known. Order follows the registered list (config order
 // = run order); a name deployed to several workspaces yields one run per
 // workspace, in results order. Returns nil when there is nothing to offer.
@@ -32,7 +37,7 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 	}
 	byName := map[string][]deploy.Result{}
 	for _, r := range results {
-		if r.Err != nil || r.Action == deploy.ActionDelete || r.Type != "Notebook" || r.ID == "" {
+		if r.Err != nil || r.Action == deploy.ActionDelete || !postDeployRunnableTypes[r.Type] || r.ID == "" {
 			continue
 		}
 		byName[r.Name] = append(byName[r.Name], r)
@@ -41,13 +46,14 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 	seen := map[string]bool{}
 	for _, name := range registered {
 		for _, r := range byName[name] {
-			key := name + "\x00" + r.WorkspaceID
+			key := r.Type + "\x00" + name + "\x00" + r.WorkspaceID
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
 			runs = append(runs, postDeployRun{
 				Name:          name,
+				Type:          r.Type,
 				ItemID:        r.ID,
 				WorkspaceID:   r.WorkspaceID,
 				WorkspaceName: wsNames[r.WorkspaceID],
@@ -57,10 +63,11 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 	return runs
 }
 
-// notebookRunner is the narrow slice of APIClient the post-deploy runner
-// needs — kept small so tests can fake it without stubbing the full client.
-type notebookRunner interface {
+// jobRunner is the narrow slice of APIClient the post-deploy runner needs —
+// kept small so tests can fake it without stubbing the full client.
+type jobRunner interface {
 	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error)
+	RunPipeline(token, workspaceID, itemID string) (string, error)
 	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
 }
 
@@ -82,7 +89,7 @@ const postDeployStatusSkipped = "Skipped"
 // submitted only after the previous one reached a terminal state — and stops
 // at the first failure; the remainder are marked Skipped. started/finished
 // are optional UI hooks (nil = silent); the runner itself never prints.
-func runPostDeployRuns(client notebookRunner, token string, runs []postDeployRun, started func(i, n int, r postDeployRun), finished func(o postDeployOutcome)) []postDeployOutcome {
+func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, started func(i, n int, r postDeployRun), finished func(o postDeployOutcome)) []postDeployOutcome {
 	outcomes := make([]postDeployOutcome, 0, len(runs))
 	failed := false
 	for i, r := range runs {
@@ -99,7 +106,13 @@ func runPostDeployRuns(client notebookRunner, token string, runs []postDeployRun
 		}
 		begin := time.Now()
 		o := postDeployOutcome{Run: r}
-		instanceURL, err := client.RunNotebook(token, r.WorkspaceID, r.ItemID, nil, nil)
+		var instanceURL string
+		var err error
+		if r.Type == "DataPipeline" {
+			instanceURL, err = client.RunPipeline(token, r.WorkspaceID, r.ItemID)
+		} else {
+			instanceURL, err = client.RunNotebook(token, r.WorkspaceID, r.ItemID, nil, nil)
+		}
 		if err != nil {
 			o.Status, o.Err = fabric.JobStatusFailed, fmt.Errorf("submit job: %w", err)
 		} else {
@@ -151,6 +164,9 @@ func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
 	items := make([]ui.CheckItem, len(runs))
 	for i, r := range runs {
 		label := r.Name
+		if r.Type == "DataPipeline" {
+			label += "  [pipeline]"
+		}
 		if multiWS {
 			label += "  → " + r.WorkspaceName
 		}
@@ -208,7 +224,7 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 	for i, k := range checked {
 		picked[i] = runs[k]
 	}
-	if ok, cerr := ui.Confirm(fmt.Sprintf("Run %d notebook(s)?", len(picked))); cerr != nil || !ok {
+	if ok, cerr := ui.Confirm(fmt.Sprintf("Run %d job(s)?", len(picked))); cerr != nil || !ok {
 		return skip()
 	}
 

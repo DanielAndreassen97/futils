@@ -110,6 +110,7 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 			mk("LH_Silver", "Lakehouse"), sqlEndpoint("LH_Silver"),
 			mk("nb_ingest_sales", "Notebook"),
 			mk("nb_quality_checks", "Notebook"),
+			mk("PL_refresh_sales", "DataPipeline"),
 		}
 		// TEST lags the repo: transform doesn't exist there yet (deploys as
 		// New) and only TEST still has the legacy export (the Orphan).
@@ -344,6 +345,37 @@ func demoVariableLibrary(current bool) (variables, settings string, valueSets ma
 	return variables, settings, valueSets
 }
 
+// demoPipeline renders PL_refresh_sales' pipeline-content.json — a small
+// copy-then-notebook pipeline. current adds a timeout bump so TEST diffs.
+func demoPipeline(env string, current bool) string {
+	timeout := "0.02:00:00"
+	if current {
+		timeout = "0.04:00:00"
+	}
+	return `{
+  "properties": {
+    "activities": [
+      {
+        "name": "Copy landing extracts",
+        "type": "Copy",
+        "typeProperties": { "source": { "type": "BinarySource" }, "sink": { "type": "BinarySink" } },
+        "policy": { "timeout": "` + timeout + `", "retry": 1 }
+      },
+      {
+        "name": "Ingest sales",
+        "type": "TridentNotebook",
+        "dependsOn": [ { "activity": "Copy landing extracts", "dependencyConditions": [ "Succeeded" ] } ],
+        "typeProperties": {
+          "notebookId": "` + demoItemGUID("Notebook", "nb_ingest_sales", env) + `",
+          "workspaceId": "` + demoGUID("workspace", demoConfigWS(env)) + `"
+        }
+      }
+    ]
+  }
+}
+`
+}
+
 // demoSparkcompute renders ENV_Spark's Setting/Sparkcompute.yml. current bumps
 // the runtime and executor ceiling, so TEST shows a real Environment diff —
 // and the post-deploy staging→publish step has something to publish.
@@ -400,6 +432,9 @@ func demoRepoFiles() map[string]string {
 		"Backend/ENV_Spark.Environment/.platform":                demoPlatform("Environment", "ENV_Spark"),
 		"Backend/ENV_Spark.Environment/Setting/Sparkcompute.yml": demoSparkcompute(true),
 
+		"Backend/PL_refresh_sales.DataPipeline/.platform":             demoPlatform("DataPipeline", "PL_refresh_sales"),
+		"Backend/PL_refresh_sales.DataPipeline/pipeline-content.json": demoPipeline("DEV", true),
+
 		"Backend/nb_ingest_sales.Notebook/.platform":               demoPlatform("Notebook", "nb_ingest_sales"),
 		"Backend/nb_ingest_sales.Notebook/notebook-content.py":     demoNotebookIngest("DEV", true),
 		"Backend/nb_transform_orders.Notebook/.platform":           demoPlatform("Notebook", "nb_transform_orders"),
@@ -443,6 +478,10 @@ func demoDefinition(env string, item fabric.Item) *fabric.Definition {
 	case "Environment/ENV_Spark":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{
 			part("Setting/Sparkcompute.yml", demoSparkcompute(false)),
+		}}
+	case "DataPipeline/PL_refresh_sales":
+		return &fabric.Definition{Parts: []fabric.DefinitionPart{
+			part("pipeline-content.json", demoPipeline(env, false)),
 		}}
 	case "Notebook/nb_ingest_sales":
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{part("notebook-content.py", demoNotebookIngest(env, false))}}
@@ -573,6 +612,11 @@ func (c *demoClient) GetNotebookIpynb(token, workspaceID, itemID string) ([]byte
 }
 
 func (c *demoClient) RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error) {
+	time.Sleep(600 * time.Millisecond)
+	return "demo://jobs/" + itemID, nil
+}
+
+func (c *demoClient) RunPipeline(token, workspaceID, itemID string) (string, error) {
 	time.Sleep(600 * time.Millisecond)
 	return "demo://jobs/" + itemID, nil
 }
