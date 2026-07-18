@@ -19,10 +19,11 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
   - **Environments** — a deployed Environment only *stages* its sparkcompute settings and libraries; after the deploy, futils offers to run the environment publish (it can take minutes) and tracks it to completion. Declining leaves it staged for a manual publish.
   - **Shell types done right** — Warehouse/SQLDatabase and other definitionless items are created as shells with their `.platform` `creationPayload` (collation, schema support) intact, compared on description instead of producing unverifiable rows, and a freshly created Lakehouse is held until its SQL analytics endpoint finishes provisioning so later rebinds resolve.
   - **Notebook formats** — `.ipynb`-form notebooks publish with `format=ipynb`, and definition parts are ordered the way the notebook API requires (content before settings).
-  - **Post-deploy runs** — register notebooks to be offered for execution right after a successful deploy.
+  - **Post-deploy runs** — register notebooks and data pipelines to be offered for execution right after a successful deploy.
   - **Deploy history** — a timestamped HTML deploy report written to a repo folder after each real deploy.
 - **Schema compare** — compare lakehouse table schemas between two workspaces (lakehouses paired by name) and see added/removed/changed tables and columns before you promote.
 - **Run notebooks** — pick a customer, environment, and notebook, override Papermill parameters, and submit a `RunNotebook` job. Polls until completion and reports status.
+- **Run pipelines** — pick a data pipeline the same way and trigger a pipeline job, polled to completion.
 - **Refresh tables** — pick a semantic model, multi-select tables (with group toggles and type-to-filter search), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
 - **Move items** — copy a Report, Semantic Model, or Notebook from one workspace to another. For Reports, optionally rebind to a different semantic model in the destination.
 - **Favourites** — pin the notebooks and parameters you actually use, so the run flow surfaces them first instead of scrolling through 200+ items.
@@ -102,6 +103,7 @@ futils                 # explore everything, no tenant or login needed
 ```sh
 futils                # Interactive menu (Actions / Settings)
 futils run            # Run a notebook
+futils runpipeline    # Run a data pipeline
 futils refresh        # Refresh semantic-model tables
 futils move           # Copy an item between workspaces
 futils deploy         # Deploy a Fabric git repo to target workspaces

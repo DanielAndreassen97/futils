@@ -21,6 +21,7 @@ func MainMenu(configPath string) {
 		options := []ui.MenuOption{
 			{Label: "Actions", IsHeader: true},
 			{Label: "Run notebook", Value: "run"},
+			{Label: "Run pipeline", Value: "runpipeline"},
 			{Label: "Refresh tables", Value: "refresh"},
 			{Label: "Move item", Value: "move"},
 			{Label: "Deploy", Value: "deploy"},
@@ -51,6 +52,8 @@ func MainMenu(configPath string) {
 		switch choice {
 		case "run":
 			cmdErr = Run(configPath)
+		case "runpipeline":
+			cmdErr = RunPipelineCmd(configPath)
 		case "refresh":
 			cmdErr = Refresh(configPath)
 		case "move":

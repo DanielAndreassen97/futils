@@ -10,6 +10,7 @@ func Help() {
 
 Actions:
   run            Select a customer, environment, notebook, and parameters to run
+  runpipeline    Select a customer, environment, and data pipeline to run
   refresh        Refresh tables in a semantic model via the Enhanced Refresh API
   move           Copy a Report, Semantic Model, or Notebook between workspaces
   deploy         Deploy a Fabric git repo to target workspaces (compare first)

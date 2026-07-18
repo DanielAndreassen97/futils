@@ -56,6 +56,8 @@ func main() {
 	switch args[0] {
 	case "run":
 		err = cmd.Run(configPath)
+	case "runpipeline", "run-pipeline":
+		err = cmd.RunPipelineCmd(configPath)
 	case "refresh":
 		err = cmd.Refresh(configPath)
 	case "move":
