@@ -50,6 +50,38 @@ func realGitBatchRunner(repo string) gitBatchRunner {
 	}
 }
 
+// ListRemoteBranches returns origin's branch names (without any origin/
+// prefix), sorted. It asks the remote directly (git ls-remote) so branches
+// pushed from elsewhere — e.g. a Fabric workspace committing straight to
+// DevOps — show up without a local fetch; when the remote is unreachable it
+// falls back to the locally-known origin refs.
+func ListRemoteBranches(repoPath string) ([]string, error) {
+	git := realGitRunner(repoPath)
+	var branches []string
+	if out, err := git("ls-remote", "--heads", "origin"); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if _, ref, ok := strings.Cut(line, "\trefs/heads/"); ok {
+				branches = append(branches, strings.TrimSpace(ref))
+			}
+		}
+	}
+	if len(branches) == 0 {
+		out, err := git("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			name := strings.TrimPrefix(strings.TrimSpace(line), "origin/")
+			if name == "" || name == "HEAD" {
+				continue
+			}
+			branches = append(branches, name)
+		}
+	}
+	sort.Strings(branches)
+	return branches, nil
+}
+
 // Source reads Fabric items from a single git ref (always origin/<default>).
 type Source struct {
 	repo     string

@@ -1452,7 +1452,11 @@ func setRepoPath(configPath, customerName string) error {
 }
 
 // setDeployBranch pins (or clears) which origin branch this customer's deploys
-// read from. Empty input restores auto-detection of the remote's default.
+// read from. When the repo is known, the user picks from origin's actual
+// branches (listed live, so a branch just committed from a Fabric workspace is
+// there without a local fetch); free text is the fallback when there is no
+// repo yet or the branch listing fails. Empty/AUTO restores auto-detection of
+// the remote's default.
 func setDeployBranch(configPath, customerName string) error {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -1462,17 +1466,23 @@ func setDeployBranch(configPath, customerName string) error {
 	if !ok {
 		return fmt.Errorf("customer %q disappeared from config", customerName)
 	}
-	branch := customer.DeployBranch
-	if err := runFormStep(huh.NewInput().
-		Title("Deploy branch (empty = auto-detect the remote's default)").
-		Value(&branch)); err != nil {
+	branch, picked, err := pickDeployBranch(customer)
+	if err != nil {
 		return err
 	}
-	// Users naturally type "origin/dev" — the ref prefix is implied, strip it.
-	branch = strings.TrimPrefix(strings.TrimSpace(branch), "origin/")
-	if strings.ContainsAny(branch, " \t") {
-		fmt.Println(warningStyle.Render("Branch names can't contain whitespace — nothing saved."))
-		return nil
+	if !picked {
+		branch = customer.DeployBranch
+		if err := runFormStep(huh.NewInput().
+			Title("Deploy branch (empty = auto-detect the remote's default)").
+			Value(&branch)); err != nil {
+			return err
+		}
+		// Users naturally type "origin/dev" — the ref prefix is implied, strip it.
+		branch = strings.TrimPrefix(strings.TrimSpace(branch), "origin/")
+		if strings.ContainsAny(branch, " \t") {
+			fmt.Println(warningStyle.Render("Branch names can't contain whitespace — nothing saved."))
+			return nil
+		}
 	}
 	customer.DeployBranch = branch
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
@@ -1484,6 +1494,46 @@ func setDeployBranch(configPath, customerName string) error {
 		fmt.Println(infoStyle.Render("Deploys now read from origin/" + customer.DeployBranch + "."))
 	}
 	return nil
+}
+
+// pickDeployBranch offers origin's live branch list as a filter menu, plus an
+// AUTO entry that clears the pin. picked=false (with no error) means the list
+// couldn't be built — no repo configured yet, or git/origin unavailable — and
+// the caller should fall back to free-text input. An error is the user backing
+// out of the menu (ui.ErrGoBack) and must propagate, not fall through.
+func pickDeployBranch(customer config.Customer) (branch string, picked bool, err error) {
+	if customer.RepoPath == "" {
+		return "", false, nil
+	}
+	sp := ui.NewSpinner("Listing branches on origin…")
+	sp.Start()
+	branches, lerr := deploy.ListRemoteBranches(customer.RepoPath)
+	sp.Stop()
+	if lerr != nil || len(branches) == 0 {
+		return "", false, nil
+	}
+	// \x00 can't collide with a real branch name (git forbids NUL in refs).
+	const autoValue = "\x00auto"
+	autoLabel := "AUTO — detect the remote's default branch"
+	if customer.DeployBranch == "" {
+		autoLabel += "  (current)"
+	}
+	opts := []ui.FilterOption{{Label: autoLabel, Value: autoValue}}
+	for _, b := range branches {
+		label := b
+		if b == customer.DeployBranch {
+			label += "  (current pin)"
+		}
+		opts = append(opts, ui.FilterOption{Label: label, Value: b})
+	}
+	choice, err := ui.FilterMenu("Deploy branch", opts, ui.DefaultFilterRowRenderer)
+	if err != nil {
+		return "", false, err
+	}
+	if choice == autoValue {
+		return "", true, nil
+	}
+	return choice, true, nil
 }
 
 // setDeployHistoryPath sets the repo-relative folder where deploy reports are
