@@ -1118,32 +1118,11 @@ func buildRunBody(inputs []JobInput, lakehouse *DefaultLakehouse) ([]byte, error
 // override the session's default lakehouse for this run — used to repair
 // notebooks whose binding pins a lakehouse but lost its workspace id.
 func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse *DefaultLakehouse) (string, error) {
-	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
-		return "", err
-	}
-	if err := validateUUID(itemID, "item ID"); err != nil {
-		return "", err
-	}
-
 	payload, err := buildRunBody(inputs, lakehouse)
 	if err != nil {
 		return "", fmt.Errorf("marshal run body: %w", err)
 	}
-
-	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s/jobs/instances?jobType=RunNotebook",
-		baseURL, workspaceID, itemID)
-	resp, respBody, err := doPost(token, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != 202 {
-		return "", fmt.Errorf("RunNotebook %d: %s", resp.StatusCode, string(respBody))
-	}
-	loc := resp.Header.Get("Location")
-	if loc == "" {
-		return "", fmt.Errorf("RunNotebook 202 missing Location header")
-	}
-	return loc, nil
+	return submitJobInstance(token, workspaceID, itemID, "RunNotebook", bytes.NewReader(payload))
 }
 
 // RunPipeline submits a data-pipeline job (jobType=Pipeline) and returns the
@@ -1151,24 +1130,31 @@ func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse
 // exactly like a notebook run. Pipelines take no run payload here; parameter
 // support can ride on executionData later if a flow needs it.
 func RunPipeline(token, workspaceID, itemID string) (string, error) {
+	return submitJobInstance(token, workspaceID, itemID, "Pipeline", strings.NewReader("{}"))
+}
+
+// submitJobInstance posts a job-instance run for an item and returns the
+// job-instance URL from the 202's Location header — the shared submission
+// step under every jobType (RunNotebook, Pipeline).
+func submitJobInstance(token, workspaceID, itemID, jobType string, body io.Reader) (string, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return "", err
 	}
 	if err := validateUUID(itemID, "item ID"); err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s/jobs/instances?jobType=Pipeline",
-		baseURL, workspaceID, itemID)
-	resp, respBody, err := doPost(token, url, strings.NewReader("{}"))
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s/jobs/instances?jobType=%s",
+		baseURL, workspaceID, itemID, jobType)
+	resp, respBody, err := doPost(token, url, body)
 	if err != nil {
 		return "", err
 	}
 	if resp.StatusCode != 202 {
-		return "", fmt.Errorf("RunPipeline %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("run %s %d: %s", jobType, resp.StatusCode, string(respBody))
 	}
 	loc := resp.Header.Get("Location")
 	if loc == "" {
-		return "", fmt.Errorf("RunPipeline 202 missing Location header")
+		return "", fmt.Errorf("run %s: 202 missing Location header", jobType)
 	}
 	return loc, nil
 }

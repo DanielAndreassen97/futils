@@ -131,31 +131,54 @@ type TaggedNotebook struct {
 	Workspace WorkspaceRef
 }
 
-// aggregateNotebooks fans ListNotebooks across every workspace ref,
-// tagging each notebook with its origin. Errors from individual
-// workspaces are wrapped with the workspace name so the user knows
-// which one failed.
-func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]TaggedNotebook, error) {
-	spinner := ui.NewSpinner("Listing notebooks...")
+// TaggedItem is a workspace-tagged item from a cross-workspace listing.
+type TaggedItem struct {
+	Item      fabric.Item
+	Workspace WorkspaceRef
+}
+
+// aggregateItems fans a listing call across every workspace ref under one
+// spinner, tagging each result with its origin. Errors from individual
+// workspaces are wrapped with the workspace name so the user knows which one
+// failed; an empty union returns (nil, nil) — callers own the no-results
+// message (error for notebooks, friendly info for pipelines).
+func aggregateItems(refs []WorkspaceRef, kindPlural string, list func(wsID string) ([]fabric.Item, error)) ([]TaggedItem, error) {
+	spinner := ui.NewSpinner("Listing " + kindPlural + "...")
 	spinner.Start()
 	defer spinner.Stop()
 
-	var all []TaggedNotebook
+	var all []TaggedItem
 	for _, ref := range refs {
-		nbs, err := client.ListNotebooks(token, ref.ID)
+		items, err := list(ref.ID)
 		if err != nil {
-			return nil, fmt.Errorf("list notebooks in %s: %w", ref.Name, err)
+			return nil, fmt.Errorf("list %s in %s: %w", kindPlural, ref.Name, err)
 		}
-		for _, nb := range nbs {
-			all = append(all, TaggedNotebook{Notebook: nb, Workspace: ref})
+		for _, it := range items {
+			all = append(all, TaggedItem{Item: it, Workspace: ref})
 		}
 	}
-	if len(all) == 0 {
+	return all, nil
+}
+
+// aggregateNotebooks is aggregateItems for the notebook flows, keeping their
+// TaggedNotebook shape and no-notebooks error.
+func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]TaggedNotebook, error) {
+	tagged, err := aggregateItems(refs, "notebooks", func(wsID string) ([]fabric.Item, error) {
+		return client.ListNotebooks(token, wsID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(tagged) == 0 {
 		names := make([]string, len(refs))
 		for i, r := range refs {
 			names[i] = r.Name
 		}
 		return nil, fmt.Errorf("no notebooks found in workspaces: %s", strings.Join(names, ", "))
+	}
+	all := make([]TaggedNotebook, len(tagged))
+	for i, t := range tagged {
+		all[i] = TaggedNotebook{Notebook: t.Item, Workspace: t.Workspace}
 	}
 	return all, nil
 }

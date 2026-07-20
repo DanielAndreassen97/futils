@@ -155,45 +155,11 @@ func (m filterMenuModel) View() string {
 		return b.String()
 	}
 
-	// Viewport: leave ~6 lines for title, input, hint, blanks; clip
-	// the visible window around the cursor for long lists.
-	headerRows := 5
-	maxVisible := m.termH - headerRows - 1
-	if maxVisible <= 0 || maxVisible >= len(m.filtered) {
-		for i, idx := range m.filtered {
-			fmt.Fprintf(&b, "  %s\n", m.render(m.options[idx], i == m.cursor))
-		}
-		return b.String()
-	}
-
-	itemSlots := maxVisible - 2
-	if itemSlots < 1 {
-		itemSlots = 1
-	}
-	start := m.cursor - itemSlots/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + itemSlots
-	if end > len(m.filtered) {
-		end = len(m.filtered)
-		start = end - itemSlots
-		if start < 0 {
-			start = 0
-		}
-	}
-	if start > 0 {
-		fmt.Fprintf(&b, "  %s\n",
-			filterMenuHintStyle.Render(fmt.Sprintf("↑ %d more above", start)))
-	}
-	for i := start; i < end; i++ {
-		idx := m.filtered[i]
-		fmt.Fprintf(&b, "  %s\n", m.render(m.options[idx], i == m.cursor))
-	}
-	if end < len(m.filtered) {
-		fmt.Fprintf(&b, "  %s\n",
-			filterMenuHintStyle.Render(fmt.Sprintf("↓ %d more below", len(m.filtered)-end)))
-	}
+	// Viewport: 5 header rows (title, input, hint, blanks); clip the
+	// visible window around the cursor for long lists.
+	windowedList(&b, len(m.filtered), m.cursor, m.termH, 5, filterMenuHintStyle, func(pos int) string {
+		return "  " + m.render(m.options[m.filtered[pos]], pos == m.cursor)
+	})
 	return b.String()
 }
 

@@ -1,7 +1,6 @@
 package deploy
 
 import (
-	"encoding/json"
 	"path"
 	"sort"
 	"strings"
@@ -175,26 +174,23 @@ func sortLakehouseShortcutDeps(plan []PlannedItem, baselineName func(guid string
 
 // shortcutTargetGUIDs returns the non-self OneLake target itemIds in a
 // lakehouse's shortcuts.metadata.json part; nil when the item has no such part
-// or it isn't the array shape RebindShortcuts rewrites.
+// or it isn't the array shape RebindShortcuts rewrites (same decode —
+// decodeShortcuts is the schema's single home).
 func shortcutTargetGUIDs(item LocalItem) []string {
 	for _, part := range item.Parts {
 		if path.Base(part.Path) != "shortcuts.metadata.json" {
 			continue
 		}
-		var shortcuts []struct {
-			Target struct {
-				OneLake *struct {
-					ItemID string `json:"itemId"`
-				} `json:"oneLake"`
-			} `json:"target"`
-		}
-		if json.Unmarshal(part.Content, &shortcuts) != nil {
+		shortcuts, ok := decodeShortcuts(part.Content)
+		if !ok {
 			return nil
 		}
 		var ids []string
 		for _, sc := range shortcuts {
-			if ol := sc.Target.OneLake; ol != nil && !isZeroOrEmptyGUID(ol.ItemID) {
-				ids = append(ids, ol.ItemID)
+			if ol := oneLakeTarget(sc); ol != nil {
+				if id, _ := ol["itemId"].(string); !isZeroOrEmptyGUID(id) {
+					ids = append(ids, id)
+				}
 			}
 		}
 		return ids

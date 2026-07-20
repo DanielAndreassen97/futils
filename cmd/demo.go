@@ -29,6 +29,11 @@ import (
 // main when FUTILS_DEMO is set, before any command runs.
 func EnableDemoMode() {
 	DefaultAPI = newDemoClient()
+	// The env-publish wait always sleeps a full interval before the first
+	// poll (a live tenant's publishDetails.state can be stale right after
+	// submit). The demo tenant has no such race, and a 10s stall would
+	// dominate every recorded deploy — pace the poll to the fake instead.
+	envPublishPollInterval = 500 * time.Millisecond
 }
 
 // ── identity ───────────────────────────────────────────────────────────────

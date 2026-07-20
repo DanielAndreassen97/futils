@@ -17,8 +17,10 @@ Set Padding 20
 Set Theme "Catppuccin Mocha"
 
 # --- hidden sandbox setup (not recorded) ---------------------------------
+# `futils demoseed` owns the sandbox content (config, Fabrikam repo, origin) —
+# hand-rolling the JSON here drifted from what demoseed generates.
 Hide
-Type `mkdir -p /tmp/futils-demo/fabrikam-repo && printf '%s' '{"customers":{"Fabrikam":{"environments":[{"alias":"DEV","workspaces":["DW - DEV - Config","DW - DEV - SemMod"]},{"alias":"TEST","workspaces":["DW - TEST - Config","DW - TEST - SemMod"],"deployments":[{"folder":"Backend","workspace":"DW - TEST - Config"},{"folder":"Frontend","workspace":"DW - TEST - SemMod"}]},{"alias":"PROD","workspaces":["DW - PROD - Config","DW - PROD - SemMod"],"deployments":[{"folder":"Backend","workspace":"DW - PROD - Config"},{"folder":"Frontend","workspace":"DW - PROD - SemMod"}]}],"repo_path":"/tmp/futils-demo/fabrikam-repo","baseline_environment":"DEV","deploy_history_path":"deploy-history","post_deploy_runs":["nb_ingest_sales"]}}}' > /tmp/futils-demo/config.json && export FUTILS_CONFIG=/tmp/futils-demo/config.json && clear`
+Type `futils demoseed >/dev/null && export FUTILS_CONFIG=/tmp/futils-demo/config.json && clear`
 Enter
 Sleep 1s
 Show

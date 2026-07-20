@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -877,24 +878,27 @@ func deleteCount(m map[int][]deploy.DeleteTarget) int {
 func printSelectedItems(groups []deployGroup, selected map[int][]deploy.LocalItem) {
 	const maxLines = 20
 	shown := 0
-	remaining := 0
 	for gi, g := range groups {
 		items := selected[gi]
 		if len(items) == 0 {
 			continue
 		}
+		// Once the cap is reached, skip the group's heading too — a heading
+		// with no rows under it would read as an empty workspace — and fold
+		// the group into a per-group overflow line instead.
+		if shown >= maxLines {
+			fmt.Printf("    … and %d more in %s\n", len(items), g.Target.DisplayName)
+			continue
+		}
 		fmt.Println(infoStyle.Render(fmt.Sprintf("→ %s:", g.Target.DisplayName)))
-		for _, it := range items {
+		for i, it := range items {
 			if shown >= maxLines {
-				remaining++
-				continue
+				fmt.Printf("    … and %d more\n", len(items)-i)
+				break
 			}
 			fmt.Printf("    %-18s %s\n", it.Type, it.DisplayName)
 			shown++
 		}
-	}
-	if remaining > 0 {
-		fmt.Printf("    … and %d more\n", remaining)
 	}
 }
 
@@ -2059,14 +2063,7 @@ func activateVariableLibraries(client APIClient, token, alias string, groups []d
 		if !ok {
 			continue
 		}
-		match := false
-		for _, name := range order {
-			if name == alias {
-				match = true
-				break
-			}
-		}
-		if !match {
+		if !slices.Contains(order, alias) {
 			fmt.Println(infoStyle.Render(fmt.Sprintf(
 				"%s: no value set named %q — the target's active value set is unchanged. Name a value set after the environment to have deploys activate it.", res.Name, alias)))
 			continue

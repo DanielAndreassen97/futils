@@ -444,39 +444,9 @@ func (m refreshTableModel) View() string {
 	}
 
 	// Header rows above the list: message, input, hint, blank.
-	maxVisible := m.termHeight - 5
-	if maxVisible <= 0 || maxVisible >= len(m.filtered) {
-		for i, idx := range m.filtered {
-			fmt.Fprintf(&b, "%s\n", m.renderItem(idx, i == m.cursor))
-		}
-		return b.String()
-	}
-
-	itemSlots := maxVisible - 2
-	if itemSlots < 1 {
-		itemSlots = 1
-	}
-	start := m.cursor - itemSlots/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + itemSlots
-	if end > len(m.filtered) {
-		end = len(m.filtered)
-		start = end - itemSlots
-		if start < 0 {
-			start = 0
-		}
-	}
-	if start > 0 {
-		fmt.Fprintf(&b, "  %s\n", dimStyle.Render(fmt.Sprintf("↑ %d more above", start)))
-	}
-	for i := start; i < end; i++ {
-		fmt.Fprintf(&b, "%s\n", m.renderItem(m.filtered[i], i == m.cursor))
-	}
-	if end < len(m.filtered) {
-		fmt.Fprintf(&b, "  %s\n", dimStyle.Render(fmt.Sprintf("↓ %d more below", len(m.filtered)-end)))
-	}
+	windowedList(&b, len(m.filtered), m.cursor, m.termHeight, 4, dimStyle, func(pos int) string {
+		return m.renderItem(m.filtered[pos], pos == m.cursor)
+	})
 	return b.String()
 }
 

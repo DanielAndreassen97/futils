@@ -312,50 +312,8 @@ func (m checkboxModel) View() string {
 	fmt.Fprintf(&b, "  %s\n", m.title)
 	fmt.Fprintf(&b, "  %s\n\n", checkboxHintStyle.Render(hint))
 
-	// Header rows above: 3 lines (title, hint, blank). Reserve one for
-	// the footer hint line in huh-style if we want, but we don't need
-	// one — the top hint is enough.
-	headerRows := 3
-	maxVisible := m.termHeight - headerRows - 1
-	if maxVisible <= 0 || maxVisible >= len(m.items) {
-		for i := range m.items {
-			fmt.Fprintf(&b, "%s\n", m.renderItem(i))
-		}
-		return b.String()
-	}
-
-	// Reserve 2 lines for the "↑ N more above" / "↓ N more below" hints
-	// so they never get clipped at the viewport edge.
-	itemSlots := maxVisible - 2
-	if itemSlots < 1 {
-		itemSlots = 1
-	}
-
-	start := m.cursor - itemSlots/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + itemSlots
-	if end > len(m.items) {
-		end = len(m.items)
-		start = end - itemSlots
-		if start < 0 {
-			start = 0
-		}
-	}
-
-	if start > 0 {
-		fmt.Fprintf(&b, "  %s\n",
-			checkboxHintStyle.Render(fmt.Sprintf("↑ %d more above", start)))
-	}
-	for i := start; i < end; i++ {
-		fmt.Fprintf(&b, "%s\n", m.renderItem(i))
-	}
-	if end < len(m.items) {
-		fmt.Fprintf(&b, "  %s\n",
-			checkboxHintStyle.Render(fmt.Sprintf("↓ %d more below", len(m.items)-end)))
-	}
-
+	// Header rows above: 3 lines (title, hint, blank).
+	windowedList(&b, len(m.items), m.cursor, m.termHeight, 3, checkboxHintStyle, m.renderItem)
 	return b.String()
 }
 
@@ -382,40 +340,10 @@ func (m checkboxModel) viewFiltered() string {
 		return b.String()
 	}
 
-	headerRows := 4
-	maxVisible := m.termHeight - headerRows - 1
-	if maxVisible <= 0 || maxVisible >= len(visible) {
-		for pos, i := range visible {
-			fmt.Fprintf(&b, "%s\n", m.renderRow(i, pos == m.cursor))
-		}
-		return b.String()
-	}
-
-	itemSlots := maxVisible - 2
-	if itemSlots < 1 {
-		itemSlots = 1
-	}
-	start := m.cursor - itemSlots/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + itemSlots
-	if end > len(visible) {
-		end = len(visible)
-		start = end - itemSlots
-		if start < 0 {
-			start = 0
-		}
-	}
-	if start > 0 {
-		fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(fmt.Sprintf("↑ %d more above", start)))
-	}
-	for pos := start; pos < end; pos++ {
-		fmt.Fprintf(&b, "%s\n", m.renderRow(visible[pos], pos == m.cursor))
-	}
-	if end < len(visible) {
-		fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(fmt.Sprintf("↓ %d more below", len(visible)-end)))
-	}
+	// Header rows above: 4 lines (title, hint, query, blank).
+	windowedList(&b, len(visible), m.cursor, m.termHeight, 4, checkboxHintStyle, func(pos int) string {
+		return m.renderRow(visible[pos], pos == m.cursor)
+	})
 	return b.String()
 }
 

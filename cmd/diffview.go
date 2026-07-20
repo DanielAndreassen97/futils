@@ -616,14 +616,31 @@ func renderDeployDiffHTML(groups []deployGroup) string {
 	return renderDeployReport(groups, nil, nil, time.Now(), nil)
 }
 
+// summaryCard is one colored count card in a report's summary row; cls picks
+// the accent color class. renderCardRow is the single home for the markup —
+// the deploy and schema-compare reports share it.
+type summaryCard struct {
+	n          int
+	label, cls string
+}
+
+// renderCardRow renders a row of summary cards.
+func renderCardRow(cards []summaryCard) string {
+	var b strings.Builder
+	b.WriteString(`<div class="cards">`)
+	for _, cd := range cards {
+		fmt.Fprintf(&b, `<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`,
+			cd.cls, cd.n, cd.label)
+	}
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
 // renderSummaryCards builds the colored summary-card row. With results it shows
 // the deploy OUTCOME (Created/Updated/Deleted/Failed/Warnings); without (the
 // compare preview) it shows the CLASSIFICATION (New/Changed/Orphan/Unchanged/Exists).
 func renderSummaryCards(groups []deployGroup, results []deploy.Result) string {
-	type card struct {
-		n          int
-		label, cls string
-	}
+	type card = summaryCard
 	var cards []card
 	if results != nil {
 		var created, updated, deleted, failed, warned int
@@ -664,14 +681,7 @@ func renderSummaryCards(groups []deployGroup, results []deploy.Result) string {
 			cards = append(cards, card{c[deploy.ClassExists], "Exists", "exists"})
 		}
 	}
-	var b strings.Builder
-	b.WriteString(`<div class="cards">`)
-	for _, cd := range cards {
-		b.WriteString(fmt.Sprintf(`<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`,
-			cd.cls, cd.n, cd.label))
-	}
-	b.WriteString(`</div>`)
-	return b.String()
+	return renderCardRow(cards)
 }
 
 // openInBrowser opens a local file in the OS default browser.

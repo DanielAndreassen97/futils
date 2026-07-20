@@ -166,6 +166,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 // drill-down options, plus Add-environment and Back. Each env entry's
 // label includes its workspace count so the user gets a quick sense of
 // where multi-workspace setup is missing.
+// autoBranchBadge memoizes the resolved "AUTO → <branch>" badge per repo path
+// for the session — see the resolve site in editCustomerMenu.
+var autoBranchBadge = map[string]string{}
+
 func editCustomerMenu(customerName string, customer config.Customer) (string, error) {
 	// The menu below now conveys the env list (as "Edit <alias> (N workspace)"
 	// rows under the Environments header) and baseline status (via the badge),
@@ -187,13 +191,20 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	}
 	// AUTO alone answers "what happens", not "which branch" — when a repo is
 	// configured, resolve the default so the badge shows what a deploy would
-	// actually read (a few local git calls, no network).
+	// actually read. Memoized per repo path: the menu re-renders after every
+	// submenu round-trip, and each resolve is a handful of git subprocesses
+	// for an answer that doesn't change within a session.
 	branchBadge := "AUTO"
 	if customer.DeployBranch != "" {
 		branchBadge = customer.DeployBranch
 	} else if customer.RepoPath != "" {
-		if src, err := deploy.NewSource(customer.RepoPath); err == nil {
+		if b, ok := autoBranchBadge[customer.RepoPath]; ok {
+			branchBadge = b
+		} else if src, err := deploy.NewSource(customer.RepoPath); err == nil {
 			branchBadge = "AUTO → " + strings.TrimPrefix(src.Ref(), "origin/")
+			autoBranchBadge[customer.RepoPath] = branchBadge
+		} else {
+			autoBranchBadge[customer.RepoPath] = branchBadge // negative-cache the failure too
 		}
 	}
 	schedulesBadge := "DEPLOYED"
@@ -1360,15 +1371,10 @@ func editPostDeployRuns(configPath, customerName string) error {
 		fmt.Println(infoStyle.Render("Set a repo path first (this customer has none) — can't list notebooks."))
 		return ui.ErrGoBack
 	}
-	names, err := deploy.RepoItemNamesMulti(repos, "Notebook")
+	names, err := deploy.RepoItemNamesMulti(repos, "Notebook", "DataPipeline")
 	if err != nil {
-		return fmt.Errorf("scan repo for notebooks: %w", err)
+		return fmt.Errorf("scan repo for notebooks/pipelines: %w", err)
 	}
-	pipelines, err := deploy.RepoItemNamesMulti(repos, "DataPipeline")
-	if err != nil {
-		return fmt.Errorf("scan repo for pipelines: %w", err)
-	}
-	names = append(names, pipelines...)
 	// Union of repo notebooks/pipelines and already-registered names, so a
 	// registered name missing from the current scan isn't silently dropped on save.
 	options := mergeSorted(names, customer.PostDeployRuns)

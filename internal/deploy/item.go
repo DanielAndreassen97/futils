@@ -130,12 +130,17 @@ func RepoItemTypesMulti(repoPaths []string) ([]string, error) {
 	return sortedKeys(seen), nil
 }
 
-// RepoItemNamesMulti unions RepoItemNames of one type across several repos.
-func RepoItemNamesMulti(repoPaths []string, itemType string) ([]string, error) {
+// RepoItemNamesMulti unions RepoItemNames of the given types across several
+// repos — one walk per repo regardless of how many types are asked for.
+func RepoItemNamesMulti(repoPaths []string, itemTypes ...string) ([]string, error) {
+	wanted := map[string]bool{}
+	for _, t := range itemTypes {
+		wanted[t] = true
+	}
 	seen := map[string]bool{}
 	for _, p := range repoPaths {
 		if err := walkPlatforms(p, func(m platformMeta) {
-			if m.Type == itemType && m.DisplayName != "" {
+			if wanted[m.Type] && m.DisplayName != "" {
 				seen[m.DisplayName] = true
 			}
 		}); err != nil {

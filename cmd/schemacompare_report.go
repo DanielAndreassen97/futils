@@ -75,19 +75,12 @@ func renderSchemaCompareReport(srcLabel, tgtLabel string, diffs []schemacompare.
 			}
 		}
 	}
-	b.WriteString(`<div class="cards">`)
-	for _, c := range []struct {
-		n          int
-		label, cls string
-	}{
+	b.WriteString(renderCardRow([]summaryCard{
 		{newT, "New tables", "new"},
 		{chgT, "Changed tables", "changed"},
 		{remT, "Removed tables", "deleted"},
 		{identical, "Identical lakehouses", "exists"},
-	} {
-		fmt.Fprintf(&b, `<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`, c.cls, c.n, c.label)
-	}
-	b.WriteString(`</div>`)
+	}))
 
 	for _, lh := range diffs {
 		scope := html.EscapeString(strings.Join(lh.Schemas, ", "))

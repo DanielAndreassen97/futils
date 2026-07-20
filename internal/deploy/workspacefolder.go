@@ -102,7 +102,15 @@ func folderFullPaths(folders []fabric.Folder) map[string]string {
 		segs := []string{f.DisplayName}
 		cur := f
 		ok := true
+		visited := map[string]bool{f.ID: true}
 		for cur.ParentFolderID != "" {
+			// A parentFolderId cycle in the listing (shouldn't happen, but the
+			// data is remote) would otherwise walk forever.
+			if visited[cur.ParentFolderID] {
+				ok = false
+				break
+			}
+			visited[cur.ParentFolderID] = true
 			parent, found := byID[cur.ParentFolderID]
 			if !found {
 				ok = false

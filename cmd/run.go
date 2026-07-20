@@ -281,7 +281,19 @@ func RunWithAPI(configPath string, client APIClient) error {
 	}
 	fmt.Println()
 
-	confirmed, err := ui.Confirm("Start notebook run?")
+	return runJobAndReport(client, token, "Notebook", func() (string, error) {
+		return client.RunNotebook(token, workspaceID, notebook.ID, overrides, lakehouse)
+	})
+}
+
+// runJobAndReport owns the shared tail of every interactive job flow —
+// confirm, a single spinner covering submit and all polling (the user only
+// sees a result box once the job reaches a terminal state), then the
+// success/failure box. kind names the job in user-facing strings
+// ("Notebook"/"Pipeline"); submit performs the actual submission and returns
+// the job-instance URL to poll.
+func runJobAndReport(client jobPoller, token, kind string, submit func() (string, error)) error {
+	confirmed, err := ui.Confirm(fmt.Sprintf("Start %s run?", strings.ToLower(kind)))
 	if err != nil {
 		return err
 	}
@@ -291,32 +303,20 @@ func RunWithAPI(configPath string, client APIClient) error {
 	}
 
 	startTime := time.Now()
-
-	// Single spinner covers both the initial submit and all polling.
-	// Polling happens silently; the user only sees a result box once
-	// the job reaches a terminal state.
-	spinner := ui.NewSpinner("Notebook is running...")
+	spinner := ui.NewSpinner(kind + " is running...")
 	spinner.Start()
 
 	var runErr error
 	var status fabric.JobInstanceStatus
-
 	func() {
 		defer spinner.Stop()
-
-		instanceURL, err := client.RunNotebook(token, workspaceID, notebook.ID, overrides, lakehouse)
+		instanceURL, err := submit()
 		if err != nil {
 			runErr = fmt.Errorf("submit job: %w", err)
 			return
 		}
-
-		status, err = pollJob(client, token, instanceURL)
-		if err != nil {
-			runErr = err
-			return
-		}
+		status, runErr = pollJob(client, token, instanceURL)
 	}()
-
 	if runErr != nil {
 		return runErr
 	}
@@ -325,9 +325,9 @@ func RunWithAPI(configPath string, client APIClient) error {
 	fmt.Println()
 	switch status.Status {
 	case fabric.JobStatusCompleted:
-		fmt.Println(successStyle.Render(fmt.Sprintf("Notebook completed successfully! (%s)", duration)))
+		fmt.Println(successStyle.Render(fmt.Sprintf("%s completed successfully! (%s)", kind, duration)))
 	default:
-		msg := fmt.Sprintf("Notebook %s (%s)", status.Status, duration)
+		msg := fmt.Sprintf("%s %s (%s)", kind, status.Status, duration)
 		if status.FailureReason != nil {
 			msg += fmt.Sprintf("\n  %v", status.FailureReason)
 		}

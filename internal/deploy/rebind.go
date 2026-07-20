@@ -319,18 +319,15 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 // diff view normalizes JSON before comparing, so the formatting round-trip
 // never reads as a change.
 func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
-	dec := json.NewDecoder(bytes.NewReader(content))
-	dec.UseNumber() // keep numeric fidelity through the re-marshal
-	var shortcuts []map[string]any
-	if err := dec.Decode(&shortcuts); err != nil {
+	shortcuts, ok := decodeShortcuts(content)
+	if !ok {
 		return content, RebindOutcome{} // not the array shape we rewrite — leave it
 	}
 	var out RebindOutcome
 	seen := map[string]bool{}
 	changed := false
 	for _, sc := range shortcuts {
-		target, _ := sc["target"].(map[string]any)
-		ol, _ := target["oneLake"].(map[string]any)
+		ol := oneLakeTarget(sc)
 		if ol == nil {
 			continue // external target (ADLS/S3/...) — never touched
 		}
@@ -374,6 +371,30 @@ func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
 // or the all-zeros GUID Fabric maps to the current lakehouse/workspace.
 func isZeroOrEmptyGUID(guid string) bool {
 	return guid == "" || guid == "00000000-0000-0000-0000-000000000000"
+}
+
+// decodeShortcuts parses a shortcuts.metadata.json into the generic array
+// shape the shortcut passes work on — generic (not a typed struct) so
+// RebindShortcuts can edit fields in place and re-marshal without dropping
+// anything it didn't model. ok=false when the content isn't that shape.
+// Single home for the file's schema: the dependency sort (shortcutTargetGUIDs)
+// builds on the same decode.
+func decodeShortcuts(content []byte) ([]map[string]any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber() // keep numeric fidelity through a re-marshal
+	var shortcuts []map[string]any
+	if err := dec.Decode(&shortcuts); err != nil {
+		return nil, false
+	}
+	return shortcuts, true
+}
+
+// oneLakeTarget returns a shortcut's mutable OneLake target object, or nil for
+// external targets (ADLS/S3/...).
+func oneLakeTarget(sc map[string]any) map[string]any {
+	target, _ := sc["target"].(map[string]any)
+	ol, _ := target["oneLake"].(map[string]any)
+	return ol
 }
 
 // RebindNotebookLakehouses rewrites the lakehouse dependency GUIDs in a Fabric
