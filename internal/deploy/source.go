@@ -76,6 +76,10 @@ var shellOnlyPublish = map[string]bool{
 	"MLExperiment": true,
 }
 
+// IsShellOnly reports whether an item type publishes as a shell — no
+// definition through the item APIs; see shellOnlyPublish.
+func IsShellOnly(itemType string) bool { return shellOnlyPublish[itemType] }
+
 // ListRemoteBranches returns origin's branch names (without any origin/
 // prefix), sorted. It asks the remote directly (git ls-remote) so branches
 // pushed from elsewhere — e.g. a Fabric workspace committing straight to
@@ -301,9 +305,6 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			CreationPayload: meta.CreationPayload,
 		}
 		for _, p := range filesByFolder[folder] {
-			if shellOnlyPublish[meta.Type] {
-				break // shell-only types publish no definition; see shellOnlyPublish
-			}
 			rel := strings.TrimPrefix(p, folder+"/")
 			// .platform is consumed separately (metadata + bulk payload).
 			// notebook-settings.json / fs-settings.json are written into git by
@@ -314,6 +315,12 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			// unsupported file into every publish payload (fabric-cicd#883
 			// hard-failed on exactly this).
 			if rel == ".platform" || rel == "notebook-settings.json" || rel == "fs-settings.json" {
+				continue
+			}
+			if shellOnlyPublish[meta.Type] {
+				// Shell-only types publish no definition; count what git carries
+				// so compare/publish can warn instead of silently skipping it.
+				item.ShellParts++
 				continue
 			}
 			spec := s.ref + ":" + p

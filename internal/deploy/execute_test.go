@@ -1062,3 +1062,121 @@ func (f *folderRecordingFabric) CreateItem(token, ws, name, typ string, def *fab
 	f.itemFolder[name] = folderID
 	return f.recordingFabric.CreateItem(token, ws, name, typ, def, cp, folderID)
 }
+
+// End-to-end for the same-run shortcut chain: a lakehouse whose OneLake
+// shortcut points at another lakehouse CREATED IN THE SAME RUN must (a) publish
+// after its target (shortcut-dependency ordering) and (b) have the shortcut
+// rebound to the target's fresh GUID (RegisterTargetItem) — not silently keep
+// the baseline GUID and read the baseline environment's data.
+func TestExecuteShortcutIntoSameRunCreatedLakehouse(t *testing.T) {
+	devBronze := "0b0b0b0b-1111-2222-3333-444455556666"
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "ws-dev", DisplayName: "DEV"},
+			{ID: "ws-test", DisplayName: "TEST"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"ws-dev":  {{ID: devBronze, DisplayName: "LH_Bronze", Type: "Lakehouse"}},
+			"ws-test": {}, // empty target: both lakehouses are created this run
+		},
+	}}
+	rb, err := NewRebinder(rf, "tok",
+		[]fabric.Workspace{{ID: "ws-dev", DisplayName: "DEV"}},
+		[]fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	shortcut := []byte(`[{"name":"bronze_data","target":{"type":"OneLake","oneLake":{"workspaceId":"ws-dev","itemId":"` + devBronze + `","path":"Tables/t"}}}]`)
+	// Deliberately wrong order: the consumer is planned before its target.
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_Silver",
+			Parts: []Part{{Path: "shortcuts.metadata.json", Content: shortcut}}}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_Bronze",
+			Parts: []Part{{Path: "lakehouse.metadata.json", Content: []byte(`{}`)}}}},
+	}
+
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatalf("result %s: %v", r.Name, r.Err)
+		}
+	}
+	if len(rf.createdNames) != 2 || rf.createdNames[0] != "LH_Bronze" || rf.createdNames[1] != "LH_Silver" {
+		t.Fatalf("shortcut target must be created first, got %v", rf.createdNames)
+	}
+	published := decodePart(t, rf.created[1], "shortcuts.metadata.json")
+	if !strings.Contains(published, "LH_Bronze-newid") || strings.Contains(published, devBronze) {
+		t.Errorf("shortcut must rebind to the same-run-created target GUID:\n%s", published)
+	}
+	if !strings.Contains(published, "ws-test") || strings.Contains(published, "ws-dev") {
+		t.Errorf("shortcut workspace must rebind to the target workspace:\n%s", published)
+	}
+}
+
+// An update whose local folder has no definition parts (non-shell type) skips
+// the definition call — that must surface as a warning, not read as a clean
+// green Update that "deployed" the deletion of the item's parts.
+func TestExecuteNilDefinitionUpdateWarns(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	plan := []PlannedItem{{
+		Action: ActionUpdate, ExistingID: "lh-1",
+		Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_Bare"},
+	}}
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	if err != nil || len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("execute: %v / %+v", err, res)
+	}
+	if len(rf.updates) != 0 {
+		t.Errorf("no definition call expected, got %v", rf.updates)
+	}
+	if !strings.Contains(res[0].Warning, "definition") {
+		t.Errorf("nil-definition update must warn, got %q", res[0].Warning)
+	}
+}
+
+// A shell-only update with no git content stays silent — the skip is expected,
+// not noteworthy.
+func TestExecuteShellOnlyUpdateStaysSilent(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	plan := []PlannedItem{{
+		Action: ActionUpdate, ExistingID: "wh-1",
+		Item: LocalItem{Type: "Warehouse", DisplayName: "WH"},
+	}}
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	if err != nil || len(res) != 1 {
+		t.Fatalf("execute: %v / %+v", err, res)
+	}
+	if res[0].Warning != "" {
+		t.Errorf("shell-only zero-content update must not warn, got %q", res[0].Warning)
+	}
+}
+
+// Definition files discovery dropped for a shell-only type must ride the
+// result as a warning — a .sql edit in a Warehouse folder is otherwise
+// invisible in the deploy output.
+func TestExecuteShellPartsWarning(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	plan := []PlannedItem{{
+		Action: ActionCreate,
+		Item:   LocalItem{Type: "Warehouse", DisplayName: "WH", ShellParts: 3},
+	}}
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	if err != nil || len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("execute: %v / %+v", err, res)
+	}
+	if !strings.Contains(res[0].Warning, "3 definition file(s)") {
+		t.Errorf("shell-skipped git content must warn, got %q", res[0].Warning)
+	}
+}

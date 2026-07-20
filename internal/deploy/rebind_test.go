@@ -547,3 +547,102 @@ func TestRebindShortcutsUnresolved(t *testing.T) {
 		t.Fatalf("unresolved = %#v", outcome.Unresolved)
 	}
 }
+
+// A zero-GUID workspaceId on a REAL shortcut target must not leak into other
+// shortcuts: the rewrite is scoped per shortcut, so the resolved item's
+// workspace is written on that shortcut alone while a neighbouring
+// self-reference keeps its zero GUIDs untouched.
+func TestRebindShortcutsZeroWorkspaceScopedRewrite(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	zero := "00000000-0000-0000-0000-000000000000"
+	shortcuts := []byte(`[
+	  {"name": "silver", "path": "Tables",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "` + zero + `", "itemId": "` + devSilverLH + `", "path": "Tables/t"}}},
+	  {"name": "self", "path": "Files",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "` + zero + `", "itemId": "` + zero + `", "path": "Files/f"}}}
+	]`)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
+	}
+	got := parseShortcutTargets(t, out)
+	if got["silver"] != [2]string{"test-data", "test-silver-lh"} {
+		t.Errorf("real target must get the resolved item's workspace+item, got %v", got["silver"])
+	}
+	if got["self"] != [2]string{zero, zero} {
+		t.Errorf("self-reference zero GUIDs must survive untouched, got %v", got["self"])
+	}
+}
+
+// Two shortcuts sharing one baseline workspace GUID whose items resolve to
+// DIFFERENT target workspaces must each get their own workspace — the old
+// whole-file string replace with old-value dedup rewrote both to the first
+// mapping, deploying a dead shortcut (workspaceId and itemId disagreeing).
+func TestRebindShortcutsSharedBaselineWorkspaceDistinctTargets(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	sharedWS := "aaaa1111-1111-1111-1111-111111111111"
+	shortcuts := []byte(`[
+	  {"name": "config", "path": "Tables",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "` + sharedWS + `", "itemId": "` + devConfigLH + `", "path": "Tables/c"}}},
+	  {"name": "silver", "path": "Tables",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "` + sharedWS + `", "itemId": "` + devSilverLH + `", "path": "Tables/s"}}}
+	]`)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
+	}
+	got := parseShortcutTargets(t, out)
+	if got["config"] != [2]string{"test-config", "test-config-lh"} {
+		t.Errorf("config shortcut = %v, want test-config/test-config-lh", got["config"])
+	}
+	if got["silver"] != [2]string{"test-data", "test-silver-lh"} {
+		t.Errorf("silver shortcut = %v, want test-data/test-silver-lh", got["silver"])
+	}
+}
+
+// A shortcuts file the rebind has nothing to change must round-trip
+// byte-identically — no re-marshal, no formatting churn.
+func TestRebindShortcutsUntouchedFileKeepsBytes(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := []byte(`[
+	  {"name": "self", "path": "Files",
+	   "target": {"type": "OneLake", "oneLake": {
+	     "workspaceId": "00000000-0000-0000-0000-000000000000",
+	     "itemId": "00000000-0000-0000-0000-000000000000", "path": "Files/f"}}},
+	  {"name": "ext", "path": "Files",
+	   "target": {"type": "AmazonS3", "amazonS3": {"location": "https://b.s3.amazonaws.com", "subpath": "/d"}}}
+	]`)
+	out, _ := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", in)
+	if string(out) != string(in) {
+		t.Errorf("no-change file must stay byte-identical:\n%s", out)
+	}
+}
+
+// parseShortcutTargets maps shortcut name -> {workspaceId, itemId} from a
+// rewritten shortcuts.metadata.json.
+func parseShortcutTargets(t *testing.T, content []byte) map[string][2]string {
+	t.Helper()
+	var shortcuts []struct {
+		Name   string `json:"name"`
+		Target struct {
+			OneLake *struct {
+				WorkspaceID string `json:"workspaceId"`
+				ItemID      string `json:"itemId"`
+			} `json:"oneLake"`
+		} `json:"target"`
+	}
+	if err := json.Unmarshal(content, &shortcuts); err != nil {
+		t.Fatalf("parse rewritten shortcuts: %v\n%s", err, content)
+	}
+	got := map[string][2]string{}
+	for _, sc := range shortcuts {
+		if sc.Target.OneLake != nil {
+			got[sc.Name] = [2]string{sc.Target.OneLake.WorkspaceID, sc.Target.OneLake.ItemID}
+		}
+	}
+	return got
+}

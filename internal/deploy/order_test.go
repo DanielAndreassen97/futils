@@ -82,3 +82,63 @@ func TestSortForPublishPipelineCycleFallsBack(t *testing.T) {
 		t.Errorf("cycle must keep stable input order, got %+v", sorted)
 	}
 }
+
+// A lakehouse whose shortcut points at another planned lakehouse must publish
+// AFTER its target — shortcut targets are baseline GUIDs, resolved to names
+// via the supplied resolver and matched against the planned display names.
+func TestSortLakehouseShortcutDependencies(t *testing.T) {
+	bronzeGUID := "bbbb2222-2222-2222-2222-222222222222"
+	shortcut := []byte(`[{"name":"s","target":{"type":"OneLake","oneLake":{"workspaceId":"w","itemId":"` + bronzeGUID + `","path":"Tables/t"}}}]`)
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Warehouse", DisplayName: "WH"}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_A_Consumer",
+			Parts: []Part{{Path: "shortcuts.metadata.json", Content: shortcut}}}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_Z_Target"}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB"}},
+	}
+	baselineName := func(guid string) (string, bool) {
+		if guid == bronzeGUID {
+			return "LH_Z_Target", true
+		}
+		return "", false
+	}
+	sortLakehouseShortcutDeps(plan, baselineName)
+	var lakehouses []string
+	for _, p := range plan {
+		if p.Item.Type == "Lakehouse" {
+			lakehouses = append(lakehouses, p.Item.DisplayName)
+		}
+	}
+	if len(lakehouses) != 2 || lakehouses[0] != "LH_Z_Target" || lakehouses[1] != "LH_A_Consumer" {
+		t.Errorf("shortcut target must publish before its consumer, got %v", lakehouses)
+	}
+	if plan[0].Item.DisplayName != "WH" || plan[3].Item.DisplayName != "NB" {
+		t.Errorf("non-lakehouse neighbours must not move, got %+v", plan)
+	}
+}
+
+// Mutual shortcuts (a cycle) must degrade to the existing order, not hang or drop items.
+func TestSortLakehouseShortcutCycleFallsBack(t *testing.T) {
+	guidA, guidB := "aaaa1111-0000-0000-0000-000000000001", "aaaa1111-0000-0000-0000-000000000002"
+	sc := func(guid string) []Part {
+		return []Part{{Path: "shortcuts.metadata.json",
+			Content: []byte(`[{"name":"s","target":{"type":"OneLake","oneLake":{"workspaceId":"w","itemId":"` + guid + `","path":"p"}}}]`)}}
+	}
+	plan := []PlannedItem{
+		{Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_A", Parts: sc(guidB)}},
+		{Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_B", Parts: sc(guidA)}},
+	}
+	baselineName := func(guid string) (string, bool) {
+		switch guid {
+		case guidA:
+			return "LH_A", true
+		case guidB:
+			return "LH_B", true
+		}
+		return "", false
+	}
+	sortLakehouseShortcutDeps(plan, baselineName)
+	if plan[0].Item.DisplayName != "LH_A" || plan[1].Item.DisplayName != "LH_B" {
+		t.Errorf("cycle must keep stable input order, got %+v", plan)
+	}
+}

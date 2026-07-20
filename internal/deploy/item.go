@@ -32,6 +32,11 @@ type LocalItem struct {
 	// create settings for shell types (Warehouse collation, Lakehouse
 	// enableSchemas). Sent on create only; nil when .platform has none.
 	CreationPayload json.RawMessage
+	// ShellParts counts the definition files discovery dropped because the
+	// type publishes as a shell (see shellOnlyPublish) — surfaced as compare
+	// notes and publish warnings so a git-side schema change is never
+	// silently "deployed".
+	ShellParts int
 }
 
 // platformMeta is the subset of .platform we consume.

@@ -63,6 +63,20 @@ func BuildNameIndex(client FabricClient, token string, workspaces []fabric.Works
 	return idx, nil
 }
 
+// Add indexes one more item after the initial build — the publish path uses it
+// to register items it just created so later rebinds in the same run resolve
+// them. Mirrors BuildNameIndex's ambiguity rule: a name+type already indexed
+// under a DIFFERENT GUID becomes ambiguous and stops resolving forward.
+func (i *NameIndex) Add(ent IndexedItem) {
+	i.byGUID[ent.GUID] = ent
+	k := nameKey{ent.Name, ent.Type}
+	if prev, ok := i.byName[k]; ok && prev.GUID != ent.GUID {
+		i.ambiguous[k] = true
+		return
+	}
+	i.byName[k] = ent
+}
+
 // ItemByGUID returns the indexed item for a GUID (reverse lookup).
 func (i *NameIndex) ItemByGUID(guid string) (IndexedItem, bool) {
 	it, ok := i.byGUID[guid]

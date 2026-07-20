@@ -521,18 +521,23 @@ func newItemSentinel(logicalID string) string {
 // can't be fetched or substituted stay ClassExists (unverified) and a warning
 // is printed with the count and first reason. Mutates rows in place.
 func diffExistingRows(client deploy.FabricClient, token string, target fabric.Workspace, rows []deploy.CompareRow, rb *deploy.Rebinder, skipSchedules bool) ([]deploy.UnresolvedRef, []deploy.RebindChange, []ItemDiff) {
-	// Zero-part items (Warehouse, SQLDatabase — shell types with nothing but a
-	// .platform in git) have no definition to fetch or diff: getDefinition 400s
-	// with OperationNotSupportedForItem for them, which used to leave every such
-	// row as a noisy unverified Exists. The only deployable field is the
-	// description (synced via UpdateItem), so classify on that alone.
+	// Shell-only items (Warehouse, SQLDatabase, MLExperiment) have no definition
+	// to fetch or diff: getDefinition 400s with OperationNotSupportedForItem for
+	// them, which used to leave every such row as a noisy unverified Exists. The
+	// only deployable field is the description (synced via UpdateItem), so
+	// classify on that alone. A zero-part item of any OTHER type (e.g. a bare
+	// Lakehouse) still gets its deployed definition fetched — the target copy
+	// may carry parts git doesn't (shortcuts added directly in the workspace),
+	// and that drift must surface as Changed, not read as an Unchanged sign-off.
 	var shellDiffs []ItemDiff
 	var existsIdx []int
+	shellSkipped := 0
 	for i := range rows {
 		if rows[i].Class != deploy.ClassExists {
 			continue
 		}
-		if len(rows[i].Local.Parts) == 0 {
+		if deploy.IsShellOnly(rows[i].ItemType()) {
+			shellSkipped += rows[i].Local.ShellParts
 			if rows[i].Local.Description == rows[i].Deployed.Description {
 				rows[i].Class = deploy.ClassUnchanged
 			} else {
@@ -550,6 +555,10 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			continue
 		}
 		existsIdx = append(existsIdx, i)
+	}
+	if shellSkipped > 0 {
+		fmt.Println(warningStyle.Render(fmt.Sprintf(
+			"%d definition file(s) in git belong to shell-only types futils doesn't deploy schema for — the compare covers their descriptions only.", shellSkipped)))
 	}
 	if len(existsIdx) == 0 {
 		return nil, nil, shellDiffs
@@ -586,7 +595,11 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		go func(j, idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "")
+			// Fetch in the same format the publish path declares (ipynb /
+			// SparkJobDefinitionV2) — the default form would never match an
+			// ipynb repo's local parts and every notebook would diff as a
+			// phantom full change on every compare.
+			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, deploy.DefinitionFormat(rows[idx].Local))
 			if skipSchedules && def != nil {
 				// Local parts were stripped before Compare; strip the deployed
 				// side too, or every scheduled target item would diff as a
@@ -1971,9 +1984,12 @@ func publishEnvironments(client APIClient, token string, results []deploy.Result
 	sp.Start()
 	var failures []string
 	for i := 0; i < envPublishMaxPolls && len(pending) > 0; i++ {
-		if i > 0 {
-			time.Sleep(envPublishPollInterval)
-		}
+		// Always wait before polling, including the first round:
+		// publishDetails.state can still hold the PREVIOUS publish's terminal
+		// state right after the submit, so an immediate read could mistake a
+		// stale "success"/"failed" for this publish's outcome. One interval
+		// gives the service time to flip to running (or genuinely finish).
+		time.Sleep(envPublishPollInterval)
 		for id, e := range pending {
 			state, err := client.GetEnvironmentPublishState(token, e.WorkspaceID, id)
 			if err != nil {

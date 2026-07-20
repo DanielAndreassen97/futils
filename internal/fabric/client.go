@@ -399,6 +399,11 @@ func ListItemsByType(token, workspaceID, itemType string) ([]Item, error) {
 // creationPayload field — type-specific one-time settings that only exist at
 // create time (Warehouse collation, Lakehouse enableSchemas). Fabric git-sync
 // stores it in .platform's metadata block, which is where the deploy reads it.
+// The API forbids sending creationPayload and definition in the same request,
+// so when a definition is present the payload is dropped: the definition
+// already carries the equivalent setup (verified live — a Lakehouse created
+// with a lakehouse.metadata.json part comes up schema-enabled), while
+// definitionless shell types (Warehouse) keep the payload path.
 // folderID, when non-empty, places the new item in that workspace folder;
 // empty creates it at the workspace root.
 func CreateItem(token, workspaceID, displayName, itemType string, def *Definition, creationPayload json.RawMessage, folderID string) (Item, error) {
@@ -407,6 +412,9 @@ func CreateItem(token, workspaceID, displayName, itemType string, def *Definitio
 	}
 	if def != nil && len(def.Parts) == 0 {
 		def = nil
+	}
+	if def != nil {
+		creationPayload = nil
 	}
 	body := struct {
 		DisplayName     string          `json:"displayName"`

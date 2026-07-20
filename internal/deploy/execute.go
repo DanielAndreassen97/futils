@@ -94,6 +94,16 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 	results := make([]Result, 0, len(plan))
 	var pending []PendingReportRebind
 
+	// Publish lakehouses in shortcut-dependency order (a shortcut's target must
+	// exist before the shortcut deploys) — combined with RegisterTargetItem
+	// below, a shortcut into a lakehouse created in this same run rebinds
+	// correctly instead of silently keeping its baseline GUID. Reordered on a
+	// copy so the caller's plan slice is untouched.
+	if rb != nil {
+		plan = append([]PlannedItem(nil), plan...)
+		sortLakehouseShortcutDeps(plan, rb.baselineNameFor)
+	}
+
 	// markDone bumps the live progress counter once per item; deferred inside the
 	// per-item closure so it fires on every exit path (build error, publish error,
 	// or success) without repeating it at each `continue`.
@@ -130,6 +140,12 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 				// empty parts collection — skip straight to the metadata sync below.
 				if def != nil {
 					err = client.UpdateItemDefinition(token, target.ID, p.ExistingID, def)
+				} else if !shellOnlyPublish[p.Item.Type] {
+					// v0.7.0 pushed the empty definition and the API's 400 made the
+					// no-op visible; now that nil skips the call, say so — the target
+					// keeps whatever definition parts it already has. Expected (and
+					// silent) for shell-only types, which never carry a definition.
+					res.Warning = joinWarning(res.Warning, "no definition parts in git — metadata synced, the target's existing definition was left untouched")
 				}
 				deployedID = p.ExistingID
 			default:
@@ -147,6 +163,21 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 				return
 			}
 			res.ID = deployedID
+
+			// Git carries definition files futils cannot push for this type —
+			// warn so a schema change is never mistaken for deployed.
+			if p.Item.ShellParts > 0 {
+				res.Warning = joinWarning(res.Warning, fmt.Sprintf(
+					"%d definition file(s) in git not deployed — %s publishes as a shell; deploy schema via Fabric git-sync or SqlPackage",
+					p.Item.ShellParts, p.Item.Type))
+			}
+
+			// Register the just-created item so later rebinds in this run (e.g. a
+			// shortcut in a later lakehouse pointing at this one) resolve it — the
+			// rebinder's target index was built before anything was created.
+			if p.Action != ActionUpdate && rb != nil {
+				rb.RegisterTargetItem(p.Item.DisplayName, p.Item.Type, deployedID, target.ID)
+			}
 
 			// A freshly created lakehouse provisions its SQL analytics endpoint
 			// asynchronously (~15s observed live). Later items in this same run may
@@ -285,7 +316,7 @@ func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver
 	if len(item.Parts) == 0 {
 		return nil, parts, nil
 	}
-	def := &fabric.Definition{Format: definitionFormat(item)}
+	def := &fabric.Definition{Format: DefinitionFormat(item)}
 	for _, part := range orderedParts(item) {
 		def.Parts = append(def.Parts, fabric.DefinitionPart{
 			Path:        part.Path,
@@ -324,12 +355,15 @@ func waitLakehouseSQLEndpoint(client FabricClient, token, wsID, lakehouseID stri
 	return fmt.Errorf("SQL endpoint not confirmed after create: %v", lastErr)
 }
 
-// definitionFormat returns the definition-envelope format flag for item types
+// DefinitionFormat returns the definition-envelope format flag for item types
 // with several definition variants: an .ipynb notebook must declare "ipynb"
 // (the API otherwise parses the payload as the .py git form), and
 // SparkJobDefinition always uses "SparkJobDefinitionV2" (mirrors fabric-cicd's
-// API_FORMAT_MAPPING). Empty for everything else.
-func definitionFormat(item LocalItem) string {
+// API_FORMAT_MAPPING). Empty for everything else. Exported because the compare
+// must FETCH deployed definitions in the same format it publishes them — an
+// ipynb repo diffed against the default .py form is a phantom full diff on
+// every part.
+func DefinitionFormat(item LocalItem) string {
 	switch item.Type {
 	case "Notebook":
 		for _, p := range item.Parts {

@@ -453,3 +453,48 @@ func TestDoGetGivesUpAfterMaxNetRetries(t *testing.T) {
 		t.Fatalf("expected %d calls (initial + %d retries), got %d", maxNetRetries+1, maxNetRetries, len(transport.calls))
 	}
 }
+
+// The create-item API forbids sending creationPayload and definition in the
+// same request — with a definition present the payload must be dropped (the
+// definition carries the equivalent setup); a shell create keeps it.
+func TestCreateItemDropsCreationPayloadWithDefinition(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{status: 200, body: `{"id":"new-1","displayName":"LH","type":"Lakehouse"}`},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	def := &Definition{Parts: []DefinitionPart{{Path: "lakehouse.metadata.json", Payload: "e30=", PayloadType: "InlineBase64"}}}
+	payload := json.RawMessage(`{"enableSchemas":true}`)
+	if _, err := CreateItem("tok", "12345678-1234-1234-1234-123456789012", "LH", "Lakehouse", def, payload, ""); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	body := string(transport.bodies[0])
+	if strings.Contains(body, "creationPayload") {
+		t.Errorf("definition create must not carry creationPayload:\n%s", body)
+	}
+	if !strings.Contains(body, "definition") {
+		t.Errorf("definition missing from create body:\n%s", body)
+	}
+}
+
+// A definitionless (shell) create still carries the creationPayload — that is
+// the only channel for Warehouse collation / Lakehouse enableSchemas.
+func TestCreateItemShellKeepsCreationPayload(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{status: 200, body: `{"id":"new-2","displayName":"WH","type":"Warehouse"}`},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	payload := json.RawMessage(`{"defaultCollation":"Latin1_General_100_BIN2_UTF8"}`)
+	if _, err := CreateItem("tok", "12345678-1234-1234-1234-123456789012", "WH", "Warehouse", nil, payload, ""); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	body := string(transport.bodies[0])
+	if !strings.Contains(body, "creationPayload") || strings.Contains(body, "definition") {
+		t.Errorf("shell create must carry creationPayload and no definition:\n%s", body)
+	}
+}

@@ -1,6 +1,8 @@
 package deploy
 
 import (
+	"encoding/json"
+	"path"
 	"sort"
 	"strings"
 )
@@ -98,9 +100,8 @@ func sortPipelinesByDependency(items []LocalItem) {
 		}
 	}
 
-	// dependsOn[i] = set of segment indices i's content references.
-	indegree := make([]int, len(seg))
-	dependents := make([][]int, len(seg)) // j -> list of i that depend on j
+	// dependsOn[i] = segment indices i's content references.
+	dependsOn := make([][]int, len(seg))
 	for i, p := range seg {
 		for lid, j := range byLogicalID {
 			if j == i {
@@ -108,24 +109,130 @@ func sortPipelinesByDependency(items []LocalItem) {
 			}
 			for _, part := range p.Parts {
 				if strings.Contains(string(part.Content), lid) {
-					dependents[j] = append(dependents[j], i)
-					indegree[i]++
+					dependsOn[i] = append(dependsOn[i], j)
 					break
 				}
 			}
 		}
 	}
 
-	ordered := make([]LocalItem, 0, len(seg))
-	placed := make([]bool, len(seg))
-	for len(ordered) < len(seg) {
+	ordered := make([]LocalItem, len(seg))
+	for k, idx := range stableTopoOrder(len(seg), dependsOn) {
+		ordered[k] = seg[idx]
+	}
+	copy(seg, ordered)
+}
+
+// sortLakehouseShortcutDeps reorders the plan's (contiguous, post type-sort)
+// Lakehouse run so a lakehouse whose shortcuts point at another planned
+// lakehouse publishes AFTER its target. Unlike pipeline references, shortcut
+// targets are BASELINE GUIDs (not logicalIds), so the edge test resolves each
+// target GUID to its baseline name and matches it against the other planned
+// lakehouses' display names. Combined with RegisterTargetItem, this lets
+// RebindShortcuts resolve a target created in the same run — creating the
+// dependent first would leave its shortcut pointing at the baseline
+// environment. Stable Kahn; a cycle degrades to the existing order (two
+// lakehouses shortcutting into each other still deploy — one shortcut then
+// surfaces as unresolved, honestly).
+func sortLakehouseShortcutDeps(plan []PlannedItem, baselineName func(guid string) (string, bool)) {
+	start, end := -1, -1
+	for i, p := range plan {
+		if p.Item.Type == "Lakehouse" {
+			if start == -1 {
+				start = i
+			}
+			end = i + 1
+		}
+	}
+	if start == -1 || end-start < 2 {
+		return
+	}
+	seg := plan[start:end]
+
+	byName := make(map[string]int, len(seg))
+	for i, p := range seg {
+		byName[p.Item.DisplayName] = i
+	}
+	dependsOn := make([][]int, len(seg))
+	for i, p := range seg {
+		for _, guid := range shortcutTargetGUIDs(p.Item) {
+			name, ok := baselineName(guid)
+			if !ok {
+				continue
+			}
+			if j, ok := byName[name]; ok && j != i {
+				dependsOn[i] = append(dependsOn[i], j)
+			}
+		}
+	}
+
+	ordered := make([]PlannedItem, len(seg))
+	for k, idx := range stableTopoOrder(len(seg), dependsOn) {
+		ordered[k] = seg[idx]
+	}
+	copy(seg, ordered)
+}
+
+// shortcutTargetGUIDs returns the non-self OneLake target itemIds in a
+// lakehouse's shortcuts.metadata.json part; nil when the item has no such part
+// or it isn't the array shape RebindShortcuts rewrites.
+func shortcutTargetGUIDs(item LocalItem) []string {
+	for _, part := range item.Parts {
+		if path.Base(part.Path) != "shortcuts.metadata.json" {
+			continue
+		}
+		var shortcuts []struct {
+			Target struct {
+				OneLake *struct {
+					ItemID string `json:"itemId"`
+				} `json:"oneLake"`
+			} `json:"target"`
+		}
+		if json.Unmarshal(part.Content, &shortcuts) != nil {
+			return nil
+		}
+		var ids []string
+		for _, sc := range shortcuts {
+			if ol := sc.Target.OneLake; ol != nil && !isZeroOrEmptyGUID(ol.ItemID) {
+				ids = append(ids, ol.ItemID)
+			}
+		}
+		return ids
+	}
+	return nil
+}
+
+// stableTopoOrder returns a Kahn's-algorithm ordering of n nodes where
+// dependsOn[i] lists the nodes i must come after. Stable: ready nodes keep
+// their existing relative order, so unrelated items never shuffle. Duplicate
+// and self edges are ignored. A cycle degrades to the existing order for the
+// cyclic remainder — publish then surfaces any real failure per item instead
+// of the sorter guessing.
+func stableTopoOrder(n int, dependsOn [][]int) []int {
+	indegree := make([]int, n)
+	dependents := make([][]int, n) // j -> list of i that depend on j
+	for i, deps := range dependsOn {
+		seen := map[int]bool{}
+		for _, j := range deps {
+			if j == i || seen[j] {
+				continue
+			}
+			seen[j] = true
+			dependents[j] = append(dependents[j], i)
+			indegree[i]++
+		}
+	}
+
+	order := make([]int, 0, n)
+	placed := make([]bool, n)
+	for len(order) < n {
 		advanced := false
-		for i := range seg {
+		for i := 0; i < n; i++ {
 			if placed[i] || indegree[i] > 0 {
 				continue
 			}
 			placed[i] = true
-			ordered = append(ordered, seg[i])
+			order = append(order, i)
 			for _, dep := range dependents[i] {
 				indegree[dep]--
 			}
@@ -133,13 +240,13 @@ func sortPipelinesByDependency(items []LocalItem) {
 		}
 		if !advanced {
 			// Cycle: append the remainder in existing order and stop.
-			for i := range seg {
+			for i := 0; i < n; i++ {
 				if !placed[i] {
-					ordered = append(ordered, seg[i])
+					order = append(order, i)
 				}
 			}
 			break
 		}
 	}
-	copy(seg, ordered)
+	return order
 }

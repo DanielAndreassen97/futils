@@ -46,7 +46,11 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 	seen := map[string]bool{}
 	for _, name := range registered {
 		for _, r := range byName[name] {
-			key := r.Type + "\x00" + name + "\x00" + r.WorkspaceID
+			// At most ONE run per registered name per workspace — a repo holding
+			// both a Notebook and a DataPipeline under the same name must not
+			// double-run (and double-load) on select-all. Results follow publish
+			// order, so the Notebook wins the tie, matching pre-pipeline behavior.
+			key := name + "\x00" + r.WorkspaceID
 			if seen[key] {
 				continue
 			}

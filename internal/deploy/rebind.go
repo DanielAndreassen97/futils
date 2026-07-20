@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"encoding/json"
 	"path"
 	"regexp"
@@ -123,9 +124,11 @@ type Substitution struct {
 // The lazy SQL-endpoint cache (targetEndpoint) is guarded by mu so the
 // rebinder is safe to share across the concurrent per-item compare workers.
 // Every other field is set in NewRebinder / SetSubstitutions and never mutated
-// afterwards (the *NameIndex maps are build-once, read-only), so only the
-// endpoint cache needs the lock. substitutions is installed once before any
-// concurrent use, so it is read-only during the compare.
+// during the CONCURRENT phase (the compare): substitutions is installed once
+// before any concurrent use, so only the endpoint cache needs the lock there.
+// The target NameIndex additionally grows during the SEQUENTIAL publish loop —
+// RegisterTargetItem adds each just-created item so later rebinds in the same
+// run can resolve it; publish never runs concurrently with a compare.
 type Rebinder struct {
 	client    FabricClient
 	token     string
@@ -170,6 +173,29 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 		wsNames[w.ID] = w.DisplayName
 	}
 	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames}, nil
+}
+
+// RegisterTargetItem adds a just-created item to the target name index so later
+// rebinds in the same publish run resolve it. Without this, an item created
+// earlier in the run (e.g. the lakehouse a later lakehouse's shortcut points
+// at) stays unresolvable, because the index was built before the run started —
+// and the shortcut would silently keep its baseline GUID.
+func (rb *Rebinder) RegisterTargetItem(name, itemType, guid, workspaceID string) {
+	rb.target.Add(IndexedItem{Name: name, Type: itemType, GUID: guid, WorkspaceID: workspaceID})
+}
+
+// baselineNameFor returns the display name a baseline GUID will resolve to in
+// the target — override name first (mirrors resolveGUIDReason's precedence),
+// otherwise the baseline index's name. Used by the lakehouse shortcut-dependency
+// ordering, which needs names before anything is published.
+func (rb *Rebinder) baselineNameFor(guid string) (string, bool) {
+	if ov, ok := rb.overrides[guid]; ok {
+		return ov.ItemName, true
+	}
+	if it, ok := rb.baseline.ItemByGUID(guid); ok {
+		return it.Name, true
+	}
+	return "", false
 }
 
 // resolveGUIDReason translates one baseline GUID to its target item, returning a
@@ -277,41 +303,71 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 // pipelines, it does NOT auto-remap internal shortcuts), so a shortcut pointing
 // at a baseline lakehouse would keep pointing there after deploy. For each
 // OneLake target we resolve itemId (a baseline GUID) to the same-named item in
-// the target env and rewrite both itemId and its workspaceId. Self-references
-// (empty/zero GUIDs, which Fabric maps to the current lakehouse), external
-// targets (ADLS/S3/etc.), and unparseable content are left untouched; an
-// unresolvable OneLake target is surfaced as UnresolvedRef and left as-is.
+// the target env and rewrite that shortcut's itemId and workspaceId in place.
+// Self-references (empty/zero itemId GUIDs, which Fabric maps to the current
+// lakehouse), external targets (ADLS/S3/etc.), and unparseable content are left
+// untouched; an unresolvable OneLake target is surfaced as UnresolvedRef and
+// left as-is.
+//
+// The rewrite edits the parsed JSON per shortcut instead of string-replacing
+// the whole file: a whole-file replace cannot express one baseline workspace
+// GUID resolving to two different target workspaces (two shortcuts sharing a
+// baseline workspace whose items deploy to different target workspaces), and a
+// zero-GUID workspaceId used as a replace key would also rewrite every OTHER
+// self-reference's zero GUIDs in the file. Content is re-marshalled only when
+// something actually changed — an untouched file stays byte-identical — and the
+// diff view normalizes JSON before comparing, so the formatting round-trip
+// never reads as a change.
 func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
-	var shortcuts []struct {
-		Name   string `json:"name"`
-		Target struct {
-			OneLake *struct {
-				WorkspaceID string `json:"workspaceId"`
-				ItemID      string `json:"itemId"`
-			} `json:"oneLake"`
-		} `json:"target"`
-	}
-	if err := json.Unmarshal(content, &shortcuts); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber() // keep numeric fidelity through the re-marshal
+	var shortcuts []map[string]any
+	if err := dec.Decode(&shortcuts); err != nil {
 		return content, RebindOutcome{} // not the array shape we rewrite — leave it
 	}
 	var out RebindOutcome
 	seen := map[string]bool{}
+	changed := false
 	for _, sc := range shortcuts {
-		ol := sc.Target.OneLake
-		if ol == nil || isZeroOrEmptyGUID(ol.ItemID) {
-			continue // external target, or self-reference Fabric maps itself
+		target, _ := sc["target"].(map[string]any)
+		ol, _ := target["oneLake"].(map[string]any)
+		if ol == nil {
+			continue // external target (ADLS/S3/...) — never touched
 		}
-		it, ok, reason := rb.resolveGUIDReason(ol.ItemID, "")
+		itemID, _ := ol["itemId"].(string)
+		if isZeroOrEmptyGUID(itemID) {
+			continue // self-reference Fabric maps to the current lakehouse
+		}
+		it, ok, reason := rb.resolveGUIDReason(itemID, "")
 		if !ok {
-			out.AddUnresolved(UnresolvedRef{GUID: ol.ItemID, ItemType: "Lakehouse", Location: "shortcut target", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: "Lakehouse", Location: "shortcut target", Reason: reason})
 			continue
 		}
-		addChange(&out, seen, "Shortcut", it.Name, ol.ItemID, it.GUID)
-		if ol.WorkspaceID != "" && it.WorkspaceID != "" {
-			addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), ol.WorkspaceID, it.WorkspaceID)
+		if itemID != it.GUID {
+			recordChangePair(&out, seen, "Shortcut", it.Name, itemID, it.GUID)
+			ol["itemId"] = it.GUID
+			changed = true
+		}
+		// The resolved item's workspace is authoritative — writing it even over
+		// a zero-GUID workspaceId is safe because the edit is scoped to this one
+		// shortcut. Pair-dedup (not old-value dedup): two shortcuts sharing a
+		// baseline workspace may legitimately resolve to different targets.
+		if wsID, _ := ol["workspaceId"].(string); wsID != "" && it.WorkspaceID != "" && wsID != it.WorkspaceID {
+			recordChangePair(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), wsID, it.WorkspaceID)
+			ol["workspaceId"] = it.WorkspaceID
+			changed = true
 		}
 	}
-	return []byte(applyChanges(string(content), out.Changes)), out
+	if !changed {
+		return content, out
+	}
+	rewritten, err := json.MarshalIndent(shortcuts, "", "  ")
+	if err != nil {
+		// Can't happen for a tree json just decoded, but never publish a file
+		// the recorded changes weren't applied to.
+		return content, RebindOutcome{Unresolved: out.Unresolved}
+	}
+	return rewritten, out
 }
 
 // isZeroOrEmptyGUID reports whether a shortcut GUID is a self-reference: empty,
@@ -554,6 +610,12 @@ func (rb *Rebinder) resolveModelName(nameCandidate, baselineGUID string) string 
 	modelName := nameCandidate
 	if base, found := rb.baseline.ItemByGUID(baselineGUID); found {
 		modelName = base.Name
+	} else if tgt, found := rb.target.ItemByGUID(baselineGUID); found {
+		// Not a baseline GUID: the in-payload rewrite already translated it —
+		// including to a model created earlier in this same run (registered via
+		// RegisterTargetItem). Resolve the name from the target index so the
+		// post-deploy pass can still match the co-deployed model.
+		modelName = tgt.Name
 	}
 	if ov, ok := rb.overrides[baselineGUID]; ok {
 		modelName = ov.ItemName

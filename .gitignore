@@ -8,3 +8,6 @@ docs/
 vdev
 
 .playwright-mcp/
+
+# Local live-probe scratch code (contains real tenant/workspace references)
+debug_probe/

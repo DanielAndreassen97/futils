@@ -283,3 +283,25 @@ func TestPostDeployPipelines(t *testing.T) {
 		t.Errorf("pipeline must be submitted via RunPipeline, got %v", f.pipelines)
 	}
 }
+
+// One registered name deployed as BOTH a Notebook and a DataPipeline in the
+// same workspace must yield exactly one run — double-submitting both jobs
+// could double-load the freshly deployed target. Results follow publish order
+// (Notebook before DataPipeline), so the notebook wins the tie.
+func TestPostDeployCandidatesSameNameNotebookAndPipeline(t *testing.T) {
+	results := []deploy.Result{
+		{Name: "Load_Data", Type: "Notebook", ID: "nb-1", WorkspaceID: "ws-1"},
+		{Name: "Load_Data", Type: "DataPipeline", ID: "pl-1", WorkspaceID: "ws-1"},
+		{Name: "Load_Data", Type: "DataPipeline", ID: "pl-2", WorkspaceID: "ws-2"},
+	}
+	runs := postDeployCandidates([]string{"Load_Data"}, results, map[string]string{})
+	if len(runs) != 2 {
+		t.Fatalf("want one run per workspace, got %+v", runs)
+	}
+	if runs[0].Type != "Notebook" || runs[0].ItemID != "nb-1" || runs[0].WorkspaceID != "ws-1" {
+		t.Errorf("ws-1 must run the notebook only, got %+v", runs[0])
+	}
+	if runs[1].Type != "DataPipeline" || runs[1].ItemID != "pl-2" || runs[1].WorkspaceID != "ws-2" {
+		t.Errorf("ws-2 has only the pipeline, got %+v", runs[1])
+	}
+}
