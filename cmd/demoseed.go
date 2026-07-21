@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
+	"github.com/DanielAndreassen97/futils/internal/ui"
 )
 
 // DemoSeed writes everything demo mode needs into dir (default
@@ -17,6 +18,40 @@ import (
 // fully offline. Idempotent: re-seeding overwrites content and re-commits only
 // when something changed.
 func DemoSeed(dir string) error {
+	cfgPath, err := seedDemo(dir)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Seeded demo sandbox:")
+	fmt.Println("  config:  " + cfgPath)
+	fmt.Println("  repo:    " + filepath.Join(filepath.Dir(cfgPath), "fabrikam-repo"))
+	fmt.Println()
+	fmt.Println("Explore it interactively (nothing sticks to your shell):")
+	fmt.Println("  futils demo")
+	fmt.Println()
+	fmt.Println("Or run individual subcommands against it:")
+	fmt.Println("  FUTILS_DEMO=1 FUTILS_CONFIG=" + cfgPath + " futils deploy")
+	return nil
+}
+
+// RunDemo is the `futils demo` command: seed the sandbox (idempotent) and
+// launch the interactive menu straight against the fake tenant — one command,
+// no environment variables, and quitting the menu is all it takes to be back
+// on the real setup.
+func RunDemo(dir string) error {
+	cfgPath, err := seedDemo(dir)
+	if err != nil {
+		return err
+	}
+	EnableDemoMode()
+	ui.DemoNotice = "DEMO MODE — fake tenant · quit to return to your real setup"
+	MainMenu(cfgPath)
+	return nil
+}
+
+// seedDemo writes the sandbox (config + git repo + bare origin) and returns
+// the config path. Shared by the demoseed command and `futils demo`.
+func seedDemo(dir string) (string, error) {
 	if dir == "" {
 		// A stable, typeable default beats os.TempDir(): on macOS that is a
 		// /var/folders/... path nobody can retype from the docs. /tmp exists
@@ -32,10 +67,10 @@ func DemoSeed(dir string) error {
 	for path, content := range demoRepoFiles() {
 		full := filepath.Join(repo, filepath.FromSlash(path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return err
+			return "", err
 		}
 		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -49,13 +84,13 @@ func DemoSeed(dir string) error {
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".git")); os.IsNotExist(err) {
 		if err := git("init", "-q", "-b", "main"); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if _, err := os.Stat(originDir); os.IsNotExist(err) {
 		cmd := exec.Command("git", "init", "-q", "--bare", originDir)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("git init --bare: %v\n%s", err, out)
+			return "", fmt.Errorf("git init --bare: %v\n%s", err, out)
 		}
 	}
 	// Wire the remote idempotently: repo and origin are created independently,
@@ -63,39 +98,29 @@ func DemoSeed(dir string) error {
 	// set-url fails when the remote doesn't exist yet — then add it.
 	if err := git("remote", "set-url", "origin", originDir); err != nil {
 		if err := git("remote", "add", "origin", originDir); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err := git("add", "-A"); err != nil {
-		return err
+		return "", err
 	}
 	// Commit only when the tree changed; a no-op re-seed shouldn't fail.
 	if err := exec.Command("git", "-C", repo, "diff", "--cached", "--quiet").Run(); err != nil {
 		if err := git("-c", "user.email=demo@fabrikam.example", "-c", "user.name=Fabrikam Demo",
 			"commit", "-q", "-m", "Seed Fabrikam demo content"); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err := git("push", "-q", "origin", "main"); err != nil {
-		return err
+		return "", err
 	}
 
 	cfgPath := filepath.Join(dir, "config.json")
 	if err := writeDemoConfig(cfgPath, repo); err != nil {
-		return err
+		return "", err
 	}
 
-	fmt.Println("Seeded demo sandbox:")
-	fmt.Println("  config:  " + cfgPath)
-	fmt.Println("  repo:    " + repo)
-	fmt.Println()
-	fmt.Println("Try it one-off (nothing sticks to your shell):")
-	fmt.Println("  FUTILS_DEMO=1 FUTILS_CONFIG=" + cfgPath + " futils")
-	fmt.Println()
-	fmt.Println("Or export for the whole shell session:")
-	fmt.Println("  export FUTILS_DEMO=1 FUTILS_CONFIG=" + cfgPath)
-	fmt.Println("  unset FUTILS_DEMO FUTILS_CONFIG    # back to your real tenant")
-	return nil
+	return cfgPath, nil
 }
 
 // writeDemoConfig renders the Fabrikam customer: DEV is the baseline, TEST and

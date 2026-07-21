@@ -25,7 +25,8 @@ Settings:
   logout         Clear cached OAuth tokens from the OS keychain
 
 Other:
-  demoseed       Seed the offline demo sandbox (then set FUTILS_DEMO=1)
+  demo           Explore futils against a fake offline tenant — no login, nothing sticks
+  demoseed       Seed the demo sandbox only (for scripting: FUTILS_DEMO=1 FUTILS_CONFIG=…)
   help           Show this help message
   version        Print the current version
 

@@ -39,7 +39,7 @@ func main() {
 	// `futils demoseed`.
 	if os.Getenv("FUTILS_DEMO") != "" {
 		cmd.EnableDemoMode()
-		ui.DemoMode = true
+		ui.DemoNotice = "DEMO MODE — fake tenant · unset FUTILS_DEMO to leave"
 	}
 	configPath := config.GetConfigPath()
 	args := os.Args[1:]
@@ -86,6 +86,17 @@ func main() {
 		err = cmd.List(configPath)
 	case "logout":
 		err = cmd.Logout(configPath)
+	case "demo":
+		// One command, no environment variables: seed the sandbox and run the
+		// interactive menu against the fake tenant; quitting is all it takes
+		// to be back on the real setup.
+		bt, rev, mod := buildProvenance()
+		ui.BuildInfo = bannerBuildInfo(version, bt, rev, mod)
+		var dir string
+		if len(args) > 1 {
+			dir = args[1]
+		}
+		err = cmd.RunDemo(dir)
 	case "demoseed":
 		var dir string
 		if len(args) > 1 {

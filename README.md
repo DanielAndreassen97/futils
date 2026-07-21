@@ -90,11 +90,10 @@ A successful verification proves the file's provenance back to the tagged commit
 futils ships a demo mode: a self-contained fake Fabric tenant for a fictional customer, with three environments that tell a coherent DEV → TEST → PROD story. Every flow works against it offline — including a full deploy with compare, auto-rebind, and post-deploy runs.
 
 ```sh
-futils demoseed        # seed a sandbox config + git repo under /tmp/futils-demo
-FUTILS_DEMO=1 FUTILS_CONFIG=/tmp/futils-demo/config.json futils
+futils demo
 ```
 
-Nothing sticks: the one-off prefix leaves your shell and real config untouched. If you'd rather `export` the two variables for a whole session, `unset FUTILS_DEMO FUTILS_CONFIG` brings you back to your real tenant — and the banner shows a DEMO MODE line whenever the fake tenant is active, so you always know which one you're talking to.
+That's it — it seeds a sandbox (config + git repo under `/tmp/futils-demo`) and opens the menu against the fake tenant; quit and you're back on your real setup, nothing sticks. The banner shows a DEMO MODE line whenever the fake tenant is active, so you always know which one you're talking to. To script individual subcommands against the sandbox instead, seed with `futils demoseed` and prefix commands with `FUTILS_DEMO=1 FUTILS_CONFIG=/tmp/futils-demo/config.json`.
 
 ## Prerequisites
 
