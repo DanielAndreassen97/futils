@@ -22,6 +22,11 @@ var dimStyle = lipgloss.NewStyle().
 // Version is set by main at startup.
 var Version = "dev"
 
+// UpdateNotice, when non-empty, is a one-line upgrade hint main resolved at
+// startup (e.g. "v0.9.0 available — brew upgrade futils"); the banner shows
+// it centred under the version.
+var UpdateNotice string
+
 // BuildInfo is an optional compact freshness line shown under the version in
 // the banner — set by main for dev builds, empty (and hidden) for releases.
 var BuildInfo string
@@ -310,6 +315,11 @@ func Banner() string {
 		centerPad(len([]rune(verText)), bannerWidth) + ver
 	if BuildInfo != "" {
 		out += "\n" + centerPad(len([]rune(BuildInfo)), bannerWidth) + dimStyle.Render(BuildInfo)
+	}
+	if UpdateNotice != "" {
+		notice := "⬆ " + UpdateNotice
+		out += "\n" + centerPad(len([]rune(notice)), bannerWidth) +
+			lipgloss.NewStyle().Foreground(AccentColor).Render(notice)
 	}
 	out += "\n" + centerPad(len([]rune(hintText)), bannerWidth) + hint
 	return out

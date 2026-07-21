@@ -25,6 +25,7 @@ import (
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 	"github.com/DanielAndreassen97/futils/internal/ui"
+	"github.com/DanielAndreassen97/futils/internal/update"
 )
 
 // version is overridden by the release build via -ldflags.
@@ -48,6 +49,12 @@ func main() {
 		// every subcommand's startup path.
 		bt, rev, mod := buildProvenance()
 		ui.BuildInfo = bannerBuildInfo(version, bt, rev, mod)
+		// Best-effort update hint under the banner. Skipped in demo mode and
+		// on dev builds; a fresh cache answers instantly, a live check gets a
+		// 600ms budget and otherwise lands in the cache for the next launch.
+		if os.Getenv("FUTILS_DEMO") == "" {
+			ui.UpdateNotice = update.Notice(version, 600*time.Millisecond)
+		}
 		cmd.MainMenu(configPath)
 		return
 	}
