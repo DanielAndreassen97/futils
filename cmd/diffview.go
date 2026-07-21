@@ -325,8 +325,14 @@ const deployReportStyle = `<style>
   .item::before{content:"";position:absolute;top:0;bottom:0;left:0;width:3px}
   .item.changed::before{background:linear-gradient(#fde68a,#f59e0b)}
   .item.new::before{background:linear-gradient(var(--green-bright),var(--green-deep))}
-  .item summary{cursor:pointer;padding:.6rem .95rem;font-weight:600;list-style:none;display:flex;align-items:center;gap:.6rem}
+  .item.deleted::before{background:linear-gradient(#fda4a4,#dc2626)}
+  .item.fail::before{background:linear-gradient(#fca5a5,#b91c1c)}
+  .item.warn::before{background:linear-gradient(#fde68a,#d97706)}
+  .item summary,.item .irow{padding:.6rem .95rem;font-weight:600;list-style:none;display:flex;align-items:center;gap:.6rem}
+  .item summary{cursor:pointer}
   .item summary::-webkit-details-marker{display:none}
+  .item .mark{width:1.1rem;text-align:center;font-weight:700;flex:0 0 auto}
+  .item .t.efail{color:var(--fail)} .item .t.ewarn{color:var(--warn)}
   .dot{width:.55rem;height:.55rem;border-radius:50%;flex:0 0 auto}
   .dot.changed{background:var(--changed);box-shadow:0 0 8px rgba(251,191,36,.55)}
   .dot.new{background:var(--green);box-shadow:0 0 8px rgba(74,222,128,.55)}
@@ -489,63 +495,139 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		wsName[g.Target.ID] = g.Target.DisplayName
 	}
 
+	// Deployed-items gate: when results != nil, only render diffs for items
+	// that were actually deployed (i.e. not deleted). Key is type+"\x00"+name —
+	// mirrors internal/deploy's item-identity convention, since Fabric allows
+	// duplicate display names across different item types.
+	var deployedSet map[string]bool
 	if results != nil {
-		var deployed, deleted []deploy.Result
+		deployedSet = make(map[string]bool, len(results))
+		for _, r := range results {
+			if r.Action != deploy.ActionDelete {
+				deployedSet[r.Type+"\x00"+r.Name] = true
+			}
+		}
+	}
+	// itemRenderable reports whether a diff item passes the deployed-set gate.
+	// When deployedSet is nil (preview), all items render.
+	itemRenderable := func(it ItemDiff) bool {
+		return deployedSet == nil || deployedSet[it.Type+"\x00"+it.Name]
+	}
+
+	// diffByKey lets a result row expand straight into its content diff —
+	// keyed per workspace since the same type+name can deploy to several.
+	diffByKey := map[string]ItemDiff{}
+	for _, g := range groups {
+		for _, it := range g.Diffs {
+			diffByKey[g.Target.ID+"\x00"+it.Type+"\x00"+it.Name] = it
+		}
+	}
+
+	// A .schedules part in the rendered diffs means refresh schedules deploy
+	// with their items and overwrite the target's — worth a hint, since that
+	// is often unwanted and there is a setting for it. Presence alone is the
+	// signal: with "Schedules: kept in target" enabled, compare strips
+	// .schedules from both sides and no such part can reach the report.
+	schedHint := ""
+	for _, g := range groups {
+		for _, it := range g.Diffs {
+			if !itemRenderable(it) {
+				continue
+			}
+			for _, p := range it.Parts {
+				if path.Base(p.Path) == ".schedules" {
+					schedHint = `<div class="hintline"><span class="ic">⏱</span><span>` +
+						`This diff includes <span class="mono">.schedules</span> changes — refresh schedules deploy with their items and overwrite the target's. ` +
+						`To keep the target's schedules untouched, set <b>Edit customer → Schedules: kept in target</b>.</span></div>`
+					break
+				}
+			}
+			if schedHint != "" {
+				break
+			}
+		}
+		if schedHint != "" {
+			break
+		}
+	}
+
+	// difftools is the expand/collapse-all control pair (inline onclick, no
+	// <script> tag), shared by the items section and the preview.
+	const difftools = `<div class="difftools">` +
+		`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=true)">Expand all</button>` +
+		`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>` +
+		`</div>`
+
+	if results != nil {
+		// ONE items section: creates, updates, deletes, failures together in
+		// publish order, each a collapsed card. Rows with a content diff (an
+		// update that changed parts) expand into it; the rest are static rows.
+		nDeleted := 0
 		for _, r := range results {
 			if r.Action == deploy.ActionDelete {
-				deleted = append(deleted, r)
-			} else {
-				deployed = append(deployed, r)
+				nDeleted++
 			}
 		}
-		renderRows := func(heading string, rs []deploy.Result) {
-			if len(rs) == 0 {
-				return
+		b.WriteString(`<div class="h2row">`)
+		note := fmt.Sprintf("— %d item(s)", len(results))
+		if nDeleted > 0 {
+			note = fmt.Sprintf("— %d item(s) · %d deleted", len(results)-nDeleted, nDeleted)
+		}
+		fmt.Fprintf(&b, `<h2>Items <span class="note">%s</span></h2>`, note)
+		b.WriteString(difftools)
+		b.WriteString(`</div>`)
+		b.WriteString(schedHint)
+
+		// Group per target workspace (first-seen order) so a multi-workspace
+		// deploy shows where each item landed; single-workspace skips headings.
+		var wsOrder []string
+		byWS := map[string][]deploy.Result{}
+		for _, r := range results {
+			if _, seen := byWS[r.WorkspaceID]; !seen {
+				wsOrder = append(wsOrder, r.WorkspaceID)
 			}
-			// Group rows per target workspace (first-seen order) so a
-			// multi-workspace deploy shows where each item landed; a
-			// single-workspace run skips the sub-headings.
-			var wsOrder []string
-			byWS := map[string][]deploy.Result{}
-			for _, r := range rs {
-				if _, seen := byWS[r.WorkspaceID]; !seen {
-					wsOrder = append(wsOrder, r.WorkspaceID)
+			byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], r)
+		}
+		for _, ws := range wsOrder {
+			if len(wsOrder) > 1 {
+				label := wsName[ws]
+				if label == "" {
+					label = ws
 				}
-				byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], r)
+				b.WriteString(`<div class="wsgroup">` + html.EscapeString(label) + `</div>`)
 			}
-			b.WriteString(`<h2>` + heading + `</h2>`)
-			for _, ws := range wsOrder {
-				if len(wsOrder) > 1 {
-					label := wsName[ws]
-					if label == "" {
-						label = ws
-					}
-					b.WriteString(`<div class="wsgroup">` + html.EscapeString(label) + `</div>`)
+			for _, r := range byWS[ws] {
+				markCls, mark, cardCls, detail, detailCls := "ok", "✓", "new", r.Action.String(), "t"
+				switch {
+				case r.Err != nil:
+					markCls, mark, cardCls, detail, detailCls = "efail", "✗", "fail", r.Err.Error(), "t efail"
+				case r.Warning != "":
+					// Keep the action visible — a warning is a footnote to a
+					// publish that DID happen, not a replacement for it.
+					markCls, mark, cardCls, detail, detailCls = "ewarn", "⚠", "warn", r.Action.String()+" · "+r.Warning, "t ewarn"
+				case r.Action == deploy.ActionUpdate:
+					markCls, cardCls = "upd", "changed"
+				case r.Action == deploy.ActionDelete:
+					markCls, cardCls = "del", "deleted"
 				}
-				b.WriteString(`<div class="panel"><table>`)
-				for _, r := range byWS[ws] {
-					markCls, mark, detailCls, detail := "ok", "✓", "detail", r.Action.String()
-					switch {
-					case r.Err != nil:
-						markCls, mark, detailCls, detail = "efail", "✗", "detail efail", r.Err.Error()
-					case r.Warning != "":
-						// Keep the action visible — a warning is a footnote to a
-						// publish that DID happen, not a replacement for it.
-						markCls, mark, detailCls, detail = "ewarn", "⚠", "detail ewarn", r.Action.String()+" · "+r.Warning
-					case r.Action == deploy.ActionUpdate:
-						markCls = "upd"
-					case r.Action == deploy.ActionDelete:
-						markCls = "del"
-					}
-					b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
-					b.WriteString(`<td class="name">` + html.EscapeString(r.Name) + ` <span class="type">` + html.EscapeString(r.Type) + `</span></td>`)
-					b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
+				row := `<span class="mark ` + markCls + `">` + mark + `</span>` +
+					html.EscapeString(r.Name) +
+					` <span class="t">` + html.EscapeString(r.Type) + `</span>` +
+					` <span class="` + detailCls + `">` + html.EscapeString(detail) + `</span>`
+
+				it, hasDiff := diffByKey[r.WorkspaceID+"\x00"+r.Type+"\x00"+r.Name]
+				if hasDiff && r.Action != deploy.ActionDelete && r.Err == nil {
+					partsHTML, added, removed := renderItemParts(it)
+					b.WriteString(`<details class="item ` + cardCls + `"><summary>` + row)
+					fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
+					b.WriteString(`<span class="chev">▾</span></summary>`)
+					b.WriteString(partsHTML)
+					b.WriteString(`</details>`)
+				} else {
+					b.WriteString(`<div class="item ` + cardCls + `"><div class="irow">` + row + `</div></div>`)
 				}
-				b.WriteString(`</table></div>`)
 			}
 		}
-		renderRows("Deployed items", deployed)
-		renderRows("Deleted items", deleted)
 	}
 
 	// Post-deploy runs section — same panel/table look as the results sections.
@@ -598,152 +680,84 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		b.WriteString(`</table></div>`)
 	}
 
-	// Build the deployed-items gate for fix [6]: when results != nil, only render
-	// diffs for items that were actually deployed (i.e. not deleted).
-	// Key is type+"\x00"+name — mirrors internal/deploy's item-identity convention,
-	// since Fabric allows duplicate display names across different item types.
-	var deployedSet map[string]bool
-	if results != nil {
-		deployedSet = make(map[string]bool, len(results))
-		for _, r := range results {
-			if r.Action != deploy.ActionDelete {
-				deployedSet[r.Type+"\x00"+r.Name] = true
+	// Compare preview (no results yet): the Changed items' content diffs are
+	// the report's substance, so they get their own section.
+	if results == nil {
+		changed := 0
+		groupsWithDiffs := 0
+		for _, g := range groups {
+			if len(g.Diffs) > 0 {
+				changed += len(g.Diffs)
+				groupsWithDiffs++
 			}
 		}
-	}
+		b.WriteString(`<div class="h2row">`)
+		b.WriteString(fmt.Sprintf(`<h2>Content diffs <span class="note">— deployed → local · %d changed item(s)</span></h2>`, changed))
+		b.WriteString(difftools)
+		b.WriteString(`</div>`)
+		b.WriteString(schedHint)
 
-	// itemRenderable reports whether a diff item passes the deployed-set gate.
-	// When deployedSet is nil (preview), all items render.
-	itemRenderable := func(it ItemDiff) bool {
-		return deployedSet == nil || deployedSet[it.Type+"\x00"+it.Name]
-	}
-
-	// Count how many diffs will actually render (respecting the gate), and how
-	// many groups contribute at least one rendered diff (for per-workspace headings).
-	changed := 0
-	groupsWithDiffs := 0
-	for _, g := range groups {
-		groupCount := 0
-		for _, it := range g.Diffs {
-			if itemRenderable(it) {
-				changed++
-				groupCount++
-			}
-		}
-		if groupCount > 0 {
-			groupsWithDiffs++
-		}
-	}
-
-	// Content diffs heading with inline expand/collapse controls.
-	// mockup uses inline onclick, not a <script> tag.
-	b.WriteString(`<div class="h2row">`)
-	b.WriteString(fmt.Sprintf(`<h2>Content diffs <span class="note">— deployed → local · %d changed item(s)</span></h2>`, changed))
-	b.WriteString(`<div class="difftools">`)
-	b.WriteString(`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=true)">Expand all</button>`)
-	b.WriteString(`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>`)
-	b.WriteString(`</div></div>`)
-
-	// A .schedules part in the rendered diffs means refresh schedules deploy
-	// with their items and will overwrite the target's — worth a hint, since
-	// that is often unwanted and there is a setting for it. Presence alone is
-	// the signal: with "Schedules: kept in target" enabled, compare strips
-	// .schedules from both sides and no such part can reach the report.
-	for _, g := range groups {
-		found := false
-		for _, it := range g.Diffs {
-			if !itemRenderable(it) {
+		for _, g := range groups {
+			if len(g.Diffs) == 0 {
 				continue
 			}
-			for _, p := range it.Parts {
-				if path.Base(p.Path) == ".schedules" {
-					found = true
-					break
-				}
+			if groupsWithDiffs > 1 {
+				b.WriteString(`<div class="wsgroup">` + html.EscapeString(g.Target.DisplayName) + `</div>`)
 			}
-			if found {
-				break
-			}
-		}
-		if found {
-			b.WriteString(`<div class="hintline"><span class="ic">⏱</span><span>` +
-				`This diff includes <span class="mono">.schedules</span> changes — refresh schedules deploy with their items and overwrite the target's. ` +
-				`To keep the target's schedules untouched, set <b>Edit customer → Schedules: kept in target</b>.</span></div>`)
-			break
-		}
-	}
-
-	for _, g := range groups {
-		if len(g.Diffs) == 0 {
-			continue
-		}
-		// Check whether this group contributes any rendered items before emitting
-		// the per-workspace heading (avoid orphan headings with no diffs below them).
-		hasRenderable := false
-		for _, it := range g.Diffs {
-			if itemRenderable(it) {
-				hasRenderable = true
-				break
+			for _, it := range g.Diffs {
+				partsHTML, added, removed := renderItemParts(it)
+				b.WriteString(`<details class="item changed">`)
+				b.WriteString(`<summary><span class="dot changed"></span>`)
+				b.WriteString(html.EscapeString(it.Name))
+				b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
+				fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
+				b.WriteString(`<span class="chev">▾</span></summary>`)
+				b.WriteString(partsHTML)
+				b.WriteString(`</details>`)
 			}
 		}
-		if !hasRenderable {
-			continue
+		if changed == 0 {
+			b.WriteString(`<div class="empty">No changed items to diff.</div>`)
 		}
-		if groupsWithDiffs > 1 {
-			b.WriteString(`<div class="wsgroup">` + html.EscapeString(g.Target.DisplayName) + `</div>`)
-		}
-		for _, it := range g.Diffs {
-			// Fix [6]: skip items not in the deployed set when results are present.
-			if !itemRenderable(it) {
-				continue
-			}
-			// Render the parts into a buffer first, counting added/removed lines,
-			// so the collapsed summary can show a +N −N chip — enough to gauge a
-			// change's size without expanding the card.
-			var parts strings.Builder
-			added, removed := 0, 0
-			for _, p := range it.Parts {
-				oldPretty, oldIsJSON := prettyForDiff(p.Old)
-				newPretty, newIsJSON := prettyForDiff(p.New)
-				badge := ""
-				if oldIsJSON || newIsJSON {
-					badge = ` <span class="badge">json · prettified</span>`
-				}
-				if path.Base(p.Path) == ".schedules" {
-					badge += ` <span class="badge cap">schedule — overwrites target's</span>`
-				}
-				parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
-				for _, ln := range cappedLineDiff(oldPretty, newPretty) {
-					cls, prefix := "ctx", " "
-					switch ln.Op {
-					case '-':
-						cls, prefix = "rem", "-"
-						removed++
-					case '+':
-						cls, prefix = "add", "+"
-						added++
-					case '@':
-						cls, prefix = "fold", " "
-					}
-					parts.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
-				}
-				parts.WriteString(`</pre></div>`)
-			}
-			b.WriteString(`<details class="item changed">`)
-			b.WriteString(`<summary><span class="dot changed"></span>`)
-			b.WriteString(html.EscapeString(it.Name))
-			b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
-			fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
-			b.WriteString(`<span class="chev">▾</span></summary>`)
-			b.WriteString(parts.String())
-			b.WriteString(`</details>`)
-		}
-	}
-	if changed == 0 {
-		b.WriteString(`<div class="empty">No changed items to diff.</div>`)
 	}
 	b.WriteString(`</main></body></html>`)
 	return b.String()
+}
+
+// renderItemParts renders one changed item's per-part content diffs, counting
+// added/removed lines so the collapsed card summary can show a +N −N chip —
+// enough to gauge a change's size without expanding it.
+func renderItemParts(it ItemDiff) (string, int, int) {
+	var parts strings.Builder
+	added, removed := 0, 0
+	for _, p := range it.Parts {
+		oldPretty, oldIsJSON := prettyForDiff(p.Old)
+		newPretty, newIsJSON := prettyForDiff(p.New)
+		badge := ""
+		if oldIsJSON || newIsJSON {
+			badge = ` <span class="badge">json · prettified</span>`
+		}
+		if path.Base(p.Path) == ".schedules" {
+			badge += ` <span class="badge cap">schedule — overwrites target's</span>`
+		}
+		parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
+		for _, ln := range cappedLineDiff(oldPretty, newPretty) {
+			cls, prefix := "ctx", " "
+			switch ln.Op {
+			case '-':
+				cls, prefix = "rem", "-"
+				removed++
+			case '+':
+				cls, prefix = "add", "+"
+				added++
+			case '@':
+				cls, prefix = "fold", " "
+			}
+			parts.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
+		}
+		parts.WriteString(`</pre></div>`)
+	}
+	return parts.String(), added, removed
 }
 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the

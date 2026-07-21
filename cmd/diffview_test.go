@@ -496,14 +496,14 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 	// diff that is in the deployed set — must emit per-workspace headings.
 	groups := []deployGroup{
 		{
-			Target: fabric.Workspace{DisplayName: "WS Alpha"},
+			Target: fabric.Workspace{ID: "ws-a", DisplayName: "WS Alpha"},
 			Diffs: []ItemDiff{{
 				Name: "NB_Alpha", Type: "Notebook",
 				Parts: []deploy.PartDiff{{Path: "p.py", Old: "a", New: "b"}},
 			}},
 		},
 		{
-			Target: fabric.Workspace{DisplayName: "WS Beta"},
+			Target: fabric.Workspace{ID: "ws-b", DisplayName: "WS Beta"},
 			Diffs: []ItemDiff{{
 				Name: "NB_Beta", Type: "Notebook",
 				Parts: []deploy.PartDiff{{Path: "p.py", Old: "c", New: "d"}},
@@ -511,8 +511,8 @@ func TestRenderDeployReportPerWorkspaceHeadings(t *testing.T) {
 		},
 	}
 	results := []deploy.Result{
-		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate},
-		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate},
+		{Name: "NB_Alpha", Type: "Notebook", Action: deploy.ActionUpdate, WorkspaceID: "ws-a"},
+		{Name: "NB_Beta", Type: "Notebook", Action: deploy.ActionUpdate, WorkspaceID: "ws-b"},
 	}
 	out := renderDeployReport(groups, results, nil, time.Unix(0, 0), nil)
 	if !strings.Contains(out, "WS Alpha") {
