@@ -332,11 +332,11 @@ const deployReportStyle = `<style>
   .item summary{cursor:pointer}
   .item summary::-webkit-details-marker{display:none}
   .item .mark{width:1.1rem;text-align:center;font-weight:700;flex:0 0 auto}
-  .item .t.efail{color:var(--fail)} .item .t.ewarn{color:var(--warn)}
   .dot{width:.55rem;height:.55rem;border-radius:50%;flex:0 0 auto}
   .dot.changed{background:var(--changed);box-shadow:0 0 8px rgba(251,191,36,.55)}
   .dot.new{background:var(--green);box-shadow:0 0 8px rgba(74,222,128,.55)}
-  .item summary .t{color:var(--muted);font-size:.78rem;font-weight:500}
+  .item summary .t,.item .irow .t{color:var(--muted);font-size:.78rem;font-weight:500}
+  .item .t.efail{color:var(--fail)} .item .t.ewarn{color:var(--warn)}
   .item summary .chev{margin-left:auto;color:var(--muted);font-size:.78rem}
   .part{border-top:1px solid var(--panel-line)}
   .part .path{color:#d8b3ea;padding:.4rem .95rem;font-size:.8rem;display:flex;align-items:center;gap:.55rem;
