@@ -248,7 +248,7 @@ func RunWithAPI(configPath string, client APIClient) error {
 
 	var overrides []fabric.JobInput
 	if len(shownParams) > 0 {
-		overrides, err = ui.ParameterForm(shownParams)
+		overrides, err = ui.ParameterForm(shownParams, false)
 		if err != nil {
 			return err
 		}

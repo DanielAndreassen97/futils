@@ -19,7 +19,7 @@ func TestCollectOverrides_OnlyChangedValuesEmitted(t *testing.T) {
 	text := []string{"TidType,Tariffavtale", "", ""}
 	bool_ := []bool{false, true, false}
 
-	got, err := collectOverrides(params, text, bool_)
+	got, err := collectOverrides(params, text, bool_, false)
 	if err != nil {
 		t.Fatalf("collectOverrides: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCollectOverrides_EmptyStringSkippedEvenWhenDefaultIsEmpty(t *testing.T)
 	text := []string{""}
 	bool_ := []bool{false}
 
-	got, err := collectOverrides(params, text, bool_)
+	got, err := collectOverrides(params, text, bool_, false)
 	if err != nil {
 		t.Fatalf("collectOverrides: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestCollectOverrides_SameValueAsDefaultSkipped(t *testing.T) {
 	text := []string{"Dim", "4", "0.5"}
 	bool_ := []bool{false, false, false}
 
-	got, err := collectOverrides(params, text, bool_)
+	got, err := collectOverrides(params, text, bool_, false)
 	if err != nil {
 		t.Fatalf("collectOverrides: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestCollectOverrides_TypedCoercion(t *testing.T) {
 	text := []string{"16", "0.25"}
 	bool_ := []bool{false, false}
 
-	got, err := collectOverrides(params, text, bool_)
+	got, err := collectOverrides(params, text, bool_, false)
 	if err != nil {
 		t.Fatalf("collectOverrides: %v", err)
 	}
@@ -106,7 +106,49 @@ func TestCollectOverrides_BadNumericInputReturnsError(t *testing.T) {
 	text := []string{"not a number"}
 	bool_ := []bool{false}
 
-	if _, err := collectOverrides(params, text, bool_); err == nil {
+	if _, err := collectOverrides(params, text, bool_, false); err == nil {
 		t.Fatal("expected error for non-numeric int input, got nil")
+	}
+}
+
+// Prefill mode (pipelines): the box is seeded with the default, so an
+// UNCHANGED box is omitted (server keeps the default) while a CLEARED box
+// sends an explicit empty string — which placeholder mode can't express.
+func TestCollectOverrides_PrefillEmptyStringIsExplicit(t *testing.T) {
+	params := []fabric.Parameter{
+		{Name: "tags", Type: fabric.TypeString, Default: "a,b", RawDefault: "a,b"},   // left at default
+		{Name: "suffix", Type: fabric.TypeString, Default: "_v1", RawDefault: "_v1"}, // cleared to ""
+		{Name: "note", Type: fabric.TypeString, Default: "", RawDefault: ""},         // no default, left ""
+	}
+	// tags kept as-is, suffix cleared, note untouched.
+	text := []string{"a,b", "", ""}
+	bool_ := []bool{false, false, false}
+
+	got, err := collectOverrides(params, text, bool_, true)
+	if err != nil {
+		t.Fatalf("collectOverrides: %v", err)
+	}
+	// Only suffix changed (default "_v1" → ""). tags unchanged and note
+	// (no default, empty) are both omitted.
+	if len(got) != 1 {
+		t.Fatalf("expected 1 override, got %d: %#v", len(got), got)
+	}
+	if got[0].Name != "suffix" || got[0].Value != "" {
+		t.Errorf("expected explicit empty suffix, got %#v", got[0])
+	}
+}
+
+// Placeholder mode (notebooks) cannot send an empty string: clearing a field
+// reads as "keep default" and is omitted.
+func TestCollectOverrides_PlaceholderEmptyKeepsDefault(t *testing.T) {
+	params := []fabric.Parameter{
+		{Name: "suffix", Type: fabric.TypeString, Default: "_v1", RawDefault: "'_v1'"},
+	}
+	got, err := collectOverrides(params, []string{""}, []bool{false}, false)
+	if err != nil {
+		t.Fatalf("collectOverrides: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("placeholder mode: empty must keep default (omit), got %#v", got)
 	}
 }

@@ -14,9 +14,9 @@ import (
 )
 
 // RunPipelineCmd is the `runpipeline` entry point: pick a customer,
-// environment and data pipeline, then submit a pipeline job and poll it to a
-// terminal state — the pipeline twin of the Run (notebook) flow, minus the
-// parameter form (pipeline runs take no overrides here yet).
+// environment and data pipeline, override its parameters in a pre-filled form,
+// then submit a pipeline job and poll it to a terminal state — the pipeline
+// twin of the Run (notebook) flow.
 func RunPipelineCmd(configPath string) error {
 	return RunPipelineWithAPI(configPath, DefaultAPI)
 }
@@ -134,7 +134,7 @@ func pipelineParamOverrides(client APIClient, token, workspaceID string, item fa
 		return nil
 	}
 
-	overrides, err := ui.ParameterForm(params)
+	overrides, err := ui.ParameterForm(params, true)
 	if err != nil {
 		return nil // esc/ctrl+c out of the form — run with defaults
 	}

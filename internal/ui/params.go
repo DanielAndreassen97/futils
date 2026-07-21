@@ -41,7 +41,19 @@ func paramFormTheme() *huh.Theme {
 // with a 400, we must NOT send them.
 //
 // Returns ErrGoBack if the user presses esc, ErrQuit on ctrl+c.
-func ParameterForm(params []fabric.Parameter) ([]fabric.JobInput, error) {
+// ParameterForm renders an override form for the given parameters.
+//
+// prefill picks the empty-value semantics, which differ by flow:
+//   - false (notebooks): text fields start EMPTY with the default shown as a
+//     placeholder, and leaving a field empty means "keep the default". A
+//     notebook can't distinguish an omitted parameter from an empty one, so
+//     this is the safe default.
+//   - true (pipelines): text fields are PRE-FILLED with the default as real
+//     editable text, so the box is WYSIWYG — whatever it holds is what's sent.
+//     Leaving it sends the default (identical to omitting it, since Fabric
+//     applies the pipeline's default server-side); CLEARING it sends an
+//     explicit empty string, which some pipeline parameters legitimately want.
+func ParameterForm(params []fabric.Parameter, prefill bool) ([]fabric.JobInput, error) {
 	if len(params) == 0 {
 		return nil, nil
 	}
@@ -67,20 +79,28 @@ func ParameterForm(params []fabric.Parameter) ([]fabric.JobInput, error) {
 				Value(&boolValues[i])
 
 		default:
-			// Leave value empty so the user only types what they want to
-			// override. Placeholder shows the current default so they
-			// know what they'd be replacing.
 			desc := "optional"
 			if p.RawDefault != "" && p.RawDefault != "''" {
 				desc = fmt.Sprintf("default: %s", p.RawDefault)
 			}
-			placeholder := p.RawDefault
-			field = huh.NewInput().
+			// WYSIWYG prefill must seed the bound variable BEFORE Value() —
+			// huh captures the current *ptr at Value() call time, so seeding
+			// afterwards is silently ignored (the field renders empty).
+			if prefill {
+				textValues[i] = p.RawDefault
+			}
+			input := huh.NewInput().
 				Title(p.Name).
-				Description(desc).
-				Placeholder(placeholder).
 				Validate(validatorFor(p.Type)).
 				Value(&textValues[i])
+			if prefill {
+				// The box IS the value; clearing it sends an explicit empty string.
+				input = input.Description(desc + " · clear to send an empty value")
+			} else {
+				// Empty = keep default; show the default as a placeholder.
+				input = input.Description(desc).Placeholder(p.RawDefault)
+			}
+			field = input
 		}
 		groups = append(groups, huh.NewGroup(field))
 	}
@@ -99,12 +119,13 @@ func ParameterForm(params []fabric.Parameter) ([]fabric.JobInput, error) {
 		return nil, err
 	}
 
-	return collectOverrides(params, textValues, boolValues)
+	return collectOverrides(params, textValues, boolValues, prefill)
 }
 
 // collectOverrides walks the form results and emits JobInput entries only
-// where the user's value differs from the notebook default.
-func collectOverrides(params []fabric.Parameter, textValues []string, boolValues []bool) ([]fabric.JobInput, error) {
+// where the user's value differs from the default. prefill mirrors
+// ParameterForm's empty-value semantics for string parameters (see below).
+func collectOverrides(params []fabric.Parameter, textValues []string, boolValues []bool, prefill bool) ([]fabric.JobInput, error) {
 	var out []fabric.JobInput
 	for i, p := range params {
 		switch p.Type {
@@ -145,10 +166,20 @@ func collectOverrides(params []fabric.Parameter, textValues []string, boolValues
 
 		case fabric.TypeString:
 			raw := textValues[i]
-			if raw == "" {
-				continue // "leave empty" is the keep-default sentinel
+			defStr, _ := p.Default.(string)
+			if prefill {
+				// WYSIWYG: the box holds the default (or "" when none was
+				// declared). Unchanged → omit (server keeps the default);
+				// anything else — including a cleared, explicitly empty box —
+				// is sent verbatim, so an empty string is expressible.
+				if raw == defStr {
+					continue
+				}
+				out = append(out, fabric.JobInput{Name: p.Name, Value: raw, Type: p.Type})
+				continue
 			}
-			if def, ok := p.Default.(string); ok && raw == def {
+			// Placeholder mode: empty means keep the default.
+			if raw == "" || raw == defStr {
 				continue
 			}
 			out = append(out, fabric.JobInput{Name: p.Name, Value: raw, Type: p.Type})
