@@ -252,15 +252,32 @@ const deployReportStyle = `<style>
     background-attachment:fixed;min-height:100vh;
   }
   code,pre,.mono{font-family:"SF Mono",Menlo,Consolas,monospace}
+  main{max-width:1120px;margin:0 auto}
 
-  /* ── hero header ── */
+  /* ── hero header: kicker line + the source→target route ── */
   .hero{margin-bottom:1.5rem}
-  h1{font-size:1.45rem;margin:0;font-weight:700;letter-spacing:-.01em;
-     background:linear-gradient(92deg,#86efac,#34d399 60%,#2dd4bf);
-     -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  h1{font-size:1.02rem;margin:0;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+     color:#5f7266;display:flex;align-items:center;gap:.6rem}
+  h1::before{content:"";width:.6rem;height:.6rem;border-radius:2px;flex:0 0 auto;
+     background:linear-gradient(135deg,var(--green-bright),var(--green-deep));box-shadow:0 0 12px rgba(74,222,128,.7)}
+  h1 .when{margin-left:auto;font-size:.78rem;letter-spacing:0;text-transform:none;color:var(--muted);font-variant-numeric:tabular-nums;font-weight:400}
+  .route{display:flex;align-items:center;gap:1.1rem;margin:1rem 0 .4rem;flex-wrap:wrap}
+  .env{font-family:"SF Mono",Menlo,monospace;font-size:1.18rem;font-weight:700;letter-spacing:-.01em;
+       padding:.5rem .95rem;border-radius:12px;border:1px solid var(--panel-line);
+       background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.01));
+       box-shadow:0 6px 22px rgba(0,0,0,.35)}
+  .env.src{color:var(--green-bright)}
+  .env.tgt{color:#9ff0d6}
+  .env .envnote{display:block;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+       font-size:.66rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:#5f7266;margin-bottom:.2rem}
+  .flow{flex:0 0 auto;display:flex;align-items:center;color:var(--green-deep)}
+  .flow svg{display:block}
+  .flow .dash{stroke-dasharray:6 7;animation:flowdash 1.4s linear infinite}
+  @keyframes flowdash{to{stroke-dashoffset:-13}}
+  @media (prefers-reduced-motion: reduce){.flow .dash{animation:none}}
   .sub{color:var(--muted);font-size:.85rem;margin-top:.35rem}
   .sub b{color:#bfe9cd;font-weight:600}
-  .hero .when{color:var(--muted);font-size:.85rem;margin-top:.35rem;font-variant-numeric:tabular-nums}
+  .card .n .dim{color:var(--muted);font-size:1rem;font-weight:500}
   h2{font-size:.95rem;margin:1.9rem 0 .55rem;font-weight:600;letter-spacing:.01em;
      color:#bff0cf;display:flex;align-items:center;gap:.5rem}
   h2::before{content:"";width:.55rem;height:.55rem;border-radius:2px;
@@ -345,7 +362,19 @@ const deployReportStyle = `<style>
   .pm{margin-left:auto;display:flex;gap:.45rem;font-family:"SF Mono",Menlo,monospace;font-size:.74rem;font-weight:600}
   .pm .plus{color:var(--addfg)} .pm .minus{color:var(--delfg)}
   .item summary .pm+.chev{margin-left:.2rem}
+
+  /* ── reference rebinds / report bindings ── */
+  .rb{font-family:"SF Mono",Menlo,monospace;font-size:.78rem;word-break:break-all}
+  .rb .rb-old{color:var(--delfg)} .rb .rb-new{color:var(--addfg)}
+  .rb .rb-arrow{color:#5d6b61;padding:0 .45rem;word-break:normal}
 </style>`
+
+// flowArrow is the animated source→target stream both report heroes share: a
+// dashed line crawling toward a solid arrowhead (paused under
+// prefers-reduced-motion, see .flow .dash).
+const flowArrow = `<span class="flow"><svg width="72" height="14" viewBox="0 0 72 14" fill="none">` +
+	`<line class="dash" x1="0" y1="7" x2="58" y2="7" stroke="currentColor" stroke-width="2"/>` +
+	`<path d="M58 1 L70 7 L58 13 Z" fill="currentColor"/></svg></span>`
 
 // reportHead emits the shared document head: doctype, charset, viewport, an
 // inline emoji favicon (no 404 noise in the console), and the page title.
@@ -367,27 +396,45 @@ type deployReportContext struct {
 	Backend     string // "per-item" or "bulk-import (preview)"
 }
 
-// heroContextLine renders the hero's context line from the non-empty fields.
-func (c *deployReportContext) heroContextLine() string {
+// heroRoute renders the source→target pill route: what git state the deploy
+// reads on the left, which customer/environment it lands in on the right,
+// joined by the animated flow arrow. Empty when the context carries neither
+// side (the in-browser compare preview).
+func (c *deployReportContext) heroRoute() string {
 	if c == nil {
 		return ""
 	}
-	var parts []string
-	if c.Customer != "" && c.Environment != "" {
-		parts = append(parts, "<b>"+html.EscapeString(c.Customer)+"</b> → <b>"+html.EscapeString(c.Environment)+"</b>")
-	} else if c.Customer != "" {
-		parts = append(parts, "<b>"+html.EscapeString(c.Customer)+"</b>")
+	src := c.Source
+	var tgt string
+	switch {
+	case c.Customer != "" && c.Environment != "":
+		tgt = c.Customer + " · " + c.Environment
+	case c.Environment != "":
+		tgt = c.Environment
+	default:
+		tgt = c.Customer
 	}
-	if c.Source != "" {
-		parts = append(parts, `<span class="mono">`+html.EscapeString(c.Source)+`</span>`)
-	}
-	if c.Backend != "" {
-		parts = append(parts, html.EscapeString(c.Backend)+" backend")
-	}
-	if len(parts) == 0 {
+	if src == "" && tgt == "" {
 		return ""
 	}
-	return `<div class="sub">` + strings.Join(parts, " · ") + `</div>`
+	if src == "" {
+		src = "local repo"
+	}
+	if tgt == "" {
+		tgt = "target"
+	}
+	return `<div class="route"><span class="env src"><span class="envnote">source</span>` + html.EscapeString(src) + `</span>` +
+		flowArrow +
+		`<span class="env tgt"><span class="envnote">target</span>` + html.EscapeString(tgt) + `</span></div>`
+}
+
+// heroContextLine renders the hero's remaining context — the backend note; the
+// customer/environment/source moved into the route pills.
+func (c *deployReportContext) heroContextLine() string {
+	if c == nil || c.Backend == "" {
+		return ""
+	}
+	return `<div class="sub">` + html.EscapeString(c.Backend) + ` backend</div>`
 }
 
 // renderDeployReport builds a self-contained HTML deploy report. When results
@@ -401,12 +448,15 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 	var b strings.Builder
 	b.WriteString(reportHead("futils deploy report"))
 	b.WriteString(deployReportStyle)
-	b.WriteString(`</head><body>`)
+	b.WriteString(`</head><body><main>`)
 
-	// Hero header: run context (who → where, from what) + the deploy timestamp.
-	b.WriteString(`<div class="hero"><h1>futils deploy report</h1>`)
+	// Hero header: kicker + timestamp, the source→target route, and any
+	// remaining context note.
+	b.WriteString(`<div class="hero">`)
+	fmt.Fprintf(&b, `<h1>futils deploy report <span class="when">%s</span></h1>`, ts.Format("2006-01-02 15:04"))
+	b.WriteString(ctx.heroRoute())
 	b.WriteString(ctx.heroContextLine())
-	b.WriteString(`<div class="when">` + ts.Format("2006-01-02 15:04") + `</div></div>`)
+	b.WriteString(`</div>`)
 
 	// Summary cards.
 	b.WriteString(renderSummaryCards(groups, results))
@@ -490,6 +540,38 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			b.WriteString(`<tr><td class="mark ` + markCls + `">` + mark + `</td>`)
 			b.WriteString(`<td class="name">` + html.EscapeString(o.Run.Name) + ` <span class="type">` + html.EscapeString(o.Run.WorkspaceName) + `</span></td>`)
 			b.WriteString(`<td class="` + detailCls + `">` + html.EscapeString(detail) + `</td></tr>`)
+		}
+		b.WriteString(`</table></div>`)
+	}
+
+	// Reference rebinds: every baseline→target rewrite the run applies —
+	// lakehouse GUIDs, workspaces, SQL endpoints, shortcut targets — grouped by
+	// the reference they belong to, exactly like the terminal summary.
+	if changes := collectRebindChanges(groups); len(changes) > 0 {
+		fmt.Fprintf(&b, `<h2>Reference rebinds <span class="note">— baseline → target · %d rewrite(s)</span></h2>`, len(changes))
+		b.WriteString(`<div class="panel"><table>`)
+		lastKind, lastName := "", ""
+		for _, c := range changes {
+			nameCell := ""
+			if c.Kind != lastKind || c.Name != lastName {
+				nameCell = html.EscapeString(c.Name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
+				lastKind, lastName = c.Kind, c.Name
+			}
+			b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
+				`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
+				`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
+		}
+		b.WriteString(`</table></div>`)
+	}
+
+	// Report bindings: which semantic model each report binds to in the target.
+	if binds := collectReportBindings(groups); len(binds) > 0 {
+		fmt.Fprintf(&b, `<h2>Report bindings <span class="note">— report → semantic model · %d binding(s)</span></h2>`, len(binds))
+		b.WriteString(`<div class="panel"><table>`)
+		for _, rb := range binds {
+			b.WriteString(`<tr><td class="name">` + html.EscapeString(rb.Report) + ` <span class="type">Report</span></td>` +
+				`<td class="detail rb"><span class="rb-arrow" style="padding-left:0">→</span><span class="rb-new">` + html.EscapeString(rb.Model) +
+				`</span> <span class="type">in ` + html.EscapeString(rb.Workspace) + `</span></td></tr>`)
 		}
 		b.WriteString(`</table></div>`)
 	}
@@ -606,7 +688,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 	if changed == 0 {
 		b.WriteString(`<div class="empty">No changed items to diff.</div>`)
 	}
-	b.WriteString(`</body></html>`)
+	b.WriteString(`</main></body></html>`)
 	return b.String()
 }
 

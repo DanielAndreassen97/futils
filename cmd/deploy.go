@@ -1556,10 +1556,12 @@ func printGroupedCompare(groups []deployGroup) {
 	fmt.Println()
 }
 
-// printRebindSummary lists every reference rewrite the rebinder will apply,
-// deduplicated by (Kind, Old, New) across the whole run — one line per unique
-// change, not per item. Silent when nothing changes.
-func printRebindSummary(groups []deployGroup) {
+// collectRebindChanges gathers every group's reference rewrites, deduplicated
+// by (Kind, Old, New) across the whole run and sorted by (Kind, Name) so an
+// item whose rewrite spans several values — a SQL endpoint rebinds both its
+// host and its id — groups as ONE reference. Shared by the terminal summary
+// and the HTML report, so they always show the same set.
+func collectRebindChanges(groups []deployGroup) []deploy.RebindChange {
 	type key struct{ kind, old, new string }
 	seen := map[key]bool{}
 	var ordered []deploy.RebindChange
@@ -1573,20 +1575,43 @@ func printRebindSummary(groups []deployGroup) {
 			ordered = append(ordered, c)
 		}
 	}
-	if len(ordered) == 0 {
-		return
-	}
-	fmt.Println()
-	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
-	// Group by (Kind, Name) so an item whose rewrite spans several values — a
-	// SQL endpoint rebinds both its host and its id — reads as ONE reference
-	// with its rewrites indented beneath, not as unrelated rows.
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].Kind != ordered[j].Kind {
 			return ordered[i].Kind < ordered[j].Kind
 		}
 		return ordered[i].Name < ordered[j].Name
 	})
+	return ordered
+}
+
+// collectReportBindings gathers every group's report→model bindings,
+// deduplicated across the run. Shared by the terminal summary and the HTML
+// report.
+func collectReportBindings(groups []deployGroup) []deploy.ReportBinding {
+	var all []deploy.ReportBinding
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, b := range g.ReportBindings {
+			k := b.Report + "\x00" + b.Model + "\x00" + b.Workspace
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			all = append(all, b)
+		}
+	}
+	return all
+}
+
+// printRebindSummary lists every reference rewrite the rebinder will apply —
+// one line per unique change, not per item. Silent when nothing changes.
+func printRebindSummary(groups []deployGroup) {
+	ordered := collectRebindChanges(groups)
+	if len(ordered) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
 	lastKind, lastName := "", ""
 	for _, c := range ordered {
 		if c.Kind != lastKind || c.Name != lastName {
@@ -1602,18 +1627,7 @@ func printRebindSummary(groups []deployGroup) {
 // apply, so the user sees which model a report binds to (and in which target
 // workspace) before the deploy gate. Silent when no report binds.
 func printReportBindings(groups []deployGroup) {
-	var all []deploy.ReportBinding
-	seen := map[string]bool{}
-	for _, g := range groups {
-		for _, b := range g.ReportBindings {
-			k := b.Report + "\x00" + b.Model + "\x00" + b.Workspace
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			all = append(all, b)
-		}
-	}
+	all := collectReportBindings(groups)
 	if len(all) == 0 {
 		return
 	}
