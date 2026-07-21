@@ -1180,3 +1180,46 @@ func TestExecuteShellPartsWarning(t *testing.T) {
 		t.Errorf("shell-skipped git content must warn, got %q", res[0].Warning)
 	}
 }
+
+// A byPath report co-deployed with its model must publish with the model's
+// FRESH GUID in a byConnection reference: the model deploys first (publish
+// order), gets registered in the target index, and the report's byPath
+// converts against it — the items API rejects byPath outright.
+func TestExecuteByPathReportBindsToSameRunModel(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "ws-dev", DisplayName: "DEV"},
+			{ID: "ws-test", DisplayName: "TEST"},
+		},
+		itemsByWS: map[string][]fabric.Item{"ws-dev": {}, "ws-test": {}},
+	}}
+	rb, err := NewRebinder(rf, "tok",
+		[]fabric.Workspace{{ID: "ws-dev", DisplayName: "DEV"}},
+		[]fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "SemanticModel", DisplayName: "HR",
+			Parts: []Part{{Path: "definition/model.tmdl", Content: []byte("model HR")}}}},
+		{Action: ActionCreate, Item: LocalItem{Type: "Report", DisplayName: "HR Dashboard",
+			Parts: []Part{{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byPath":{"path":"../HR.SemanticModel"}}}`)}}}},
+	}
+
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, map[string]map[string]string{}, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			t.Fatalf("result %s: %v", r.Name, r.Err)
+		}
+	}
+	published := decodePart(t, rf.created[1], "definition.pbir")
+	if !strings.Contains(published, `"pbiModelDatabaseName": "HR-newid"`) {
+		t.Errorf("report must bind to the same-run model's fresh GUID:\n%s", published)
+	}
+	if strings.Contains(published, "byPath") {
+		t.Errorf("published pbir must not retain byPath:\n%s", published)
+	}
+}

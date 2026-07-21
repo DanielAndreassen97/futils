@@ -610,14 +610,16 @@ type canonicalByConnectionInner struct {
 	ConnectionType            string  `json:"connectionType"`
 }
 
-// RebindReportConnection rewrites a report's definition.pbir byConnection
-// reference from baseline to target by NAME. It handles both on-disk shapes:
-// the Power BI Desktop flat connectionString (Data Source + initial catalog +
-// semanticmodelid) and the fabric-cicd structured form (pbiModelDatabaseName).
-// On success it replaces datasetReference with the canonical byConnection form
-// (connectionString null, pbiModelDatabaseName = target model GUID), so the
-// published payload binds the report to the target model in a single publish.
-// byPath and reference-less reports are returned unchanged.
+// RebindReportConnection rewrites a report's definition.pbir dataset
+// reference from baseline to target by NAME. It handles all three on-disk
+// shapes: the relative byPath reference (folder name = model name — the items
+// API rejects byPath outright, so it MUST convert), the Power BI Desktop flat
+// connectionString (Data Source + initial catalog + semanticmodelid), and the
+// fabric-cicd structured form (pbiModelDatabaseName). On success it replaces
+// datasetReference with the canonical byConnection form (connectionString
+// null, pbiModelDatabaseName = target model GUID), so the published payload
+// binds the report to the target model in a single publish. Reference-less
+// reports are returned unchanged.
 // resolveModelName maps a report's byConnection reference to its model display
 // name using the authoritative precedence: an override for the baseline GUID
 // wins, else the baseline-index name for that GUID, else the parsed
@@ -655,13 +657,37 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out
 	}
 	var ds struct {
+		ByPath *struct {
+			Path string `json:"path"`
+		} `json:"byPath"`
 		ByConnection *struct {
 			ConnectionString     *string `json:"connectionString"`
 			PbiModelDatabaseName string  `json:"pbiModelDatabaseName"`
 		} `json:"byConnection"`
 	}
-	if err := json.Unmarshal(dsRaw, &ds); err != nil || ds.ByConnection == nil {
-		return content, out // byPath / reference-less / unparseable
+	if err := json.Unmarshal(dsRaw, &ds); err != nil {
+		return content, out
+	}
+
+	// byPath: the items API rejects relative references outright ("Fabric REST
+	// API only supports byConnection references" — live 400 on report import),
+	// so the sibling-folder reference must bind by name against the target
+	// model. The path's folder name IS the model's display name. A model
+	// created earlier in this same run resolves too — the publish loop
+	// registers every created item in the target index.
+	if ds.ByConnection == nil {
+		if ds.ByPath == nil || ds.ByPath.Path == "" {
+			return content, out // reference-less — nothing to bind
+		}
+		name := strings.TrimSuffix(path.Base(ds.ByPath.Path), ".SemanticModel")
+		it, ok, reason := rb.resolveNameReason(name, "SemanticModel")
+		if !ok {
+			out.AddUnresolved(UnresolvedRef{
+				GUID: name, ItemType: "SemanticModel", Location: LocationReportBinding, Reason: reason,
+			})
+			return content, out
+		}
+		return rb.bindReportTo(pbir, content, item, it, &out), out
 	}
 
 	// Extract the baseline model GUID and a name candidate from whichever
@@ -689,6 +715,14 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out
 	}
 
+	return rb.bindReportTo(pbir, content, item, it, &out), out
+}
+
+// bindReportTo replaces pbir's datasetReference with the canonical
+// byConnection form (connectionString null, pbiModelDatabaseName = the target
+// model's GUID) and records the binding on out. Returns content unchanged on a
+// marshal failure so a report is never published half-rewritten.
+func (rb *Rebinder) bindReportTo(pbir map[string]json.RawMessage, content []byte, item LocalItem, it IndexedItem, out *RebindOutcome) []byte {
 	canonical, err := json.Marshal(canonicalByConnection{
 		ByConnection: canonicalByConnectionInner{
 			PbiModelVirtualServerName: "sobe_wowvirtualserver",
@@ -698,17 +732,16 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		},
 	})
 	if err != nil {
-		return content, out
+		return content
 	}
 	pbir["$schema"] = json.RawMessage(`"https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/1.0.0/schema.json"`)
 	pbir["datasetReference"] = canonical
 	rewritten, err := json.MarshalIndent(pbir, "", "  ")
 	if err != nil {
-		return content, out
+		return content
 	}
-
 	out.ReportBindings = append(out.ReportBindings, ReportBinding{
-		Report: item.DisplayName, Model: modelName, Workspace: rb.workspaceName(it.WorkspaceID),
+		Report: item.DisplayName, Model: it.Name, Workspace: rb.workspaceName(it.WorkspaceID),
 	})
-	return rewritten, out
+	return rewritten
 }

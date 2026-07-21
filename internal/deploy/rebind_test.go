@@ -412,15 +412,44 @@ func TestRebindReportConnectionNameUnknown(t *testing.T) {
 	}
 }
 
-func TestRebindReportConnectionByPathUntouched(t *testing.T) {
+// A byPath reference MUST convert to byConnection at publish — the items API
+// rejects byPath outright ("Fabric REST API only supports byConnection
+// references", live 400 on report import). The path's folder name resolves as
+// the model name in the target env.
+func TestRebindReportConnectionByPathConverts(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := []byte(`{"datasetReference":{"byPath":{"path":"../HR.SemanticModel"}}}`)
+	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"}, in)
+	s := string(out)
+	if !strings.Contains(s, `"pbiModelDatabaseName": "test-hr-model"`) {
+		t.Errorf("byPath must convert to canonical byConnection against the target model:\n%s", s)
+	}
+	if strings.Contains(s, "byPath") {
+		t.Errorf("converted pbir must not retain the byPath reference:\n%s", s)
+	}
+	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
+		t.Fatalf("want one HR ReportBinding, got %+v", outcome.ReportBindings)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("resolvable byPath must not surface unresolved refs: %+v", outcome.Unresolved)
+	}
+}
+
+// A byPath reference whose model exists in NO target workspace can't convert —
+// it stays as-is and surfaces as unresolved, so the user sees the real cause
+// instead of the API's import error.
+func TestRebindReportConnectionByPathUnresolved(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	in := []byte(`{"datasetReference":{"byPath":{"path":"../Drift.SemanticModel"}}}`)
 	out, outcome := rb.RebindReportConnection(LocalItem{Type: "Report", DisplayName: "R"}, in)
 	if string(out) != string(in) {
-		t.Errorf("byPath report must be left unchanged")
+		t.Errorf("unresolvable byPath must leave content unchanged")
 	}
-	if len(outcome.Changes) != 0 || len(outcome.Unresolved) != 0 || len(outcome.ReportBindings) != 0 {
-		t.Errorf("byPath report must produce empty outcome, got %+v", outcome)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].ItemType != "SemanticModel" || outcome.Unresolved[0].Reason != ReasonNotInTarget {
+		t.Fatalf("want 1 SemanticModel UnresolvedRef with ReasonNotInTarget, got %+v", outcome.Unresolved)
+	}
+	if len(outcome.ReportBindings) != 0 {
+		t.Errorf("unresolvable byPath must not produce a ReportBinding")
 	}
 }
 
