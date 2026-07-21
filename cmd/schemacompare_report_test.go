@@ -26,8 +26,16 @@ func TestRenderSchemaCompareReport(t *testing.T) {
 	if !strings.Contains(out, "<!doctype html>") {
 		t.Error("expected a doctype")
 	}
-	if !strings.Contains(out, "LH_Silver") || !strings.Contains(out, "Dim.Ansatt") {
+	if !strings.Contains(out, "LH_Silver") || !strings.Contains(out, "Ansatt") {
 		t.Error("report missing lakehouse/table name")
+	}
+	// Tables group under a schema header instead of repeating schema.table.
+	if !strings.Contains(out, `class="sc-schema">Dim<`) {
+		t.Error("expected a schema group header for Dim")
+	}
+	// The collapsed summary row must carry the drift counts as chips.
+	if !strings.Contains(out, `class="sc-chips"`) || !strings.Contains(out, ">+1<") || !strings.Contains(out, ">~1<") {
+		t.Error("expected +/~ drift chips in the collapsed lakehouse row")
 	}
 	// Content must be HTML-escaped.
 	if strings.Contains(out, "<script>") {
@@ -36,10 +44,10 @@ func TestRenderSchemaCompareReport(t *testing.T) {
 	if !strings.Contains(out, "&lt;script&gt;") {
 		t.Error("expected escaped column name")
 	}
-	// Option B structure: changed tables render as a column grid, new tables as a
-	// chipped row, and type changes show an explicit from → to (not a muted line).
-	if !strings.Contains(out, `class="sc-cols"`) {
-		t.Error("expected the structured column grid (sc-cols) for a changed table")
+	// Changed tables render as a column grid, new tables as a chipped row, and
+	// type changes show an explicit from → to (not a muted line).
+	if !strings.Contains(out, `class="sc-colgrid"`) {
+		t.Error("expected the structured column grid (sc-colgrid) for a changed table")
 	}
 	if !strings.Contains(out, "new table") {
 		t.Error("expected a 'new table' chip for the added table")

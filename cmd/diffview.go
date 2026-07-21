@@ -622,6 +622,7 @@ func renderDeployDiffHTML(groups []deployGroup) string {
 type summaryCard struct {
 	n          int
 	label, cls string
+	dim        string // optional muted suffix after the number (e.g. " / 3")
 }
 
 // renderCardRow renders a row of summary cards.
@@ -629,8 +630,12 @@ func renderCardRow(cards []summaryCard) string {
 	var b strings.Builder
 	b.WriteString(`<div class="cards">`)
 	for _, cd := range cards {
-		fmt.Fprintf(&b, `<div class="card %s"><div class="n">%d</div><div class="l">%s</div></div>`,
-			cd.cls, cd.n, cd.label)
+		dim := ""
+		if cd.dim != "" {
+			dim = `<span class="dim">` + html.EscapeString(cd.dim) + `</span>`
+		}
+		fmt.Fprintf(&b, `<div class="card %s"><div class="n">%d%s</div><div class="l">%s</div></div>`,
+			cd.cls, cd.n, dim, cd.label)
 	}
 	b.WriteString(`</div>`)
 	return b.String()
@@ -662,23 +667,27 @@ func renderSummaryCards(groups []deployGroup, results []deploy.Result) string {
 				}
 			}
 		}
-		cards = []card{{created, "Created", "new"}, {updated, "Updated", "changed"}, {deleted, "Deleted", "deleted"}}
+		cards = []card{
+			{n: created, label: "Created", cls: "new"},
+			{n: updated, label: "Updated", cls: "changed"},
+			{n: deleted, label: "Deleted", cls: "deleted"},
+		}
 		if failed > 0 {
-			cards = append(cards, card{failed, "Failed", "fail"})
+			cards = append(cards, card{n: failed, label: "Failed", cls: "fail"})
 		}
 		if warned > 0 {
-			cards = append(cards, card{warned, "Warnings", "warn"})
+			cards = append(cards, card{n: warned, label: "Warnings", cls: "warn"})
 		}
 	} else {
 		c := countByClass(groups)
 		cards = []card{
-			{c[deploy.ClassNew], "New", "new"},
-			{c[deploy.ClassChanged], "Changed", "changed"},
-			{c[deploy.ClassOrphan], "Orphan", "deleted"},
-			{c[deploy.ClassUnchanged], "Unchanged", "unchanged"},
+			{n: c[deploy.ClassNew], label: "New", cls: "new"},
+			{n: c[deploy.ClassChanged], label: "Changed", cls: "changed"},
+			{n: c[deploy.ClassOrphan], label: "Orphan", cls: "deleted"},
+			{n: c[deploy.ClassUnchanged], label: "Unchanged", cls: "unchanged"},
 		}
 		if c[deploy.ClassExists] > 0 {
-			cards = append(cards, card{c[deploy.ClassExists], "Exists", "exists"})
+			cards = append(cards, card{n: c[deploy.ClassExists], label: "Exists", cls: "exists"})
 		}
 	}
 	return renderCardRow(cards)
