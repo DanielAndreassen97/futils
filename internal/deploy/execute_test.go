@@ -1176,7 +1176,7 @@ func TestExecuteShellPartsWarning(t *testing.T) {
 	if err != nil || len(res) != 1 || res[0].Err != nil {
 		t.Fatalf("execute: %v / %+v", err, res)
 	}
-	if !strings.Contains(res[0].Warning, "3 definition file(s)") {
+	if !strings.Contains(res[0].Warning, "3 schema file(s)") {
 		t.Errorf("shell-skipped git content must warn, got %q", res[0].Warning)
 	}
 }

@@ -77,12 +77,14 @@ type jobRunner interface {
 
 // postDeployOutcome records one post-deploy notebook run. Status holds the
 // terminal Fabric job status ("Completed", "Failed", ...) or the synthetic
-// postDeployStatusSkipped for runs never started because an earlier one failed.
+// postDeployStatusSkipped for runs never started because an earlier one failed
+// — SkippedAfter then names that failed run, so the skip explains itself.
 type postDeployOutcome struct {
-	Run      postDeployRun
-	Status   string
-	Err      error
-	Duration time.Duration
+	Run          postDeployRun
+	Status       string
+	Err          error
+	Duration     time.Duration
+	SkippedAfter string
 }
 
 // postDeployStatusSkipped marks runs that were never submitted because an
@@ -95,10 +97,10 @@ const postDeployStatusSkipped = "Skipped"
 // are optional UI hooks (nil = silent); the runner itself never prints.
 func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, started func(i, n int, r postDeployRun), finished func(o postDeployOutcome)) []postDeployOutcome {
 	outcomes := make([]postDeployOutcome, 0, len(runs))
-	failed := false
+	failedName := ""
 	for i, r := range runs {
-		if failed {
-			o := postDeployOutcome{Run: r, Status: postDeployStatusSkipped}
+		if failedName != "" {
+			o := postDeployOutcome{Run: r, Status: postDeployStatusSkipped, SkippedAfter: failedName}
 			if finished != nil {
 				finished(o)
 			}
@@ -135,7 +137,7 @@ func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, sta
 		}
 		o.Duration = time.Since(begin).Round(time.Second)
 		if o.Err != nil {
-			failed = true
+			failedName = r.Name
 		}
 		if finished != nil {
 			finished(o)
@@ -245,7 +247,7 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 			}
 			switch {
 			case o.Status == postDeployStatusSkipped:
-				fmt.Println(postDeployDimStyle.Render(fmt.Sprintf("  ⊘ %s — skipped (previous run failed)", o.Run.Name)))
+				fmt.Println(postDeployDimStyle.Render(fmt.Sprintf("  ⊘ %s — skipped (%s failed)", o.Run.Name, o.SkippedAfter)))
 			case o.Err != nil:
 				fmt.Println(errorStyle.Render(fmt.Sprintf("  ✗ %s — %v", o.Run.Name, o.Err)))
 			default:

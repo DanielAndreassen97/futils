@@ -96,11 +96,21 @@ func TestWriteDeployReportSketch(t *testing.T) {
 			},
 		},
 	}
+	// The Warehouse row's expandable diff — a real shell-type update diffs on
+	// the description alone, exactly what diffExistingRows produces.
+	groups[0].Diffs = append(groups[0].Diffs, ItemDiff{
+		Name: "WH_Config", Type: "Warehouse",
+		Parts: []deploy.PartDiff{{
+			Path: "(item description)",
+			Old:  "Config warehouse",
+			New:  "Config warehouse — logging + parameters",
+		}},
+	})
 	results := []deploy.Result{
 		{Name: "LH_Gold", Type: "Lakehouse", Action: deploy.ActionCreate, ID: "id1", WorkspaceID: "ws-data"},
 		{Name: "nb_transform_sales", Type: "Notebook", Action: deploy.ActionUpdate, ID: "id2", WorkspaceID: "ws-data"},
 		{Name: "WH_Config", Type: "Warehouse", Action: deploy.ActionUpdate, ID: "id3", WorkspaceID: "ws-data",
-			Warning: "2 definition file(s) in git not deployed — Warehouse publishes as a shell"},
+			Warning: "only metadata synced — 2 schema file(s) in git skipped (the Fabric API can't publish Warehouse content; deploy schema via git-sync or SqlPackage)"},
 		{Name: "SM_Sales", Type: "SemanticModel", Action: deploy.ActionCreate, ID: "id4", WorkspaceID: "ws-sem"},
 		{Name: "Salgsrapport", Type: "Report", Action: deploy.ActionCreate, ID: "id5", WorkspaceID: "ws-sem"},
 		{Name: "RPT_Legacy", Type: "Report", Action: deploy.ActionCreate, WorkspaceID: "ws-sem",
@@ -108,8 +118,10 @@ func TestWriteDeployReportSketch(t *testing.T) {
 		{Name: "nb_gammel", Type: "Notebook", Action: deploy.ActionDelete, ID: "id6", WorkspaceID: "ws-data"},
 	}
 	postRuns := []postDeployOutcome{
-		{Run: postDeployRun{Name: "nb_ingest_sales", WorkspaceName: "DP - TEST - Data"}, Status: "Completed", Duration: 94 * time.Second},
-		{Run: postDeployRun{Name: "PL_refresh_sales", WorkspaceName: "DP - TEST - Data"}, Status: postDeployStatusSkipped},
+		{Run: postDeployRun{Name: "nb_ingest_sales", WorkspaceName: "DP - TEST - Data"}, Status: "Failed",
+			Err: errors.New("job Failed: NotebookExecutionException — Table 'sales' not found"), Duration: 41 * time.Second},
+		{Run: postDeployRun{Name: "PL_refresh_sales", WorkspaceName: "DP - TEST - Data"}, Status: postDeployStatusSkipped,
+			SkippedAfter: "nb_ingest_sales"},
 	}
 	ctx := &deployReportContext{
 		Customer: "Fabrikam", Environment: "TEST",

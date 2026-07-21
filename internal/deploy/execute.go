@@ -165,10 +165,11 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			res.ID = deployedID
 
 			// Git carries definition files futils cannot push for this type —
-			// warn so a schema change is never mistaken for deployed.
+			// warn so a schema change is never mistaken for deployed. Lead with
+			// what DID happen (metadata sync), then what was skipped and why.
 			if p.Item.ShellParts > 0 {
 				res.Warning = joinWarning(res.Warning, fmt.Sprintf(
-					"%d definition file(s) in git not deployed — %s publishes as a shell; deploy schema via Fabric git-sync or SqlPackage",
+					"only metadata synced — %d schema file(s) in git skipped (the Fabric API can't publish %s content; deploy schema via git-sync or SqlPackage)",
 					p.Item.ShellParts, p.Item.Type))
 			}
 

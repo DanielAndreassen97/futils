@@ -549,10 +549,10 @@ func TestRenderDeployReportPostDeploySection(t *testing.T) {
 	postRuns := []postDeployOutcome{
 		{Run: postDeployRun{Name: "NB_A", WorkspaceName: "WS One"}, Status: fabric.JobStatusCompleted, Duration: 14 * time.Second},
 		{Run: postDeployRun{Name: "NB_B", WorkspaceName: "WS One"}, Status: fabric.JobStatusFailed, Err: errors.New("job Failed: boom")},
-		{Run: postDeployRun{Name: "NB_C", WorkspaceName: "WS One"}, Status: postDeployStatusSkipped},
+		{Run: postDeployRun{Name: "NB_C", WorkspaceName: "WS One"}, Status: postDeployStatusSkipped, SkippedAfter: "NB_B"},
 	}
 	html := renderDeployReport(nil, results, postRuns, time.Unix(0, 0), nil)
-	for _, want := range []string{"Post-deploy runs", "NB_A", "Completed in 14s", "job Failed: boom", "skipped — earlier run failed"} {
+	for _, want := range []string{"Post-deploy runs", "NB_A", "Completed in 14s", "job Failed: boom", "skipped — NB_B failed"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("report missing %q", want)
 		}

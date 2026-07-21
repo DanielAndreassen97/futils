@@ -637,7 +637,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			markCls, mark, detailCls, detail := "ok", "✓", "detail", "Completed in "+o.Duration.String()
 			switch {
 			case o.Status == postDeployStatusSkipped:
-				markCls, mark, detailCls, detail = "del", "⊘", "detail", "skipped — earlier run failed"
+				markCls, mark, detailCls, detail = "del", "⊘", "detail", "skipped — "+o.SkippedAfter+" failed"
 			case o.Err != nil:
 				markCls, mark, detailCls, detail = "efail", "✗", "detail efail", o.Err.Error()
 			}
