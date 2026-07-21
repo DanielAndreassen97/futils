@@ -89,8 +89,12 @@ func DemoSeed(dir string) error {
 	fmt.Println("  config:  " + cfgPath)
 	fmt.Println("  repo:    " + repo)
 	fmt.Println()
-	fmt.Println("Run futils against it with:")
+	fmt.Println("Try it one-off (nothing sticks to your shell):")
+	fmt.Println("  FUTILS_DEMO=1 FUTILS_CONFIG=" + cfgPath + " futils")
+	fmt.Println()
+	fmt.Println("Or export for the whole shell session:")
 	fmt.Println("  export FUTILS_DEMO=1 FUTILS_CONFIG=" + cfgPath)
+	fmt.Println("  unset FUTILS_DEMO FUTILS_CONFIG    # back to your real tenant")
 	return nil
 }
 

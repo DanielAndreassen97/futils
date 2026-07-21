@@ -91,9 +91,10 @@ futils ships a demo mode: a self-contained fake Fabric tenant for a fictional cu
 
 ```sh
 futils demoseed        # seed a sandbox config + git repo under /tmp/futils-demo
-export FUTILS_DEMO=1 FUTILS_CONFIG=/tmp/futils-demo/config.json
-futils                 # explore everything, no tenant or login needed
+FUTILS_DEMO=1 FUTILS_CONFIG=/tmp/futils-demo/config.json futils
 ```
+
+Nothing sticks: the one-off prefix leaves your shell and real config untouched. If you'd rather `export` the two variables for a whole session, `unset FUTILS_DEMO FUTILS_CONFIG` brings you back to your real tenant — and the banner shows a DEMO MODE line whenever the fake tenant is active, so you always know which one you're talking to.
 
 ## Prerequisites
 

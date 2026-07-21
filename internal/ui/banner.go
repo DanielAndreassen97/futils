@@ -27,6 +27,11 @@ var Version = "dev"
 // it centred under the version.
 var UpdateNotice string
 
+// DemoMode, when true, banners that every flow runs against the fake tenant —
+// with the way back — so a sticky FUTILS_DEMO export can't masquerade as the
+// real thing.
+var DemoMode bool
+
 // BuildInfo is an optional compact freshness line shown under the version in
 // the banner — set by main for dev builds, empty (and hidden) for releases.
 var BuildInfo string
@@ -320,6 +325,11 @@ func Banner() string {
 		notice := "⬆ " + UpdateNotice
 		out += "\n" + centerPad(len([]rune(notice)), bannerWidth) +
 			lipgloss.NewStyle().Foreground(AccentColor).Render(notice)
+	}
+	if DemoMode {
+		demo := "DEMO MODE — fake tenant · unset FUTILS_DEMO to leave"
+		out += "\n" + centerPad(len([]rune(demo)), bannerWidth) +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24")).Bold(true).Render(demo)
 	}
 	out += "\n" + centerPad(len([]rune(hintText)), bannerWidth) + hint
 	return out

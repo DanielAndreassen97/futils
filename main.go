@@ -39,6 +39,7 @@ func main() {
 	// `futils demoseed`.
 	if os.Getenv("FUTILS_DEMO") != "" {
 		cmd.EnableDemoMode()
+		ui.DemoMode = true
 	}
 	configPath := config.GetConfigPath()
 	args := os.Args[1:]
