@@ -74,11 +74,18 @@ func TestWriteDeployReportSketch(t *testing.T) {
 			},
 			Diffs: []ItemDiff{{
 				Name: "nb_transform_sales", Type: "Notebook",
-				Parts: []deploy.PartDiff{{
-					Path: "notebook-content.py",
-					Old:  "# Fabric notebook source\ndf = spark.read.table(\"sales\")\ndf.write.mode(\"overwrite\").saveAsTable(\"gold_sales\")",
-					New:  "# Fabric notebook source\ndf = spark.read.table(\"sales\")\ndf = df.filter(df.amount > 0)\ndf.write.mode(\"overwrite\").saveAsTable(\"gold_sales\")",
-				}},
+				Parts: []deploy.PartDiff{
+					{
+						Path: "notebook-content.py",
+						Old:  "# Fabric notebook source\ndf = spark.read.table(\"sales\")\ndf.write.mode(\"overwrite\").saveAsTable(\"gold_sales\")",
+						New:  "# Fabric notebook source\ndf = spark.read.table(\"sales\")\ndf = df.filter(df.amount > 0)\ndf.write.mode(\"overwrite\").saveAsTable(\"gold_sales\")",
+					},
+					{
+						Path: ".schedules",
+						Old:  `[{"enabled":true,"configuration":{"type":"Cron","interval":720}}]`,
+						New:  `[{"enabled":true,"configuration":{"type":"Cron","interval":360}}]`,
+					},
+				},
 			}},
 		},
 		{

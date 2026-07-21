@@ -7,6 +7,7 @@ import (
 	"html"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"strings"
 	"time"
@@ -367,6 +368,15 @@ const deployReportStyle = `<style>
   .rb{font-family:"SF Mono",Menlo,monospace;font-size:.78rem;word-break:break-all}
   .rb .rb-old{color:var(--delfg)} .rb .rb-new{color:var(--addfg)}
   .rb .rb-arrow{color:#5d6b61;padding:0 .45rem;word-break:normal}
+
+  /* ── inline hint (e.g. schedules ride along) ── */
+  .hintline{display:flex;align-items:baseline;gap:.6rem;margin:.15rem 0 .7rem;padding:.55rem .85rem;
+            border:1px solid rgba(251,191,36,.22);border-radius:9px;
+            background:linear-gradient(150deg,rgba(251,191,36,.07),rgba(251,191,36,.02));
+            color:#d9cfa3;font-size:.8rem}
+  .hintline .ic{flex:0 0 auto;color:var(--changed)}
+  .hintline b{color:#fcd66b;font-weight:600}
+  .hintline .mono{color:#e7d9a8}
 </style>`
 
 // flowArrow is the animated source→target stream both report heroes share: a
@@ -634,6 +644,35 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 	b.WriteString(`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>`)
 	b.WriteString(`</div></div>`)
 
+	// A .schedules part in the rendered diffs means refresh schedules deploy
+	// with their items and will overwrite the target's — worth a hint, since
+	// that is often unwanted and there is a setting for it. Presence alone is
+	// the signal: with "Schedules: kept in target" enabled, compare strips
+	// .schedules from both sides and no such part can reach the report.
+	for _, g := range groups {
+		found := false
+		for _, it := range g.Diffs {
+			if !itemRenderable(it) {
+				continue
+			}
+			for _, p := range it.Parts {
+				if path.Base(p.Path) == ".schedules" {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if found {
+			b.WriteString(`<div class="hintline"><span class="ic">⏱</span><span>` +
+				`This diff includes <span class="mono">.schedules</span> changes — refresh schedules deploy with their items and overwrite the target's. ` +
+				`To keep the target's schedules untouched, set <b>Edit customer → Schedules: kept in target</b>.</span></div>`)
+			break
+		}
+	}
+
 	for _, g := range groups {
 		if len(g.Diffs) == 0 {
 			continue
@@ -669,6 +708,9 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 				badge := ""
 				if oldIsJSON || newIsJSON {
 					badge = ` <span class="badge">json · prettified</span>`
+				}
+				if path.Base(p.Path) == ".schedules" {
+					badge += ` <span class="badge cap">schedule — overwrites target's</span>`
 				}
 				parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
 				for _, ln := range cappedLineDiff(oldPretty, newPretty) {
