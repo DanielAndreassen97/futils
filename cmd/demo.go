@@ -359,6 +359,11 @@ func demoPipeline(env string, current bool) string {
 	}
 	return `{
   "properties": {
+    "parameters": {
+      "load_date": { "type": "string", "defaultValue": "2026-01-01" },
+      "full_reload": { "type": "bool", "defaultValue": false },
+      "batch_size": { "type": "int", "defaultValue": 5000 }
+    },
     "activities": [
       {
         "name": "Copy landing extracts",
@@ -699,7 +704,7 @@ func (c *demoClient) RunNotebook(token, workspaceID, itemID string, inputs []fab
 	return "demo://jobs/" + itemID, nil
 }
 
-func (c *demoClient) RunPipeline(token, workspaceID, itemID string) (string, error) {
+func (c *demoClient) RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error) {
 	time.Sleep(600 * time.Millisecond)
 	return "demo://jobs/" + itemID, nil
 }

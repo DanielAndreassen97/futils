@@ -54,7 +54,7 @@ type APIClient interface {
 	ListNotebooks(token, workspaceID string) ([]fabric.Item, error)
 	GetNotebookIpynb(token, workspaceID, itemID string) ([]byte, error)
 	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error)
-	RunPipeline(token, workspaceID, itemID string) (string, error)
+	RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error)
 	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
 
 	// Move flow.
@@ -104,8 +104,8 @@ func (RealAPIClient) GetNotebookIpynb(token, workspaceID, itemID string) ([]byte
 func (RealAPIClient) RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error) {
 	return fabric.RunNotebook(token, workspaceID, itemID, inputs, lakehouse)
 }
-func (RealAPIClient) RunPipeline(token, workspaceID, itemID string) (string, error) {
-	return fabric.RunPipeline(token, workspaceID, itemID)
+func (RealAPIClient) RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error) {
+	return fabric.RunPipeline(token, workspaceID, itemID, params)
 }
 func (RealAPIClient) GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error) {
 	return fabric.GetJobInstance(token, instanceURL)

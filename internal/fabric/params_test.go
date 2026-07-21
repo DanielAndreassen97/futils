@@ -299,3 +299,88 @@ func TestParseParameters_MalformedJSON(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
+
+func TestParsePipelineParameters(t *testing.T) {
+	content := []byte(`{
+	  "properties": {
+	    "parameters": {
+	      "load_date": { "type": "string", "defaultValue": "2026-01-01" },
+	      "full_reload": { "type": "bool", "defaultValue": false },
+	      "batch_size": { "type": "int", "defaultValue": 5000 },
+	      "rate": { "type": "float", "defaultValue": 1.5 },
+	      "no_default": { "type": "string" }
+	    },
+	    "activities": []
+	  }
+	}`)
+	got, err := ParsePipelineParameters(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	// Sorted by name: batch_size, full_reload, load_date, no_default, rate.
+	if len(got) != 5 {
+		t.Fatalf("want 5 params, got %d: %+v", len(got), got)
+	}
+	want := map[string]struct {
+		typ string
+		def any
+		raw string
+	}{
+		"batch_size":  {TypeInt, int64(5000), "5000"},
+		"full_reload": {TypeBool, false, "false"},
+		"load_date":   {TypeString, "2026-01-01", "2026-01-01"},
+		"rate":        {TypeFloat, 1.5, "1.5"},
+	}
+	for _, p := range got {
+		if p.Name == "no_default" {
+			if p.Default != nil {
+				t.Errorf("no_default must have nil Default, got %v", p.Default)
+			}
+			continue
+		}
+		w, ok := want[p.Name]
+		if !ok {
+			t.Errorf("unexpected param %q", p.Name)
+			continue
+		}
+		if p.Type != w.typ || p.Default != w.def || p.RawDefault != w.raw {
+			t.Errorf("%s: got {type=%s default=%v raw=%q}, want {type=%s default=%v raw=%q}",
+				p.Name, p.Type, p.Default, p.RawDefault, w.typ, w.def, w.raw)
+		}
+	}
+	// Sort order.
+	if got[0].Name != "batch_size" || got[4].Name != "rate" {
+		t.Errorf("params not sorted by name: %s..%s", got[0].Name, got[4].Name)
+	}
+}
+
+func TestParsePipelineParametersNone(t *testing.T) {
+	got, err := ParsePipelineParameters([]byte(`{"properties":{"activities":[]}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("pipeline with no parameters must yield none, got %+v", got)
+	}
+}
+
+// array/object params have no dedicated field, so they surface as string with
+// their JSON text as the default the form seeds.
+func TestParsePipelineParametersArrayObjectAsText(t *testing.T) {
+	content := []byte(`{"properties":{"parameters":{
+	  "tags": { "type": "array", "defaultValue": ["a","b"] },
+	  "opts": { "type": "object", "defaultValue": {"k":1} }
+	}}}`)
+	got, err := ParsePipelineParameters(content)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, p := range got {
+		if p.Type != TypeString {
+			t.Errorf("%s: array/object must map to string, got %s", p.Name, p.Type)
+		}
+		if p.RawDefault == "" {
+			t.Errorf("%s: expected JSON text default, got empty", p.Name)
+		}
+	}
+}

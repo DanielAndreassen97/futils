@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"fmt"
+	"path"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -77,15 +81,85 @@ func RunPipelineWithAPI(configPath string, client APIClient) error {
 	}
 	picked := pipelines[idx]
 
+	// Read the pipeline's declared parameters and their defaults, then let the
+	// user override them in a pre-filled form. Omitted/unchanged params keep the
+	// pipeline's own defaults (Fabric applies them server-side), so the form
+	// only sends what actually changed. Best-effort: a definition that can't be
+	// fetched or parsed just runs the pipeline with no overrides.
+	params := pipelineParamOverrides(client, token, picked.Workspace.ID, picked.Item)
+
 	fmt.Println()
 	fmt.Println(infoStyle.Render("Run summary"))
 	fmt.Printf("  Customer:    %s\n", customerName)
 	fmt.Printf("  Environment: %s\n", env)
 	fmt.Printf("  Workspace:   %s\n", picked.Workspace.Name)
 	fmt.Printf("  Pipeline:    %s\n", picked.Item.DisplayName)
+	if len(params) > 0 {
+		fmt.Printf("  Parameters:  %s\n", describePipelineParams(params))
+	}
 	fmt.Println()
 
 	return runJobAndReport(client, token, "Pipeline", func() (string, error) {
-		return client.RunPipeline(token, picked.Workspace.ID, picked.Item.ID)
+		return client.RunPipeline(token, picked.Workspace.ID, picked.Item.ID, params)
 	})
+}
+
+// pipelineParamOverrides fetches a pipeline's definition, parses its declared
+// parameters, and — when it has any — shows a pre-filled form so the user can
+// override the defaults. Returns the flat name→value map of CHANGED values
+// (RunPipeline's shape); nil when the pipeline has no parameters, the user
+// changed nothing, or the definition couldn't be read (the run then falls back
+// to the pipeline's own defaults). Never fails the run: parse/definition
+// problems degrade to no overrides with a note.
+func pipelineParamOverrides(client APIClient, token, workspaceID string, item fabric.Item) map[string]any {
+	def, err := client.GetItemDefinition(token, workspaceID, item.ID, "")
+	if err != nil {
+		fmt.Println(infoStyle.Render("Couldn't read pipeline parameters — running with its defaults."))
+		return nil
+	}
+	var content []byte
+	for _, p := range def.Parts {
+		if path.Base(p.Path) == "pipeline-content.json" {
+			if b, derr := base64.StdEncoding.DecodeString(p.Payload); derr == nil {
+				content = b
+			}
+			break
+		}
+	}
+	if content == nil {
+		return nil
+	}
+	params, err := fabric.ParsePipelineParameters(content)
+	if err != nil || len(params) == 0 {
+		return nil
+	}
+
+	overrides, err := ui.ParameterForm(params)
+	if err != nil {
+		return nil // esc/ctrl+c out of the form — run with defaults
+	}
+	if len(overrides) == 0 {
+		fmt.Println(infoStyle.Render("All parameters left at their pipeline defaults."))
+		return nil
+	}
+	out := make(map[string]any, len(overrides))
+	for _, o := range overrides {
+		out[o.Name] = o.Value
+	}
+	return out
+}
+
+// describePipelineParams renders the changed pipeline parameters as a compact
+// name=value list for the run summary, sorted for a stable line.
+func describePipelineParams(params map[string]any) string {
+	names := make([]string, 0, len(params))
+	for n := range params {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, len(names))
+	for i, n := range names {
+		parts[i] = fmt.Sprintf("%s=%v", n, params[n])
+	}
+	return strings.Join(parts, ", ")
 }

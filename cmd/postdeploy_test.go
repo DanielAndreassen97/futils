@@ -69,7 +69,7 @@ type fakeRunner struct {
 	pipelines  []string          // itemIDs submitted via RunPipeline specifically
 }
 
-func (f *fakeRunner) RunPipeline(token, workspaceID, itemID string) (string, error) {
+func (f *fakeRunner) RunPipeline(token, workspaceID, itemID string, _ map[string]any) (string, error) {
 	f.pipelines = append(f.pipelines, itemID)
 	return f.RunNotebook(token, workspaceID, itemID, nil, nil)
 }

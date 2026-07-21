@@ -142,7 +142,7 @@ func (f *deployFakeAPI) GetNotebookIpynb(string, string, string) ([]byte, error)
 func (f *deployFakeAPI) RunNotebook(string, string, string, []fabric.JobInput, *fabric.DefaultLakehouse) (string, error) {
 	return "", fmt.Errorf("not used by deploy tests")
 }
-func (f *deployFakeAPI) RunPipeline(string, string, string) (string, error) {
+func (f *deployFakeAPI) RunPipeline(string, string, string, map[string]any) (string, error) {
 	return "", fmt.Errorf("not used by deploy tests")
 }
 func (f *deployFakeAPI) GetJobInstance(string, string) (fabric.JobInstanceStatus, error) {

@@ -498,3 +498,56 @@ func TestCreateItemShellKeepsCreationPayload(t *testing.T) {
 		t.Errorf("shell create must carry creationPayload and no definition:\n%s", body)
 	}
 }
+
+// RunPipeline with params sends a flat executionData.parameters map (raw
+// values, no {value,type} envelope); with none it sends an empty body so the
+// pipeline runs on its own defaults.
+func TestRunPipelineParameters(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{status: 202, location: "https://api.fabric.microsoft.com/v1/jobs/inst-1"},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	ws := "12345678-1234-1234-1234-123456789012"
+	item := "abcdef00-1234-1234-1234-123456789012"
+	loc, err := RunPipeline("tok", ws, item, map[string]any{"full_reload": true, "batch_size": int64(5000)})
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if loc == "" {
+		t.Fatal("expected job-instance URL from Location header")
+	}
+	var sent struct {
+		ExecutionData struct {
+			Parameters map[string]any `json:"parameters"`
+		} `json:"executionData"`
+	}
+	if err := json.Unmarshal(transport.bodies[0], &sent); err != nil {
+		t.Fatalf("body not valid JSON: %v\n%s", err, transport.bodies[0])
+	}
+	if sent.ExecutionData.Parameters["full_reload"] != true {
+		t.Errorf("full_reload not sent as raw bool: %#v", sent.ExecutionData.Parameters["full_reload"])
+	}
+	// A raw pipeline param must NOT be wrapped in a {value,type} envelope.
+	if strings.Contains(string(transport.bodies[0]), `"type"`) {
+		t.Errorf("pipeline params must be flat values, not {value,type}:\n%s", transport.bodies[0])
+	}
+}
+
+func TestRunPipelineNoParamsEmptyBody(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{status: 202, location: "https://api.fabric.microsoft.com/v1/jobs/inst-2"},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	if _, err := RunPipeline("tok", "12345678-1234-1234-1234-123456789012", "abcdef00-1234-1234-1234-123456789012", nil); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if b := strings.TrimSpace(string(transport.bodies[0])); b != "{}" {
+		t.Errorf("no-params run must send empty body {}, got %q", b)
+	}
+}

@@ -5,6 +5,7 @@ package fabric
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -397,4 +398,94 @@ func unquotePython(raw string) (string, error) {
 		i++
 	}
 	return b.String(), nil
+}
+
+// pipelineParamSpec is one entry in a data pipeline's
+// properties.parameters block. type is Fabric's pipeline-parameter type
+// ("string", "int", "float", "bool", "array", "object"); defaultValue is the
+// declared default (may be absent).
+type pipelineParamSpec struct {
+	Type         string          `json:"type"`
+	DefaultValue json.RawMessage `json:"defaultValue"`
+}
+
+// ParsePipelineParameters reads a data pipeline's parameters and their
+// declared defaults from a pipeline-content.json definition. The result is
+// sorted by name and reuses the Parameter shape (and Type* names) so the same
+// ParameterForm renders it — array/object params surface as string (their JSON
+// text), since the form edits them as raw text. Returns an empty slice when the
+// pipeline declares no parameters.
+func ParsePipelineParameters(content []byte) ([]Parameter, error) {
+	var doc struct {
+		Properties struct {
+			Parameters map[string]pipelineParamSpec `json:"parameters"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(content, &doc); err != nil {
+		return nil, fmt.Errorf("parse pipeline definition: %w", err)
+	}
+	names := make([]string, 0, len(doc.Properties.Parameters))
+	for name := range doc.Properties.Parameters {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]Parameter, 0, len(names))
+	for _, name := range names {
+		spec := doc.Properties.Parameters[name]
+		p := Parameter{Name: name, Type: pipelineParamType(spec.Type)}
+		if len(spec.DefaultValue) > 0 {
+			p.Default, p.RawDefault = pipelineDefault(p.Type, spec.DefaultValue)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// pipelineParamType maps a pipeline parameter's declared type to the Type*
+// the form understands. array/object have no dedicated field, so they're
+// edited as raw JSON text (string).
+func pipelineParamType(t string) string {
+	switch strings.ToLower(t) {
+	case "bool":
+		return TypeBool
+	case "int":
+		return TypeInt
+	case "float":
+		return TypeFloat
+	default: // string, array, object, secureString, and any unknown type
+		return TypeString
+	}
+}
+
+// pipelineDefault decodes a parameter's raw JSON defaultValue into the typed
+// Default the form pre-fills and the RawDefault text it shows. Bool/int/float
+// decode to their Go type (matching collectOverrides' default-comparison);
+// everything else is kept as its source text.
+func pipelineDefault(typ string, raw json.RawMessage) (any, string) {
+	switch typ {
+	case TypeBool:
+		var b bool
+		if json.Unmarshal(raw, &b) == nil {
+			return b, strconv.FormatBool(b)
+		}
+	case TypeInt:
+		var n int64
+		if json.Unmarshal(raw, &n) == nil {
+			return n, strconv.FormatInt(n, 10)
+		}
+	case TypeFloat:
+		var f float64
+		if json.Unmarshal(raw, &f) == nil {
+			return f, strconv.FormatFloat(f, 'g', -1, 64)
+		}
+	}
+	// string / array / object / a bool-or-number that didn't fit: show the
+	// underlying text, unquoting a plain JSON string so the form seeds the
+	// value itself rather than a quoted literal.
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, s
+	}
+	return string(raw), string(raw)
 }

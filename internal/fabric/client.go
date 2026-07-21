@@ -1127,10 +1127,28 @@ func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse
 
 // RunPipeline submits a data-pipeline job (jobType=Pipeline) and returns the
 // job-instance URL from the Location header — poll it with GetJobInstance,
-// exactly like a notebook run. Pipelines take no run payload here; parameter
-// support can ride on executionData later if a flow needs it.
-func RunPipeline(token, workspaceID, itemID string) (string, error) {
-	return submitJobInstance(token, workspaceID, itemID, "Pipeline", strings.NewReader("{}"))
+// exactly like a notebook run. params are the pipeline-parameter overrides:
+// unlike RunNotebook's {value,type} envelope, a pipeline takes a FLAT
+// name→value map under executionData.parameters (the value's JSON type is the
+// parameter type). Omitted parameters fall back to the pipeline's own declared
+// defaults, so callers send only the values the user changed; a nil/empty map
+// runs the pipeline entirely on its defaults.
+func RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error) {
+	body := strings.NewReader("{}")
+	if len(params) > 0 {
+		payload, err := json.Marshal(struct {
+			ExecutionData struct {
+				Parameters map[string]any `json:"parameters"`
+			} `json:"executionData"`
+		}{ExecutionData: struct {
+			Parameters map[string]any `json:"parameters"`
+		}{Parameters: params}})
+		if err != nil {
+			return "", fmt.Errorf("marshal pipeline params: %w", err)
+		}
+		body = strings.NewReader(string(payload))
+	}
+	return submitJobInstance(token, workspaceID, itemID, "Pipeline", body)
 }
 
 // submitJobInstance posts a job-instance run for an item and returns the

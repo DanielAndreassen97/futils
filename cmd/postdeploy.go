@@ -71,7 +71,7 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 // kept small so tests can fake it without stubbing the full client.
 type jobRunner interface {
 	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error)
-	RunPipeline(token, workspaceID, itemID string) (string, error)
+	RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error)
 	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
 }
 
@@ -115,7 +115,7 @@ func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, sta
 		var instanceURL string
 		var err error
 		if r.Type == "DataPipeline" {
-			instanceURL, err = client.RunPipeline(token, r.WorkspaceID, r.ItemID)
+			instanceURL, err = client.RunPipeline(token, r.WorkspaceID, r.ItemID, nil)
 		} else {
 			instanceURL, err = client.RunNotebook(token, r.WorkspaceID, r.ItemID, nil, nil)
 		}
