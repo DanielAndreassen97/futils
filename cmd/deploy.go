@@ -296,7 +296,16 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	}
 	if hasDiffs {
 		if ok, cerr := ui.Confirm("Open content diffs in browser?"); cerr == nil && ok {
-			if derr := showDiffsInBrowser(groups); derr != nil {
+			// Same route context as the post-deploy report, so the preview says
+			// what is being compared (source repo state → customer · env) and
+			// which baseline the rebind section translates from.
+			previewCtx := &deployReportContext{
+				Customer:    customerName,
+				Environment: alias,
+				Source:      deploySourceLabel(customer),
+				Baseline:    customer.BaselineEnvironment,
+			}
+			if derr := showDiffsInBrowser(groups, previewCtx); derr != nil {
 				fmt.Println(warningStyle.Render("Couldn't open diffs: " + derr.Error()))
 			}
 		}
@@ -1214,6 +1223,7 @@ func saveDeployHistory(configPath, customerName string, customer config.Customer
 		Customer:    customerName,
 		Environment: alias,
 		Source:      deploySourceLabel(customer),
+		Baseline:    customer.BaselineEnvironment,
 		Backend:     backendLabel,
 	})
 	path, err := writeHistoryReport(dir, ts, htmlDoc)

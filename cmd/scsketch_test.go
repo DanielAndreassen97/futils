@@ -106,7 +106,7 @@ func TestWriteDeployReportSketch(t *testing.T) {
 	}
 	ctx := &deployReportContext{
 		Customer: "Fabrikam", Environment: "TEST",
-		Source: "origin/main @ 92ea579", Backend: "per-item",
+		Source: "origin/main @ 92ea579", Baseline: "DEV", Backend: "per-item",
 	}
 	html := renderDeployReport(groups, results, postRuns, time.Now(), ctx)
 	if err := os.WriteFile(out, []byte(html), 0o644); err != nil {

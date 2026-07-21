@@ -68,7 +68,7 @@ func TestRenderDeployDiffHTMLEscapesAndIncludesItems(t *testing.T) {
 			Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "lh = \"DEV\"\n<script>", New: "lh = \"TEST\"\n<script>"}},
 		}},
 	}}
-	html := renderDeployDiffHTML(groups)
+	html := renderDeployDiffHTML(groups, nil)
 	if !strings.Contains(html, "NB_Config") || !strings.Contains(html, "notebook-content.py") {
 		t.Errorf("HTML missing item/part name")
 	}
@@ -85,7 +85,7 @@ func TestRenderDeployDiffHTMLEscapesAndIncludesItems(t *testing.T) {
 }
 
 func TestRenderDeployDiffHTMLEmpty(t *testing.T) {
-	html := renderDeployDiffHTML([]deployGroup{{}})
+	html := renderDeployDiffHTML([]deployGroup{{}}, nil)
 	if !strings.Contains(html, "<html") {
 		t.Errorf("expected a valid HTML doc even with no diffs")
 	}
@@ -99,7 +99,7 @@ func TestRenderDeployDiffHTMLCollapsedByDefault(t *testing.T) {
 			{Name: "NB_B", Type: "Notebook", Parts: []deploy.PartDiff{{Path: "p", Old: "c", New: "d"}}},
 		},
 	}}
-	out := renderDeployDiffHTML(groups)
+	out := renderDeployDiffHTML(groups, nil)
 	// Items must NOT be open by default — the new markup emits `<details class="item changed">`,
 	// so guard against the variant the code could wrongly produce.
 	if strings.Contains(out, `<details class="item changed" open`) {

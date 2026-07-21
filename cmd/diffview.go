@@ -393,6 +393,7 @@ type deployReportContext struct {
 	Customer    string
 	Environment string
 	Source      string // e.g. "origin/feature/daniel @ ab12cd3"
+	Baseline    string // baseline env alias references resolve against (e.g. "DEV")
 	Backend     string // "per-item" or "bulk-import (preview)"
 }
 
@@ -428,13 +429,24 @@ func (c *deployReportContext) heroRoute() string {
 		`<span class="env tgt"><span class="envnote">target</span>` + html.EscapeString(tgt) + `</span></div>`
 }
 
-// heroContextLine renders the hero's remaining context — the backend note; the
+// heroContextLine renders the hero's remaining context — which baseline env
+// the reference rebinds translate FROM, and the backend note; the
 // customer/environment/source moved into the route pills.
 func (c *deployReportContext) heroContextLine() string {
-	if c == nil || c.Backend == "" {
+	if c == nil {
 		return ""
 	}
-	return `<div class="sub">` + html.EscapeString(c.Backend) + ` backend</div>`
+	var parts []string
+	if c.Baseline != "" {
+		parts = append(parts, "references rebound from baseline <b>"+html.EscapeString(c.Baseline)+"</b>")
+	}
+	if c.Backend != "" {
+		parts = append(parts, html.EscapeString(c.Backend)+" backend")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return `<div class="sub">` + strings.Join(parts, " · ") + `</div>`
 }
 
 // renderDeployReport builds a self-contained HTML deploy report. When results
@@ -693,9 +705,11 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 }
 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
-// in-browser preview.
-func renderDeployDiffHTML(groups []deployGroup) string {
-	return renderDeployReport(groups, nil, nil, time.Now(), nil)
+// in-browser preview. ctx carries the same source→target route as the
+// post-deploy report so the preview says what is being compared; nil renders
+// route-less (tests, callers with no run context).
+func renderDeployDiffHTML(groups []deployGroup, ctx *deployReportContext) string {
+	return renderDeployReport(groups, nil, nil, time.Now(), ctx)
 }
 
 // summaryCard is one colored count card in a report's summary row; cls picks
@@ -794,8 +808,8 @@ func openInBrowser(path string) error {
 // browser's load (a cold start can take >5s and would land on file-not-found,
 // with no way back to the report). It lives in the OS temp dir, which the OS
 // cleans on its own — it is an ephemeral viewer, not a saved artifact.
-func showDiffsInBrowser(groups []deployGroup) error {
-	htmlDoc := renderDeployDiffHTML(groups)
+func showDiffsInBrowser(groups []deployGroup, ctx *deployReportContext) error {
+	htmlDoc := renderDeployDiffHTML(groups, ctx)
 	f, err := os.CreateTemp("", "futils-deploy-diff-*.html")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
