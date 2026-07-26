@@ -62,11 +62,46 @@ var (
 	// in the same output as the lines that did, so they get their own colour
 	// rather than reading as one more neutral status message.
 	wsCancelStyle = lipgloss.NewStyle().Foreground(ui.StopColor).Bold(true)
-	// wsHeaderStyle is the role heading in the picker. Dim rather than accent:
-	// the cursor owns the accent colour, and a bright heading would compete with
-	// it for the eye.
-	wsHeaderStyle = lipgloss.NewStyle().Foreground(ui.DimColor).Bold(true)
 )
+
+// wsRoleBarPalette is the role heading's colour ladder: a full-width inverted
+// bar, brightest for Admin and darkest for Viewer, so the heading breaks the
+// list physically instead of blending into it. Brightness carries the hierarchy,
+// which keeps the licence-tier colours free to mean something else entirely.
+//
+// Roles with no entry fall back to the grey bar — a workspace reported under no
+// role has no place on a ladder of authority.
+var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
+	wsRoleAdmin:   {"#22c55e", "#08120b"},
+	"Member":      {"#16a34a", "#f0fdf4"},
+	"Contributor": {"#15803d", "#dcfce7"},
+	"Viewer":      {"#14532d", "#bbf7d0"},
+}
+
+var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
+
+// wsRoleHeader is a picker row that is a role heading rather than a workspace.
+// It rides in FilterOption.Meta so the renderer knows which bar colour to use
+// without parsing the label back apart.
+type wsRoleHeader struct{ Role string }
+
+// wsBarWidth is how wide a role bar is drawn: the live terminal minus the
+// two-column indent the picker adds to every row.
+func wsBarWidth() int {
+	return terminalWidth(80, 24) - 2
+}
+
+// renderRoleBar draws the full-width heading bar for one role.
+func renderRoleBar(role, label string) string {
+	c, ok := wsRoleBarPalette[role]
+	if !ok {
+		c = wsRoleBarFallback
+	}
+	return lipgloss.NewStyle().
+		Background(c.bg).Foreground(c.fg).Bold(true).
+		Width(wsBarWidth()).
+		Render(" " + label)
+}
 
 // Workspaces is the top-level entry point for the workspace-management flow.
 func Workspaces(configPath string) error {
@@ -227,7 +262,8 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 // tier colour — a row that is half accent and half orange reads as two rows.
 func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 	if opt.IsHeader {
-		return wsHeaderStyle.Render(opt.Label)
+		hdr, _ := opt.Meta.(wsRoleHeader)
+		return renderRoleBar(hdr.Role, opt.Label)
 	}
 	tier, ok := opt.Meta.(workspaceTier)
 	if !ok {
@@ -271,8 +307,9 @@ func groupWorkspacesByRole(workspaces []fabric.Workspace, roleOf map[string]stri
 			return strings.ToLower(group[i].DisplayName) < strings.ToLower(group[j].DisplayName)
 		})
 		out = append(out, ui.FilterOption{
-			Label:    fmt.Sprintf("%s (%d)", wsRoleHeading(role), len(group)),
+			Label:    fmt.Sprintf("%s · %d", wsRoleHeading(role), len(group)),
 			IsHeader: true,
+			Meta:     wsRoleHeader{Role: role},
 		})
 		for _, ws := range group {
 			out = append(out, ui.FilterOption{

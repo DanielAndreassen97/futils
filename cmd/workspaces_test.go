@@ -736,7 +736,7 @@ func TestGroupWorkspacesByRoleOrdersGroupsByPower(t *testing.T) {
 			headers = append(headers, o.Label)
 		}
 	}
-	want := []string{"ADMIN (1)", "MEMBER (1)", "CONTRIBUTOR (1)", "VIEWER (1)", "NO WORKSPACE ROLE (1)"}
+	want := []string{"ADMIN · 1", "MEMBER · 1", "CONTRIBUTOR · 1", "VIEWER · 1", "NO WORKSPACE ROLE · 1"}
 	if len(headers) != len(want) {
 		t.Fatalf("headers = %v, want %v", headers, want)
 	}
@@ -752,7 +752,7 @@ func TestGroupWorkspacesByRoleOmitsEmptyGroups(t *testing.T) {
 	opts := groupWorkspacesByRole(workspaces, map[string]string{"a1": "Admin"}, nil)
 
 	for _, o := range opts {
-		if o.IsHeader && o.Label != "ADMIN (1)" {
+		if o.IsHeader && o.Label != "ADMIN · 1" {
 			t.Errorf("unexpected header %q — empty groups must be omitted", o.Label)
 		}
 	}

@@ -183,14 +183,22 @@ func aggregateNotebooks(client APIClient, token string, refs []WorkspaceRef) ([]
 	return all, nil
 }
 
+// terminalWidth returns the live terminal width, or fallback when stdout is not
+// a terminal (piped output, tests) or the width is implausibly small. Callers
+// pass the budget that suits their layout rather than sharing one constant.
+func terminalWidth(fallback, min int) int {
+	w, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || w < min {
+		return fallback
+	}
+	return w
+}
+
 // wrapIndented wraps s to the live terminal width with a left indent, so long
 // hint lines wrap cleanly instead of running off the edge in narrow panes.
 // Falls back to a 100-column budget when the width is unknown (not a tty).
 func wrapIndented(s string, indent int) string {
-	w, _, err := term.GetSize(os.Stdout.Fd())
-	if err != nil || w <= indent+20 {
-		w = 100
-	}
+	w := terminalWidth(100, indent+21)
 	return lipgloss.NewStyle().PaddingLeft(indent).Width(w - indent).Render(s)
 }
 
@@ -198,10 +206,7 @@ func wrapIndented(s string, indent int) string {
 // full-width accent rule with the title embedded in bold, and a dim subtitle
 // line beneath — ━━ TEST ━━━━━━━━ / Contoso · 3 workspaces · 2 mappings.
 func contextBanner(title, subtitle string) string {
-	w, _, err := term.GetSize(os.Stdout.Fd())
-	if err != nil || w < 20 {
-		w = 80
-	}
+	w := terminalWidth(80, 20)
 	rule := lipgloss.NewStyle().Foreground(ui.AccentColor)
 	bold := lipgloss.NewStyle().Bold(true)
 	fill := w - lipgloss.Width("━━ "+title+" ")

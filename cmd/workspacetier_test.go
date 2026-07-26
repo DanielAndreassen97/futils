@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
+	"github.com/DanielAndreassen97/futils/internal/ui"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func tierCaps() []fabric.Capacity {
@@ -93,5 +96,74 @@ func TestTierLabelPadsToTheWidestName(t *testing.T) {
 		if len(name) > tierColW {
 			t.Errorf("tier name %q is wider than the column (%d)", name, tierColW)
 		}
+	}
+}
+
+func TestRenderWorkspaceRowAlignsNonASCIINames(t *testing.T) {
+	// "DW - Ærlig & Øst" is a real workspace name. FitWidth counts runes,
+	// so æ costs one column like any other letter — a byte-based pad would
+	// short the row and ragged the whole tier column.
+	caps := []fabric.Capacity{{ID: "c", SKU: "F128"}}
+	rows := []string{"DW - Core", "DW - Ærlig & Øst", "DW - Reports - Contoso - TEST"}
+
+	var starts []int
+	for _, name := range rows {
+		opt := ui.FilterOption{
+			Label: name,
+			Value: "id",
+			Meta:  classifyWorkspace(fabric.Workspace{Type: "Workspace", CapacityID: "c"}, caps),
+		}
+		rendered := []rune(renderWorkspaceRow(opt, false))
+		starts = append(starts, indexOfRunes(rendered, []rune("Fabric")))
+	}
+	for i, got := range starts {
+		if got < 0 {
+			t.Fatalf("row %q did not render its tier", rows[i])
+		}
+		if got != starts[0] {
+			t.Errorf("tier column for %q starts at %d, but %q starts at %d",
+				rows[i], got, rows[0], starts[0])
+		}
+	}
+}
+
+// indexOfRunes is strings.Index in rune space — a byte index would defeat the
+// point of the test it serves.
+func indexOfRunes(haystack, needle []rune) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		match := true
+		for j := range needle {
+			if haystack[i+j] != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestRenderRoleBarUsesADistinctShadePerRole(t *testing.T) {
+	// The whole point of the ladder is that Admin and Viewer do not look alike.
+	seen := map[lipgloss.Color]string{}
+	for _, role := range wsRoles {
+		c, ok := wsRoleBarPalette[role]
+		if !ok {
+			t.Fatalf("role %q has no bar colour", role)
+		}
+		if prev, dup := seen[c.bg]; dup {
+			t.Errorf("roles %q and %q share the background %q", prev, role, c.bg)
+		}
+		seen[c.bg] = role
+	}
+}
+
+func TestRenderRoleBarFallsBackForAnUnknownRole(t *testing.T) {
+	// wsRoleNone is futils' own bucket and deliberately has no ladder entry;
+	// rendering it must not panic or produce an unstyled row.
+	if got := renderRoleBar(wsRoleNone, "NO WORKSPACE ROLE · 1"); !strings.Contains(got, "NO WORKSPACE ROLE") {
+		t.Errorf("fallback bar = %q", got)
 	}
 }
