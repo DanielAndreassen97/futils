@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -415,4 +416,78 @@ func Confirm(message string) (bool, error) {
 		return false, ErrGoBack
 	}
 	return res.value, nil
+}
+
+// confirmTypedModel is a confirmation that only a typed word satisfies — the
+// speed bump in front of an irreversible action, where a one-keystroke yes is
+// too cheap. Same plain-bubbletea reasoning as confirmModel: huh's inline
+// renderer ghosts in short terminals, which is the last thing you want on the
+// prompt guarding a delete.
+type confirmTypedModel struct {
+	message string
+	word    string
+	input   textinput.Model
+	matched bool
+	aborted bool
+	done    bool
+}
+
+func newConfirmTypedModel(message, word string) confirmTypedModel {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.CharLimit = 64
+	ti.Width = 24
+	ti.Focus()
+	return confirmTypedModel{message: message, word: word, input: ti}
+}
+
+func (m confirmTypedModel) Init() tea.Cmd { return textinput.Blink }
+
+func (m confirmTypedModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.String() {
+		case "enter":
+			// Only surrounding whitespace is forgiven; the comparison is exact
+			// and case-sensitive so the word can't be muscle memory.
+			m.matched = strings.TrimSpace(m.input.Value()) == m.word
+			m.done = true
+			return m, tea.Quit
+		case "esc", "ctrl+c":
+			m.aborted, m.done = true, true
+			return m, tea.Quit
+		}
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m confirmTypedModel) View() string {
+	if m.done {
+		if m.aborted || !m.matched {
+			return ""
+		}
+		return confirmSelectedStyle.Render("  "+m.message+" "+m.word) + "\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  %s\n\n", confirmTitleStyle.Render(m.message))
+	fmt.Fprintf(&b, "  Type %s to confirm: %s\n\n", confirmSelectedStyle.Render(m.word), m.input.View())
+	b.WriteString("  " + confirmHelpStyle.Render("enter submit · esc cancel"))
+	return b.String()
+}
+
+// ConfirmTyped asks the user to type word exactly, returning true only on an
+// exact match (surrounding whitespace trimmed). Anything else returns false —
+// the caller must treat that as "do not proceed", not as a retry prompt.
+// Esc/Ctrl+C return ErrGoBack, matching Confirm.
+func ConfirmTyped(message, word string) (bool, error) {
+	final, err := tea.NewProgram(newConfirmTypedModel(message, word)).Run()
+	if err != nil {
+		return false, err
+	}
+	res := final.(confirmTypedModel)
+	if res.aborted {
+		return false, ErrGoBack
+	}
+	return res.matched, nil
 }

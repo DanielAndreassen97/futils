@@ -309,3 +309,71 @@ func TestMenuMKeyReturnsGoHome(t *testing.T) {
 		t.Errorf("go-home collapse should render nothing, got %q", got.View())
 	}
 }
+
+// typeInto drives a confirmTypedModel: every rune of s as a key press, then
+// Enter. Mirrors what a user does at the delete prompt.
+func typeInto(m confirmTypedModel, s string) confirmTypedModel {
+	for _, r := range s {
+		nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = nm.(confirmTypedModel)
+	}
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return nm.(confirmTypedModel)
+}
+
+func TestConfirmTypedExactWordMatches(t *testing.T) {
+	m := typeInto(newConfirmTypedModel("Delete DW - Finance?", "Yes"), "Yes")
+	if !m.matched {
+		t.Error("typing the exact word must confirm")
+	}
+	if m.aborted {
+		t.Error("a match must not be an abort")
+	}
+}
+
+func TestConfirmTypedIsCaseSensitive(t *testing.T) {
+	// A destructive prompt that accepts "yes" is barely a speed bump — the
+	// point of the typed word is that it cannot be muscle memory.
+	for _, input := range []string{"yes", "YES", "yEs"} {
+		if typeInto(newConfirmTypedModel("Delete?", "Yes"), input).matched {
+			t.Errorf("input %q must not confirm", input)
+		}
+	}
+}
+
+func TestConfirmTypedRejectsEmptyAndOtherText(t *testing.T) {
+	for _, input := range []string{"", "y", "no", "Yes please", "Yess"} {
+		if typeInto(newConfirmTypedModel("Delete?", "Yes"), input).matched {
+			t.Errorf("input %q must not confirm", input)
+		}
+	}
+}
+
+func TestConfirmTypedTrimsSurroundingWhitespace(t *testing.T) {
+	// A trailing space from a fast typist should not read as "changed my mind".
+	if !typeInto(newConfirmTypedModel("Delete?", "Yes"), "  Yes ").matched {
+		t.Error("surrounding whitespace must be trimmed")
+	}
+}
+
+func TestConfirmTypedEscAborts(t *testing.T) {
+	m := newConfirmTypedModel("Delete?", "Yes")
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	res := nm.(confirmTypedModel)
+	if !res.aborted {
+		t.Error("esc must abort")
+	}
+	if res.matched {
+		t.Error("an abort must never confirm")
+	}
+}
+
+func TestConfirmTypedViewShowsRequiredWord(t *testing.T) {
+	view := newConfirmTypedModel("Delete DW - Finance and all its items?", "Yes").View()
+	if !strings.Contains(view, "Yes") {
+		t.Error("the prompt must state the word the user has to type")
+	}
+	if !strings.Contains(view, "Delete DW - Finance and all its items?") {
+		t.Error("the prompt must show the message")
+	}
+}
