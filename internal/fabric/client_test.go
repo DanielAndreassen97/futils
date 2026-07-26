@@ -103,6 +103,7 @@ type seqTransport struct {
 	responses []seqResponse
 	calls     []string // Authorization header values recorded per call
 	urls      []string // full request URL per call
+	methods   []string // HTTP method per call
 	bodies    [][]byte // request body bytes per call (nil if no body)
 }
 
@@ -117,6 +118,7 @@ type seqResponse struct {
 func (s *seqTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	s.calls = append(s.calls, req.Header.Get("Authorization"))
 	s.urls = append(s.urls, req.URL.String())
+	s.methods = append(s.methods, req.Method)
 	if req.Body != nil {
 		b, _ := io.ReadAll(req.Body)
 		s.bodies = append(s.bodies, b)

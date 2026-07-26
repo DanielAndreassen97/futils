@@ -298,9 +298,15 @@ func throttleDelay(retryAfter string, attempt int) time.Duration {
 }
 
 // Workspace is a minimal projection of the Fabric workspace resource.
+// Description, Type and CapacityID are populated by both the list and the
+// single-workspace GET; only the workspace-management flow reads them.
+// Type is "Workspace", "Personal" (My workspace) or "AdminWorkspace".
 type Workspace struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"`
+	CapacityID  string `json:"capacityId,omitempty"`
 }
 
 // Item is a generic Fabric item. Type is "Notebook", "SemanticModel", etc.
