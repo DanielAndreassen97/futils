@@ -80,6 +80,16 @@ var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
 
 var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
 
+// wsCursorStyle highlights the row under the cursor with a full-width
+// background, the same inverted language as the role bars so the two read as
+// one system. Deliberately neutral slate rather than green: every green bar on
+// this screen already means "role heading", and a green cursor row would read
+// as one more section break sliding down the list as you navigate.
+var wsCursorStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("#33454b")).
+	Foreground(lipgloss.Color("#eaf2f3")).
+	Bold(true)
+
 // wsRoleHeader is a picker row that is a role heading rather than a workspace.
 // It rides in FilterOption.Meta so the renderer knows which bar colour to use
 // without parsing the label back apart.
@@ -254,30 +264,33 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 	return wsFilterPicker("Select a workspace", options, renderWorkspaceRow)
 }
 
-// renderWorkspaceRow draws one picker row. Section headings get their own dim
-// styling; workspace rows put the licence tier in a fixed column so the tiers
-// and SKUs line up down the list.
+// renderWorkspaceRow draws one picker row: a role heading bar, or a workspace
+// with its licence tier in a fixed column so the tiers and SKUs line up down
+// the list.
 //
-// The selected row is rendered in one uniform highlight rather than keeping its
-// tier colour — a row that is half accent and half orange reads as two rows.
+// The selected row gets a full-width background rather than only coloured text.
+// On a list this dense a recoloured word is easy to lose, and the background
+// also lets the row survive scanning at speed. It is rendered in one uniform
+// highlight instead of keeping its tier colour — a row that is half accent and
+// half orange reads as two rows.
 func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 	if opt.IsHeader {
 		hdr, _ := opt.Meta.(wsRoleHeader)
 		return renderRoleBar(hdr.Role, opt.Label)
 	}
 	tier, ok := opt.Meta.(workspaceTier)
+
+	content := opt.Label
+	if ok {
+		content = ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.plain()
+	}
+	if selected {
+		return wsCursorStyle.Width(wsBarWidth()).Render(content)
+	}
 	if !ok {
-		if selected {
-			return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(opt.Label)
-		}
 		return opt.Label
 	}
-	name := ui.FitWidth(opt.Label, wsNameColW)
-	if selected {
-		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).
-			Render(name + "  " + tier.plain())
-	}
-	return name + "  " + tier.render()
+	return ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.render()
 }
 
 // groupWorkspacesByRole turns the flat workspace list into picker rows grouped

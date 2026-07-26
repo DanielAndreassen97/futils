@@ -167,3 +167,34 @@ func TestRenderRoleBarFallsBackForAnUnknownRole(t *testing.T) {
 		t.Errorf("fallback bar = %q", got)
 	}
 }
+
+func TestRenderWorkspaceRowSelectedSpansTheFullWidth(t *testing.T) {
+	// The highlight is a background, so it only reads as a bar if the row is
+	// padded out. A row that stops at its content leaves a ragged block.
+	caps := []fabric.Capacity{{ID: "c", SKU: "F128"}}
+	opt := ui.FilterOption{
+		Label: "DW - Core",
+		Value: "id",
+		Meta:  classifyWorkspace(fabric.Workspace{Type: "Workspace", CapacityID: "c"}, caps),
+	}
+
+	if got, want := lipgloss.Width(renderWorkspaceRow(opt, true)), wsBarWidth(); got != want {
+		t.Errorf("selected row is %d columns wide, want %d", got, want)
+	}
+	// An unselected row must NOT be padded out — a full-width unselected row
+	// would paint the terminal background over anything to its right.
+	if got := lipgloss.Width(renderWorkspaceRow(opt, false)); got >= wsBarWidth() {
+		t.Errorf("unselected row is %d columns wide, want less than %d", got, wsBarWidth())
+	}
+}
+
+func TestRenderWorkspaceRowSelectedMatchesTheHeadingWidth(t *testing.T) {
+	// Cursor bar and role bar are the same visual device; different widths
+	// would make the list look misaligned as the cursor moves past a heading.
+	opt := ui.FilterOption{Label: "DW - Core", Value: "id", Meta: workspaceTier{Name: "Pro"}}
+	row := lipgloss.Width(renderWorkspaceRow(opt, true))
+	bar := lipgloss.Width(renderRoleBar(wsRoleAdmin, "ADMIN · 34"))
+	if row != bar {
+		t.Errorf("cursor bar is %d wide but the role bar is %d", row, bar)
+	}
+}
