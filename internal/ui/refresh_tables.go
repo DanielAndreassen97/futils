@@ -391,10 +391,7 @@ func (m refreshTableModel) renderItem(idx int, isCursor bool) string {
 		groupLabel = fmt.Sprintf("All %s (%d matches)", item.group, len(vis))
 	}
 
-	pointer := "  "
-	if isCursor {
-		pointer = checkboxPointerStyle.Render("❯ ")
-	}
+	pointer := CursorPointer(isCursor)
 
 	box := "□ "
 	if checked {

@@ -141,7 +141,6 @@ func (m menuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	menuPointerStyle  = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	menuNumberStyle   = lipgloss.NewStyle().Foreground(DimColor)
 	menuSelectedStyle = lipgloss.NewStyle().Foreground(AccentColor)
 	menuHeaderStyle   = lipgloss.NewStyle().Foreground(DimColor).Bold(true)
@@ -223,10 +222,8 @@ func (m menuModel) View() string {
 			continue
 		}
 		displayNum++
-		pointer := "  "
-		if i == m.cursor {
-			pointer = menuPointerStyle.Render("❯ ")
-		}
+		isCursor := i == m.cursor
+		pointer := CursorPointer(isCursor)
 		// Only 1-9 are digit-jumpable (Update handles a single keypress), so
 		// number just those; past the 9th, show a bullet instead of a fake "10)"
 		// number. The bullet is padded to the width of "N)" so labels stay aligned.
@@ -234,11 +231,16 @@ func (m menuModel) View() string {
 		if displayNum <= 9 {
 			marker = fmt.Sprintf("%d)", displayNum)
 		}
-		label := opt.Label
+		// The badge keeps its own colour: it is a warning, not part of the label.
+		badge := ""
 		if opt.Badge != "" {
-			label += " " + menuBadgeStyle.Render("["+opt.Badge+"]")
+			badge = " " + menuBadgeStyle.Render("["+opt.Badge+"]")
 		}
-		fmt.Fprintf(&b, "%s%s %s\n", pointer, menuNumberStyle.Render(marker), label)
+		numStyled := menuNumberStyle.Render(marker)
+		if isCursor {
+			numStyled = CursorLabel(marker, true)
+		}
+		fmt.Fprintf(&b, "%s%s %s%s\n", pointer, numStyled, CursorLabel(opt.Label, isCursor), badge)
 	}
 
 	// The nav hint renders for every menu, plain or rich; the "? info"

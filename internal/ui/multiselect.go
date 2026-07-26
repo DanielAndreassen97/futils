@@ -17,8 +17,9 @@ var (
 	checkboxPointerStyle      = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	checkboxCheckedBoxStyle   = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	checkboxCheckedLabelStyle = lipgloss.NewStyle().Foreground(AccentColor)
-	checkboxCursorLabelStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Bold(true)
-	checkboxHintStyle         = lipgloss.NewStyle().Foreground(DimColor)
+	// The cursor label is accent green everywhere in the TUI — see cursor.go.
+	checkboxCursorLabelStyle = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
+	checkboxHintStyle        = lipgloss.NewStyle().Foreground(DimColor)
 )
 
 // Jump distance for alt+↑/alt+↓ / pgup / pgdown. Five is arbitrary but
@@ -237,10 +238,7 @@ func (m checkboxModel) renderItem(i int) string {
 func (m checkboxModel) renderRow(i int, isCursor bool) string {
 	item := m.items[i]
 
-	pointer := "  "
-	if isCursor {
-		pointer = checkboxPointerStyle.Render("❯ ")
-	}
+	pointer := CursorPointer(isCursor)
 
 	box := "□ "
 	if item.checked {

@@ -100,11 +100,15 @@ func (t workspaceTier) render() string {
 	return out
 }
 
-// plain is the unstyled form, used for the selected row (which must render in
-// one uniform highlight) and for the detail panel.
+// plain is the unstyled form, used for the selected row, which renders in one
+// uniform highlight. Padded to the same width as render so the two forms are
+// interchangeable — an unpadded variant looks identical today, with no
+// background behind it, and would silently ragged the column the moment one
+// came back.
 func (t workspaceTier) plain() string {
-	if t.SKU == "" {
-		return t.Name
+	out := ui.FitWidth(t.Name, tierColW)
+	if t.SKU != "" {
+		out += " " + t.SKU
 	}
-	return ui.FitWidth(t.Name, tierColW) + " " + t.SKU
+	return out
 }

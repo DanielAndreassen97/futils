@@ -97,16 +97,23 @@ func nextDir(cur, choice string) (next string, done bool) {
 // dirRowRenderer marks git repos with a ● and dims the action rows. Selection
 // takes precedence with a uniform accent highlight (FilterMenu contract).
 func dirRowRenderer(opt FilterOption, selected bool) string {
+	// The arrow gutter comes first, ahead of the git marker column, so the two
+	// never compete for the same two columns.
+	lead := CursorPointer(selected)
 	if selected {
-		return lipgloss.NewStyle().Foreground(AccentColor).Bold(true).Render(opt.Label)
+		marker := "  "
+		if opt.Meta == "git" {
+			marker = lipgloss.NewStyle().Foreground(AccentColor).Render("● ")
+		}
+		return lead + marker + CursorLabel(opt.Label, true)
 	}
 	switch opt.Meta {
 	case "git":
-		return lipgloss.NewStyle().Foreground(AccentColor).Render("● ") + opt.Label
+		return lead + lipgloss.NewStyle().Foreground(AccentColor).Render("● ") + opt.Label
 	case "action":
-		return lipgloss.NewStyle().Foreground(DimColor).Render(opt.Label)
+		return lead + "  " + lipgloss.NewStyle().Foreground(DimColor).Render(opt.Label)
 	default:
-		return "  " + opt.Label
+		return lead + "  " + opt.Label
 	}
 }
 

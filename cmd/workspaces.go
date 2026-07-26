@@ -80,21 +80,6 @@ var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
 
 var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
 
-// wsCursorStyle highlights the row under the cursor with a full-width
-// background, the same inverted device as the role bars so the two read as one
-// system. Deliberately neutral slate rather than green: every green bar on this
-// screen already means "role heading", and a green cursor row would read as one
-// more section break sliding down the list as you navigate.
-//
-// One flat colour, not a gradient: a gradient needs truecolor to look right,
-// quantises into visible bands on a 256-colour terminal, and fades out at the
-// right edge so the bar looks like it runs out instead of ending — which
-// undercuts the crisp edge that makes the row easy to spot in the first place.
-var wsCursorStyle = lipgloss.NewStyle().
-	Background(lipgloss.Color("#54707a")).
-	Foreground(lipgloss.Color("#f4fafb")).
-	Bold(true)
-
 // wsRoleHeader is a picker row that is a role heading rather than a workspace.
 // It rides in FilterOption.Meta so the renderer knows which bar colour to use
 // without parsing the label back apart.
@@ -273,29 +258,24 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 // with its licence tier in a fixed column so the tiers and SKUs line up down
 // the list.
 //
-// The selected row gets a full-width background rather than only coloured text.
-// On a list this dense a recoloured word is easy to lose, and the background
-// also lets the row survive scanning at speed. It is rendered in one uniform
-// highlight instead of keeping its tier colour — a row that is half accent and
-// half orange reads as two rows.
+// The cursor row is the arrow plus accent text used by every list in the TUI
+// (see ui.CursorPointer). The whole row takes the accent colour rather than
+// keeping its tier colour: a row that is half accent and half orange reads as
+// two rows, and the FilterMenu contract asks for a uniform highlight.
 func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 	if opt.IsHeader {
 		hdr, _ := opt.Meta.(wsRoleHeader)
 		return renderRoleBar(hdr.Role, opt.Label)
 	}
+	lead := ui.CursorPointer(selected)
 	tier, ok := opt.Meta.(workspaceTier)
-
-	content := opt.Label
-	if ok {
-		content = ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.plain()
+	if !ok {
+		return lead + ui.CursorLabel(opt.Label, selected)
 	}
 	if selected {
-		return wsCursorStyle.Width(wsBarWidth()).Render(content)
+		return lead + ui.CursorLabel(ui.FitWidth(opt.Label, wsNameColW)+"  "+tier.plain(), true)
 	}
-	if !ok {
-		return opt.Label
-	}
-	return ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.render()
+	return lead + ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.render()
 }
 
 // groupWorkspacesByRole turns the flat workspace list into picker rows grouped

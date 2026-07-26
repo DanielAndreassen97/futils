@@ -37,10 +37,7 @@ func DefaultFilterRowRenderer(opt FilterOption, selected bool) string {
 	if opt.IsHeader {
 		return lipgloss.NewStyle().Foreground(DimColor).Bold(true).Render(opt.Label)
 	}
-	if selected {
-		return lipgloss.NewStyle().Foreground(AccentColor).Bold(true).Render(opt.Label)
-	}
-	return opt.Label
+	return CursorPointer(selected) + CursorLabel(opt.Label, selected)
 }
 
 // FitWidth sizes s to exactly width display columns: padded with trailing

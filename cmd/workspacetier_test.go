@@ -168,33 +168,49 @@ func TestRenderRoleBarFallsBackForAnUnknownRole(t *testing.T) {
 	}
 }
 
-func TestRenderWorkspaceRowSelectedSpansTheFullWidth(t *testing.T) {
-	// The highlight is a background, so it only reads as a bar if the row is
-	// padded out. A row that stops at its content leaves a ragged block.
-	caps := []fabric.Capacity{{ID: "c", SKU: "F128"}}
-	opt := ui.FilterOption{
-		Label: "DW - Core",
-		Value: "id",
-		Meta:  classifyWorkspace(fabric.Workspace{Type: "Workspace", CapacityID: "c"}, caps),
-	}
+func TestRenderWorkspaceRowCursorGetsTheArrow(t *testing.T) {
+	// The arrow is the one cursor signal that survives a terminal without
+	// colour, so it has to be there on the selected row and only there.
+	opt := ui.FilterOption{Label: "DW - Core", Value: "id", Meta: workspaceTier{Name: "Pro"}}
 
-	if got, want := lipgloss.Width(renderWorkspaceRow(opt, true)), wsBarWidth(); got != want {
-		t.Errorf("selected row is %d columns wide, want %d", got, want)
+	if got := renderWorkspaceRow(opt, true); !strings.HasPrefix(got, "❯ ") {
+		t.Errorf("selected row = %q, want it to start with the arrow", got)
 	}
-	// An unselected row must NOT be padded out — a full-width unselected row
-	// would paint the terminal background over anything to its right.
-	if got := lipgloss.Width(renderWorkspaceRow(opt, false)); got >= wsBarWidth() {
-		t.Errorf("unselected row is %d columns wide, want less than %d", got, wsBarWidth())
+	if got := renderWorkspaceRow(opt, false); strings.Contains(got, "❯") {
+		t.Errorf("unselected row = %q, must not carry an arrow", got)
 	}
 }
 
-func TestRenderWorkspaceRowSelectedMatchesTheHeadingWidth(t *testing.T) {
-	// Cursor bar and role bar are the same visual device; different widths
-	// would make the list look misaligned as the cursor moves past a heading.
+func TestRenderWorkspaceRowGutterKeepsColumnsAligned(t *testing.T) {
+	// Selected and unselected rows must put the tier column in the same place,
+	// or the list shifts sideways as the cursor moves. Total row width is not
+	// the invariant — trailing space moves nothing.
 	opt := ui.FilterOption{Label: "DW - Core", Value: "id", Meta: workspaceTier{Name: "Pro"}}
-	row := lipgloss.Width(renderWorkspaceRow(opt, true))
-	bar := lipgloss.Width(renderRoleBar(wsRoleAdmin, "ADMIN · 34"))
-	if row != bar {
-		t.Errorf("cursor bar is %d wide but the role bar is %d", row, bar)
+
+	sel := indexOfRunes([]rune(renderWorkspaceRow(opt, true)), []rune("Pro"))
+	plain := indexOfRunes([]rune(renderWorkspaceRow(opt, false)), []rune("Pro"))
+	if sel < 0 || plain < 0 {
+		t.Fatalf("tier missing from a row: selected=%d unselected=%d", sel, plain)
+	}
+	if sel != plain {
+		t.Errorf("tier starts at column %d when selected and %d when not", sel, plain)
+	}
+	if ui.CursorGutterW != 2 {
+		t.Errorf("gutter width is %d; this test assumes the two-column arrow", ui.CursorGutterW)
+	}
+}
+
+func TestWorkspaceTierPlainAndRenderAreTheSameWidth(t *testing.T) {
+	// The selected row uses plain and every other row uses render; if they pad
+	// differently the tier column ragged as the cursor moves.
+	for _, tier := range []workspaceTier{
+		{Name: "Fabric", SKU: "F128"},
+		{Name: "Pro"},
+		{Name: "Personal"},
+		{Name: "PPU", SKU: "PP3"},
+	} {
+		if got, want := lipgloss.Width(tier.plain()), lipgloss.Width(tier.render()); got != want {
+			t.Errorf("tier %q: plain is %d columns, render is %d", tier.Name, got, want)
+		}
 	}
 }
