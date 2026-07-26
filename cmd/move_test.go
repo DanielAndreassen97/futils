@@ -129,6 +129,29 @@ func (f *fakeMoveAPI) BulkImportDefinitions(token, ws string, parts []fabric.Def
 	return &fabric.BulkImportResult{}, nil
 }
 
+// Workspace management methods — not used by move tests.
+func (f *fakeMoveAPI) GetWorkspace(string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, errors.New("GetWorkspace not used by move tests")
+}
+func (f *fakeMoveAPI) ListWorkspacesByRole(string, string) ([]fabric.Workspace, error) {
+	return nil, errors.New("ListWorkspacesByRole not used by move tests")
+}
+func (f *fakeMoveAPI) CreateWorkspace(string, string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, errors.New("CreateWorkspace not used by move tests")
+}
+func (f *fakeMoveAPI) RenameWorkspace(string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, errors.New("RenameWorkspace not used by move tests")
+}
+func (f *fakeMoveAPI) SetWorkspaceDescription(string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, errors.New("SetWorkspaceDescription not used by move tests")
+}
+func (f *fakeMoveAPI) DeleteWorkspace(string, string) error {
+	return errors.New("DeleteWorkspace not used by move tests")
+}
+func (f *fakeMoveAPI) ListCapacities(string) ([]fabric.Capacity, error) {
+	return nil, errors.New("ListCapacities not used by move tests")
+}
+
 // withMovePickers installs deterministic pickers for the duration
 // of a single test. The filter picker picks the option whose Label
 // matches filterPick (or first option if filterPick is empty); the

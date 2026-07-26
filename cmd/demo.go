@@ -641,10 +641,19 @@ type demoClient struct {
 	polls    map[string]int             // job instance URL -> poll count
 	envPolls map[string]int             // environment itemID -> publish-state poll count
 	folders  map[string][]fabric.Folder // workspaceID -> created folders
+	// workspaces is the mutable tenant the workspace-management flow acts on,
+	// seeded from demoWorkspaces(). Without it a demo could not show a create
+	// or delete actually landing.
+	workspaces []fabric.Workspace
 }
 
 func newDemoClient() *demoClient {
-	return &demoClient{polls: map[string]int{}, envPolls: map[string]int{}, folders: map[string][]fabric.Folder{}}
+	return &demoClient{
+		polls:      map[string]int{},
+		envPolls:   map[string]int{},
+		folders:    map[string][]fabric.Folder{},
+		workspaces: demoWorkspaces(),
+	}
 }
 
 func (c *demoClient) GetAccessToken(profile string) (string, error) {
@@ -664,16 +673,23 @@ func (c *demoClient) GetWorkspaceID(token, workspaceName string) (string, error)
 
 func (c *demoClient) ListWorkspaces(token string) ([]fabric.Workspace, error) {
 	time.Sleep(400 * time.Millisecond)
-	return demoWorkspaces(), nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]fabric.Workspace(nil), c.workspaces...), nil
 }
 
 func (c *demoClient) ListItems(token, workspaceID string) ([]fabric.Item, error) {
 	time.Sleep(350 * time.Millisecond)
 	items, ok := demoItems(workspaceID)
-	if !ok {
-		return nil, fmt.Errorf("workspace %q not found", workspaceID)
+	if ok {
+		return items, nil
 	}
-	return items, nil
+	// A workspace created during the demo has no seeded items — empty, not an
+	// error, so the detail panel reads "Items: none".
+	if _, found := c.findWorkspace(workspaceID); found {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("workspace %q not found", workspaceID)
 }
 
 func (c *demoClient) ListItemsByType(token, workspaceID, itemType string) ([]fabric.Item, error) {
@@ -899,6 +915,117 @@ func (c *demoClient) GetEnvironmentPublishState(token, workspaceID, itemID strin
 		return "running", nil
 	}
 	return "success", nil
+}
+
+// ── workspace management ───────────────────────────────────────────────────
+
+// demoCapacityID is the capacity every demo workspace sits on.
+var demoCapacityID = demoGUID("capacity", "Demo F64")
+
+func demoCapacities() []fabric.Capacity {
+	return []fabric.Capacity{
+		{ID: demoCapacityID, DisplayName: "Demo F64", SKU: "F64", Region: "Norway East", State: "Active"},
+		{ID: demoGUID("capacity", "Demo F2"), DisplayName: "Demo F2", SKU: "F2", Region: "West Europe", State: "Inactive"},
+	}
+}
+
+// findWorkspace looks up a workspace in the mutable demo tenant. Callers that
+// already hold c.mu must not use it.
+func (c *demoClient) findWorkspace(id string) (int, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, ws := range c.workspaces {
+		if ws.ID == id {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (c *demoClient) GetWorkspace(token, workspaceID string) (fabric.Workspace, error) {
+	time.Sleep(250 * time.Millisecond)
+	i, ok := c.findWorkspace(workspaceID)
+	if !ok {
+		return fabric.Workspace{}, fmt.Errorf("workspace %q not found", workspaceID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ws := c.workspaces[i]
+	if ws.Type == "" {
+		ws.Type = "Workspace"
+	}
+	if ws.CapacityID == "" {
+		ws.CapacityID = demoCapacityID
+	}
+	return ws, nil
+}
+
+// ListWorkspacesByRole reports the demo user as Admin everywhere, so every
+// action in the flow is reachable in a demo.
+func (c *demoClient) ListWorkspacesByRole(token, roles string) ([]fabric.Workspace, error) {
+	time.Sleep(300 * time.Millisecond)
+	return c.ListWorkspaces(token)
+}
+
+func (c *demoClient) CreateWorkspace(token, displayName, description, capacityID string) (fabric.Workspace, error) {
+	time.Sleep(700 * time.Millisecond)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, ws := range c.workspaces {
+		if ws.DisplayName == displayName {
+			return fabric.Workspace{}, fmt.Errorf("create workspace %q 400: WorkspaceNameAlreadyExists", displayName)
+		}
+	}
+	ws := fabric.Workspace{
+		ID:          demoGUID("workspace", displayName),
+		DisplayName: displayName,
+		Description: description,
+		Type:        "Workspace",
+		CapacityID:  capacityID,
+	}
+	c.workspaces = append(c.workspaces, ws)
+	return ws, nil
+}
+
+func (c *demoClient) RenameWorkspace(token, workspaceID, displayName string) (fabric.Workspace, error) {
+	time.Sleep(500 * time.Millisecond)
+	i, ok := c.findWorkspace(workspaceID)
+	if !ok {
+		return fabric.Workspace{}, fmt.Errorf("workspace %q not found", workspaceID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workspaces[i].DisplayName = displayName
+	return c.workspaces[i], nil
+}
+
+func (c *demoClient) SetWorkspaceDescription(token, workspaceID, description string) (fabric.Workspace, error) {
+	time.Sleep(500 * time.Millisecond)
+	i, ok := c.findWorkspace(workspaceID)
+	if !ok {
+		return fabric.Workspace{}, fmt.Errorf("workspace %q not found", workspaceID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workspaces[i].Description = description
+	return c.workspaces[i], nil
+}
+
+func (c *demoClient) DeleteWorkspace(token, workspaceID string) error {
+	time.Sleep(600 * time.Millisecond)
+	i, ok := c.findWorkspace(workspaceID)
+	if !ok {
+		return fmt.Errorf("workspace %q not found", workspaceID)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.workspaces = append(c.workspaces[:i], c.workspaces[i+1:]...)
+	return nil
+}
+
+func (c *demoClient) ListCapacities(token string) ([]fabric.Capacity, error) {
+	time.Sleep(300 * time.Millisecond)
+	return demoCapacities(), nil
 }
 
 // NewOneLakeAPI implements the flow's optional oneLakeProvider interface, so

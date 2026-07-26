@@ -81,6 +81,15 @@ type APIClient interface {
 	SetVariableLibraryActiveSet(token, workspaceID, itemID, valueSetName string) error
 	PublishEnvironment(token, workspaceID, itemID string) error
 	GetEnvironmentPublishState(token, workspaceID, itemID string) (string, error)
+
+	// Workspace management flow.
+	GetWorkspace(token, workspaceID string) (fabric.Workspace, error)
+	ListWorkspacesByRole(token, roles string) ([]fabric.Workspace, error)
+	CreateWorkspace(token, displayName, description, capacityID string) (fabric.Workspace, error)
+	RenameWorkspace(token, workspaceID, displayName string) (fabric.Workspace, error)
+	SetWorkspaceDescription(token, workspaceID, description string) (fabric.Workspace, error)
+	DeleteWorkspace(token, workspaceID string) error
+	ListCapacities(token string) ([]fabric.Capacity, error)
 }
 
 // RealAPIClient just forwards to the internal/fabric package functions.
@@ -166,6 +175,27 @@ func (RealAPIClient) PublishEnvironment(token, workspaceID, itemID string) error
 }
 func (RealAPIClient) GetEnvironmentPublishState(token, workspaceID, itemID string) (string, error) {
 	return fabric.GetEnvironmentPublishState(token, workspaceID, itemID)
+}
+func (RealAPIClient) GetWorkspace(token, workspaceID string) (fabric.Workspace, error) {
+	return fabric.GetWorkspace(token, workspaceID)
+}
+func (RealAPIClient) ListWorkspacesByRole(token, roles string) ([]fabric.Workspace, error) {
+	return fabric.ListWorkspacesByRole(token, roles)
+}
+func (RealAPIClient) CreateWorkspace(token, displayName, description, capacityID string) (fabric.Workspace, error) {
+	return fabric.CreateWorkspace(token, displayName, description, capacityID)
+}
+func (RealAPIClient) RenameWorkspace(token, workspaceID, displayName string) (fabric.Workspace, error) {
+	return fabric.RenameWorkspace(token, workspaceID, displayName)
+}
+func (RealAPIClient) SetWorkspaceDescription(token, workspaceID, description string) (fabric.Workspace, error) {
+	return fabric.SetWorkspaceDescription(token, workspaceID, description)
+}
+func (RealAPIClient) DeleteWorkspace(token, workspaceID string) error {
+	return fabric.DeleteWorkspace(token, workspaceID)
+}
+func (RealAPIClient) ListCapacities(token string) ([]fabric.Capacity, error) {
+	return fabric.ListCapacities(token)
 }
 
 // DefaultAPI is what Run() uses when called from the main menu. Test code

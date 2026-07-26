@@ -158,6 +158,27 @@ func (f *deployFakeAPI) TriggerRefresh(string, string, string, []string) (string
 func (f *deployFakeAPI) WaitForRefresh(string, string, string, string) (fabric.RefreshStatus, error) {
 	return fabric.RefreshStatus{}, fmt.Errorf("not used by deploy tests")
 }
+func (f *deployFakeAPI) GetWorkspace(string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) ListWorkspacesByRole(string, string) ([]fabric.Workspace, error) {
+	return nil, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) CreateWorkspace(string, string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) RenameWorkspace(string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) SetWorkspaceDescription(string, string, string) (fabric.Workspace, error) {
+	return fabric.Workspace{}, fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) DeleteWorkspace(string, string) error {
+	return fmt.Errorf("not used by deploy tests")
+}
+func (f *deployFakeAPI) ListCapacities(string) ([]fabric.Capacity, error) {
+	return nil, fmt.Errorf("not used by deploy tests")
+}
 
 // platformDef builds a deployed definition for a notebook: a matching content
 // part plus a .platform part carrying the given description — mirroring what
