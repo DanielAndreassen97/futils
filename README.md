@@ -25,6 +25,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
   - **Post-deploy runs** — register notebooks and data pipelines to be offered for execution right after a successful deploy.
   - **Deploy history** — a timestamped HTML deploy report written to a repo folder after each real deploy.
 - **Schema compare** — compare lakehouse table schemas between two workspaces (lakehouses paired by name) and see added/removed/changed tables and columns before you promote.
+- **Manage workspaces** — create, rename and delete Fabric workspaces without opening the portal. Pick a workspace from a type-to-filter list and see its capacity, item counts per type, your role, and which futils config entries point at it. Creating offers a capacity picker and then registers the new workspace in one of the customer's environments. Deleting takes every item with it, so it prints that blast radius and only proceeds once you type `Yes`. Because futils stores workspaces by *name*, a rename or delete also repairs every config reference — environment workspace lists, deploy mappings and per-mapping baselines — so a rename can't silently break a deploy. Rename and delete need the Admin workspace role, which futils checks up front instead of letting Fabric answer `403`.
 - **Run notebooks** — pick a customer, environment, and notebook, override Papermill parameters, and submit a `RunNotebook` job. Polls until completion and reports status.
 - **Run pipelines** — pick a data pipeline the same way and trigger a pipeline job, polled to completion.
 - **Refresh tables** — pick a semantic model, multi-select tables (with group toggles and type-to-filter search), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
@@ -111,6 +112,7 @@ futils refresh        # Refresh semantic-model tables
 futils move           # Copy an item between workspaces
 futils deploy         # Deploy a Fabric git repo to target workspaces
 futils schemacompare  # Compare lakehouse schemas between workspaces
+futils workspaces     # Create, rename or delete Fabric workspaces
 futils favourites     # Manage favourite notebooks/parameters
 futils add            # Add a customer
 futils edit           # Edit a customer (environments, deploy setup, favourites)

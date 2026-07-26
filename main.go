@@ -74,6 +74,8 @@ func main() {
 		err = cmd.Deploy(configPath)
 	case "schemacompare", "schema-compare":
 		err = cmd.SchemaCompare(configPath)
+	case "workspaces", "workspace":
+		err = cmd.Workspaces(configPath)
 	case "favorites", "favourites":
 		err = cmd.Favorites(configPath)
 	case "add":

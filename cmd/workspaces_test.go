@@ -584,3 +584,92 @@ func TestWorkspacesNoCustomersIsFriendly(t *testing.T) {
 		t.Errorf("output = %q", out)
 	}
 }
+
+// TestWorkspacesAgainstDemoTenant walks create → rename → delete against the
+// demo client, the path a `FUTILS_DEMO=1` session takes. The unit tests above
+// use a purpose-built fake; this one proves the demo tenant actually mutates,
+// which is what a demo or a recorded walkthrough depends on.
+func TestWorkspacesAgainstDemoTenant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := writeDemoConfig(path, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	api := newDemoClient()
+
+	before, err := api.ListWorkspaces("tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create, declining the config registration to keep the assertions on Fabric.
+	h := &wsHarness{
+		filterPicks: []string{wsActionCreate, demoCapacityID},
+		inputs:      []string{"DW - Smoke", "created by a test"},
+		confirms:    []bool{true, false},
+	}
+	h.install(t)
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	})
+
+	created, ok := demoWorkspaceNamed(api, "DW - Smoke")
+	if !ok {
+		t.Fatal("the demo tenant did not gain the created workspace")
+	}
+	if created.CapacityID != demoCapacityID {
+		t.Errorf("created workspace capacity = %q, want the demo capacity", created.CapacityID)
+	}
+
+	// Rename it.
+	h = &wsHarness{
+		filterPicks: []string{created.ID},
+		numberPicks: []string{wsActionRename},
+		inputs:      []string{"DW - Smoke renamed"},
+		confirms:    []bool{true},
+	}
+	h.install(t)
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("rename: %v", err)
+		}
+	})
+	if _, ok := demoWorkspaceNamed(api, "DW - Smoke renamed"); !ok {
+		t.Fatal("the demo tenant did not apply the rename")
+	}
+
+	// Delete it.
+	h = &wsHarness{
+		filterPicks: []string{created.ID},
+		numberPicks: []string{wsActionDelete},
+		typedOK:     []bool{true},
+	}
+	h.install(t)
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+	})
+
+	after, err := api.ListWorkspaces("tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("demo tenant has %d workspaces after the round trip, want the original %d", len(after), len(before))
+	}
+}
+
+func demoWorkspaceNamed(api *demoClient, name string) (fabric.Workspace, bool) {
+	all, err := api.ListWorkspaces("tok")
+	if err != nil {
+		return fabric.Workspace{}, false
+	}
+	for _, ws := range all {
+		if ws.DisplayName == name {
+			return ws, true
+		}
+	}
+	return fabric.Workspace{}, false
+}

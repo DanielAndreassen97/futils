@@ -15,6 +15,7 @@ Actions:
   move           Copy a Report, Semantic Model, or Notebook between workspaces
   deploy         Deploy a Fabric git repo to target workspaces (compare first)
   schemacompare  Compare lakehouse table schemas between two workspaces
+  workspaces     Create, rename or delete Fabric workspaces
 
 Settings:
   favourites     Pin a customer's favourite notebooks and parameters for the run menu

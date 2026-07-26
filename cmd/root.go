@@ -26,6 +26,7 @@ func MainMenu(configPath string) {
 			{Label: "Move item", Value: "move"},
 			{Label: "Deploy", Value: "deploy"},
 			{Label: "Schema compare", Value: "schemacompare"},
+			{Label: "Manage workspaces", Value: "workspaces", Description: "Create, rename or delete Fabric workspaces"},
 
 			{Label: "Settings", IsHeader: true},
 			{Label: "Manage customers", Value: "customers"},
@@ -62,6 +63,8 @@ func MainMenu(configPath string) {
 			cmdErr = Deploy(configPath)
 		case "schemacompare":
 			cmdErr = SchemaCompare(configPath)
+		case "workspaces":
+			cmdErr = Workspaces(configPath)
 		case "customers":
 			cmdErr = customersSubmenu(configPath)
 		case "logout":
