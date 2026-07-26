@@ -13,40 +13,22 @@ import (
 // than merely filled. Used for the cursor row in long pickers, where a flat
 // highlight is easy to lose among other coloured rows.
 //
-// The fade is static, not animated: a pulsing row would redraw the whole list
-// on a timer for a decoration, and bubbletea pickers here only repaint on input.
-//
 // Colours that are not "#rrggbb" fall back to a flat peak-coloured bar, so an
 // ANSI palette entry degrades instead of rendering garbage.
 func GlowBar(s string, width int, fg, peak, base lipgloss.Color) string {
 	if width <= 0 {
 		return ""
 	}
-	content := []rune(FitWidth(s, width))
-
 	pr, pg, pb, okPeak := hexRGB(peak)
 	br, bg, bb, okBase := hexRGB(base)
 	if !okPeak || !okBase {
 		return lipgloss.NewStyle().Background(peak).Foreground(fg).Bold(true).
 			Width(width).Render(s)
 	}
-
-	var out strings.Builder
-	for i, r := range content {
-		t := 0.0
-		if width > 1 {
-			t = float64(i) / float64(width-1)
-		}
-		cell := lipgloss.Color(rgbHex(
-			lerpInt(pr, br, t),
-			lerpInt(pg, bg, t),
-			lerpInt(pb, bb, t),
-		))
-		out.WriteString(lipgloss.NewStyle().
-			Background(cell).Foreground(fg).Bold(true).
-			Render(string(r)))
-	}
-	return out.String()
+	return paintRuns(FitWidth(s, width), fg, func(i int) (int, int, int) {
+		t := fadeAt(i, width)
+		return lerpInt(pr, br, t), lerpInt(pg, bg, t), lerpInt(pb, bb, t)
+	})
 }
 
 // SweepBand is how many columns the travelling highlight covers. Wide enough to
@@ -57,10 +39,9 @@ const SweepBand = 14
 // phase is a frame counter the caller advances; the band position derives from
 // it and wraps, so callers need no state beyond an int.
 //
-// Terminals cannot fade a background within a cell, so the band is built the
-// only way available: every column is rendered as its own interpolated colour.
-// That is one Render per column per frame, which is why the caller controls the
-// frame rate.
+// The fade is static, not animated, unless the caller advances phase: a pulsing
+// row would redraw the whole list on a timer, and pickers here otherwise only
+// repaint on input.
 func GlowSweep(s string, width int, fg, peak, base, shine lipgloss.Color, phase int) string {
 	if width <= 0 {
 		return ""
@@ -72,34 +53,90 @@ func GlowSweep(s string, width int, fg, peak, base, shine lipgloss.Color, phase 
 		return GlowBar(s, width, fg, peak, base)
 	}
 
-	content := []rune(FitWidth(s, width))
 	// The band starts fully off the left edge and finishes fully off the right,
 	// so it enters and leaves instead of popping in at the margins.
 	period := width + 2*SweepBand
 	pos := phase%period - SweepBand
 
-	var out strings.Builder
-	for i, r := range content {
-		t := 0.0
-		if width > 1 {
-			t = float64(i) / float64(width-1)
-		}
-		cr := lerpInt(pr, br, t)
-		cg := lerpInt(pg, bg, t)
-		cb := lerpInt(pb, bb, t)
-
+	return paintRuns(FitWidth(s, width), fg, func(i int) (int, int, int) {
+		t := fadeAt(i, width)
+		r, g, b := lerpInt(pr, br, t), lerpInt(pg, bg, t), lerpInt(pb, bb, t)
 		if k := bandFalloff(i-pos, SweepBand); k > 0 {
-			cr = lerpInt(cr, sr, k)
-			cg = lerpInt(cg, sg, k)
-			cb = lerpInt(cb, sb, k)
+			r, g, b = lerpInt(r, sr, k), lerpInt(g, sg, k), lerpInt(b, sb, k)
 		}
+		return r, g, b
+	})
+}
 
-		out.WriteString(lipgloss.NewStyle().
-			Background(lipgloss.Color(rgbHex(cr, cg, cb))).
-			Foreground(fg).Bold(true).
-			Render(string(r)))
+// colourStep is how coarsely gradient colours are snapped before being drawn.
+// It is what makes neighbouring columns collapse into shared runs: without it a
+// fade's three channels drift at different rates, so a run breaks as soon as
+// any one of them moves, and a 158-column bar becomes ~110 separate styled runs
+// even though it shows only a few dozen perceptibly different colours. Each run
+// costs a lipgloss Render and an escape sequence on the wire, so the snapping is
+// most of the saving — merging alone recovers barely a third of it.
+//
+// 4 (64 levels per channel) leaves no flat stretch longer than about eight
+// columns, so the fade still reads as smooth. Raising it to 8 is roughly twice
+// as cheap again but stretches flat runs past fifteen columns, which starts to
+// band visibly in a wide terminal. The cheaper setting is not worth it: even at
+// 4 a frame costs a fraction of a millisecond.
+const colourStep = 4
+
+func snap(v int) int {
+	v = (v + colourStep/2) / colourStep * colourStep
+	if v > 255 {
+		return 255
 	}
+	return v
+}
+
+// paintRuns writes content with a per-column background from colourAt, snapping
+// each colour and merging consecutive columns that end up identical into a
+// single styled run.
+//
+// A terminal cannot fade a background inside a cell, so the gradient has to be
+// built column by column. Emitting a separate escape sequence for every column
+// would send several KB down the wire for one row, every frame — over ssh that
+// is the difference between smooth and laggy.
+func paintRuns(content string, fg lipgloss.Color, colourAt func(i int) (r, g, b int)) string {
+	runes := []rune(content)
+	if len(runes) == 0 {
+		return ""
+	}
+	snapped := func(i int) (int, int, int) {
+		r, g, b := colourAt(i)
+		return snap(r), snap(g), snap(b)
+	}
+	style := lipgloss.NewStyle().Foreground(fg).Bold(true)
+
+	var out strings.Builder
+	runStart := 0
+	pr, pg, pb := snapped(0)
+
+	flush := func(end int) {
+		out.WriteString(style.Background(lipgloss.Color(rgbHex(pr, pg, pb))).
+			Render(string(runes[runStart:end])))
+	}
+	for i := 1; i < len(runes); i++ {
+		r, g, b := snapped(i)
+		if r == pr && g == pg && b == pb {
+			continue
+		}
+		flush(i)
+		runStart, pr, pg, pb = i, r, g, b
+	}
+	flush(len(runes))
 	return out.String()
+}
+
+// fadeAt is a column's normalised position along the bar, 0 at the left edge
+// and 1 at the right.
+func fadeAt(i, width int) float64 {
+	if width <= 1 {
+		return 0
+	}
+	return float64(i) / float64(width-1)
 }
 
 // bandFalloff is the highlight's intensity at distance d from its centre:

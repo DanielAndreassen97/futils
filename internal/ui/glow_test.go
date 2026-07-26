@@ -92,28 +92,44 @@ func TestGlowBarActuallyFadesAcrossTheRow(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 
 	out := GlowBar("DW - Core", 40, glowFG, glowPeak, glowBase)
-	cells := regexp.MustCompile(`48;2;(\d+);(\d+);(\d+)`).FindAllStringSubmatch(out, -1)
-	if len(cells) != 40 {
-		t.Fatalf("%d cells carry a background, want one per column", len(cells))
+	cols := columnColours(t, out)
+	if len(cols) != 40 {
+		t.Fatalf("%d columns carry a background, want one per column", len(cols))
 	}
-	if cells[0][1] == cells[len(cells)-1][1] {
-		t.Errorf("both ends have red channel %s — the bar does not fade", cells[0][1])
+	if cols[0] == cols[len(cols)-1] {
+		t.Errorf("both ends are %v — the bar does not fade", cols[0])
 	}
+}
+
+// runPattern captures a background colour and the text painted with it, so a
+// test can expand the emitted runs back into per-column colours. Asserting on
+// columns rather than on escape sequences keeps these tests independent of how
+// aggressively paintRuns merges neighbours.
+var runPattern = regexp.MustCompile(`48;2;(\d+);(\d+);(\d+)[0-9;]*m([^\x1b]*)`)
+
+// columnColours expands a rendered bar into one RGB triple per visible column.
+func columnColours(t *testing.T, bar string) [][3]int {
+	t.Helper()
+	var cols [][3]int
+	for _, m := range runPattern.FindAllStringSubmatch(bar, -1) {
+		var rgb [3]int
+		for i := range rgb {
+			rgb[i], _ = strconv.Atoi(m[i+1])
+		}
+		for range []rune(m[4]) {
+			cols = append(cols, rgb)
+		}
+	}
+	return cols
 }
 
 // brightestColumn reports which column carries the lightest background, i.e.
 // where the travelling highlight currently sits.
 func brightestColumn(t *testing.T, bar string) int {
 	t.Helper()
-	cells := regexp.MustCompile(`48;2;(\d+);(\d+);(\d+)`).FindAllStringSubmatch(bar, -1)
 	best, bestSum := -1, -1
-	for i, c := range cells {
-		sum := 0
-		for _, ch := range c[1:] {
-			n, _ := strconv.Atoi(ch)
-			sum += n
-		}
-		if sum > bestSum {
+	for i, c := range columnColours(t, bar) {
+		if sum := c[0] + c[1] + c[2]; sum > bestSum {
 			best, bestSum = i, sum
 		}
 	}
@@ -209,5 +225,26 @@ func TestAnimationDisabledWithoutColour(t *testing.T) {
 	t.Setenv("FUTILS_NO_ANIM", "")
 	if AnimationEnabled() {
 		t.Error("animation must stay off when there is no colour to animate")
+	}
+}
+
+func TestGlowSweepMergesEqualNeighbours(t *testing.T) {
+	// A smooth fade across a wide row passes through far fewer distinct 8-bit
+	// values than it has columns, so most neighbours are identical. Styling
+	// each column separately would send several KB per row per frame; this
+	// asserts the merge that avoids it is still happening.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	const width = 158
+	bar := GlowSweep("CC - DP - DEV", width, glowFG, glowPeak, glowBase, lipgloss.Color("#8fb2bd"), 7)
+
+	runs := len(runPattern.FindAllString(bar, -1))
+	if runs >= width/2 {
+		t.Errorf("%d styled runs for %d columns — neighbours are not being merged", runs, width)
+	}
+	// The merge must not cost columns: every one still has to be painted.
+	if got := len(columnColours(t, bar)); got != width {
+		t.Errorf("%d columns painted, want %d", got, width)
 	}
 }
