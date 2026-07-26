@@ -80,15 +80,20 @@ var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
 
 var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
 
-// wsCursorStyle highlights the row under the cursor with a full-width
-// background, the same inverted language as the role bars so the two read as
-// one system. Deliberately neutral slate rather than green: every green bar on
-// this screen already means "role heading", and a green cursor row would read
-// as one more section break sliding down the list as you navigate.
-var wsCursorStyle = lipgloss.NewStyle().
-	Background(lipgloss.Color("#33454b")).
-	Foreground(lipgloss.Color("#eaf2f3")).
-	Bold(true)
+// The cursor row is a full-width bar whose background fades left to right, so
+// it looks lit rather than merely filled — on a list this dense a flat block is
+// easy to lose among the other coloured rows. Deliberately neutral slate rather
+// than green: every green bar on this screen already means "role heading", and
+// a green cursor row would read as one more section break sliding down the list
+// as you navigate.
+//
+// Peak sits at the left, where the workspace name is, so the brightest part of
+// the row is the part you are actually reading.
+var (
+	wsCursorFG   = lipgloss.Color("#f4fafb")
+	wsCursorPeak = lipgloss.Color("#54707a")
+	wsCursorBase = lipgloss.Color("#232f34")
+)
 
 // wsRoleHeader is a picker row that is a role heading rather than a workspace.
 // It rides in FilterOption.Meta so the renderer knows which bar colour to use
@@ -285,7 +290,7 @@ func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 		content = ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.plain()
 	}
 	if selected {
-		return wsCursorStyle.Width(wsBarWidth()).Render(content)
+		return ui.GlowBar(content, wsBarWidth(), wsCursorFG, wsCursorPeak, wsCursorBase)
 	}
 	if !ok {
 		return opt.Label
