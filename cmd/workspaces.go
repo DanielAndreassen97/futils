@@ -220,21 +220,28 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 }
 
 // renderWorkspaceRow draws one picker row. Section headings get their own dim
-// styling; workspace rows put the capacity in a fixed column so the SKUs line
-// up down the list.
+// styling; workspace rows put the licence tier in a fixed column so the tiers
+// and SKUs line up down the list.
+//
+// The selected row is rendered in one uniform highlight rather than keeping its
+// tier colour — a row that is half accent and half orange reads as two rows.
 func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 	if opt.IsHeader {
 		return wsHeaderStyle.Render(opt.Label)
 	}
-	note, _ := opt.Meta.(string)
-	label := opt.Label
-	if note != "" {
-		label = ui.FitWidth(opt.Label, wsNameColW) + "  " + note
+	tier, ok := opt.Meta.(workspaceTier)
+	if !ok {
+		if selected {
+			return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(opt.Label)
+		}
+		return opt.Label
 	}
+	name := ui.FitWidth(opt.Label, wsNameColW)
 	if selected {
-		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(label)
+		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).
+			Render(name + "  " + tier.plain())
 	}
-	return label
+	return name + "  " + tier.render()
 }
 
 // groupWorkspacesByRole turns the flat workspace list into picker rows grouped
@@ -271,7 +278,7 @@ func groupWorkspacesByRole(workspaces []fabric.Workspace, roleOf map[string]stri
 			out = append(out, ui.FilterOption{
 				Label: ws.DisplayName,
 				Value: ws.ID,
-				Meta:  capacityShort(caps, ws.CapacityID),
+				Meta:  classifyWorkspace(ws, caps),
 			})
 		}
 	}
@@ -383,9 +390,11 @@ func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, 
 
 	fmt.Println()
 	fmt.Println(infoStyle.Render(ws.DisplayName))
+	tier := classifyWorkspace(ws, s.capacities)
 	for _, row := range [][2]string{
 		{"ID", ws.ID},
 		{"Description", desc},
+		{"Licence", tier.Name},
 		{"Capacity", capacityLabel(s.capacities, ws.CapacityID)},
 		{"Your role", roleDisplay(role)},
 		{"Items", itemLine},
@@ -849,19 +858,6 @@ func capacityLabel(caps []fabric.Capacity, id string) string {
 		return id + " (capacity list unavailable)"
 	}
 	return id + " (no access to this capacity)"
-}
-
-// capacityShort is the one-column form used in the picker.
-func capacityShort(caps []fabric.Capacity, id string) string {
-	if id == "" {
-		return "no capacity"
-	}
-	for _, c := range caps {
-		if c.ID == id {
-			return c.SKU
-		}
-	}
-	return "capacity set"
 }
 
 // renderWorkspaceRefs lists the config references to a workspace, one indented

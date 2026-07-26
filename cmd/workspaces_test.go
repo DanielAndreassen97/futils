@@ -787,8 +787,10 @@ func TestGroupWorkspacesByRoleSortsInsideAGroup(t *testing.T) {
 	}
 }
 
-func TestGroupWorkspacesByRoleCarriesCapacityInMeta(t *testing.T) {
-	workspaces := []fabric.Workspace{{ID: "a1", DisplayName: "With capacity", CapacityID: "cap-1"}}
+func TestGroupWorkspacesByRoleCarriesTheTierInMeta(t *testing.T) {
+	// The renderer colours the row from Meta, so the tier has to travel with
+	// the option rather than being recomputed at render time.
+	workspaces := []fabric.Workspace{{ID: "a1", DisplayName: "With capacity", Type: "Workspace", CapacityID: "cap-1"}}
 	caps := []fabric.Capacity{{ID: "cap-1", DisplayName: "Prod F64", SKU: "F64", Region: "Norway East"}}
 
 	opts := groupWorkspacesByRole(workspaces, map[string]string{"a1": "Admin"}, caps)
@@ -797,9 +799,39 @@ func TestGroupWorkspacesByRoleCarriesCapacityInMeta(t *testing.T) {
 		if o.IsHeader {
 			continue
 		}
-		if note, _ := o.Meta.(string); note != "F64" {
-			t.Errorf("row meta = %q, want the SKU", note)
+		tier, ok := o.Meta.(workspaceTier)
+		if !ok {
+			t.Fatalf("row meta is %T, want a workspaceTier", o.Meta)
 		}
+		if tier.Name != "Fabric" || tier.SKU != "F64" {
+			t.Errorf("tier = %q/%q, want Fabric/F64", tier.Name, tier.SKU)
+		}
+	}
+}
+
+func TestWorkspacesPanelNamesTheLicenceTier(t *testing.T) {
+	// "no capacity" told you what futils failed to find. "Pro" tells you how
+	// the workspace is actually licensed.
+	path := wsConfigFile(t)
+	api := wsTestAPI()
+	api.workspaces[1].Type = "Workspace" // ws-sem has no capacity — a Pro workspace
+	h := &wsHarness{
+		filterPicks: []string{"ws-sem"},
+		numberPicks: []string{wsActionBack},
+	}
+	h.install(t)
+
+	out := captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Pro") {
+		t.Errorf("panel must name the licence tier:\n%s", out)
+	}
+	if strings.Contains(out, "no capacity") {
+		t.Errorf("panel still says 'no capacity':\n%s", out)
 	}
 }
 

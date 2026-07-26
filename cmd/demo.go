@@ -67,7 +67,14 @@ func demoWorkspaces() []fabric.Workspace {
 	var out []fabric.Workspace
 	for _, env := range demoEnvs {
 		for _, name := range []string{demoConfigWS(env), demoSemModWS(env)} {
-			out = append(out, fabric.Workspace{ID: demoGUID("workspace", name), DisplayName: name})
+			// CapacityID matters to the workspace picker: without it every demo
+			// workspace would be classified as a Pro workspace.
+			out = append(out, fabric.Workspace{
+				ID:          demoGUID("workspace", name),
+				DisplayName: name,
+				Type:        "Workspace",
+				CapacityID:  demoCapacityID,
+			})
 		}
 	}
 	return out
