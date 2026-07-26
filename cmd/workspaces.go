@@ -46,6 +46,10 @@ const (
 var (
 	wsLabelStyle = lipgloss.NewStyle().Foreground(ui.DimColor)
 	wsWarnStyle  = lipgloss.NewStyle().Foreground(ui.WarnColor)
+	// wsCancelStyle marks the lines that say nothing happened. They scroll past
+	// in the same output as the lines that did, so they get their own colour
+	// rather than reading as one more neutral status message.
+	wsCancelStyle = lipgloss.NewStyle().Foreground(ui.StopColor).Bold(true)
 )
 
 // Workspaces is the top-level entry point for the workspace-management flow.
@@ -334,7 +338,7 @@ func (s *workspaceSession) rename(ws fabric.Workspace, refs []config.WorkspaceRe
 		return err
 	}
 	if !ok {
-		fmt.Println("Cancelled.")
+		fmt.Println(wsCancelStyle.Render("Cancelled."))
 		return ui.ErrGoBack
 	}
 
@@ -406,13 +410,13 @@ func (s *workspaceSession) delete(ws fabric.Workspace, items []fabric.Item, item
 	ok, err := wsConfirmTyped(fmt.Sprintf("Delete %q and everything in it?", ws.DisplayName), wsDeleteWord)
 	if err != nil {
 		if errors.Is(err, ui.ErrGoBack) {
-			fmt.Println("Cancelled.")
+			fmt.Println(wsCancelStyle.Render("Cancelled."))
 			return ui.ErrGoBack
 		}
 		return err
 	}
 	if !ok {
-		fmt.Println("Cancelled — nothing was deleted.")
+		fmt.Println(wsCancelStyle.Render("Cancelled — nothing was deleted."))
 		return ui.ErrGoBack
 	}
 
@@ -480,7 +484,7 @@ func (s *workspaceSession) create(existing []fabric.Workspace) error {
 		return err
 	}
 	if !ok {
-		fmt.Println("Cancelled.")
+		fmt.Println(wsCancelStyle.Render("Cancelled."))
 		return ui.ErrGoBack
 	}
 

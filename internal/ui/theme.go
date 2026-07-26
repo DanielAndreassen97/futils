@@ -20,6 +20,13 @@ var DimColor = lipgloss.Color("8")
 // backgrounds instead of a fixed hex that could clash with either.
 var WarnColor = lipgloss.Color("3")
 
+// StopColor is the red used for "this did not happen" lines — a
+// cancelled action, an aborted delete. Reserved for outcomes the user
+// must not misread as success, since those lines scroll past in the
+// same wall of output as the ones that did go through. ANSI 1 for the
+// same terminal-adaptive reason as DimColor and WarnColor.
+var StopColor = lipgloss.Color("1")
+
 // ItemTypeColor returns the lipgloss color used to render a Fabric
 // item type label in the move picker. Notebooks are accent green
 // (matching the brand), Reports are orange (matching the sibling
