@@ -652,6 +652,10 @@ type demoClient struct {
 	// seeded from demoWorkspaces(). Without it a demo could not show a create
 	// or delete actually landing.
 	workspaces []fabric.Workspace
+	// itemEdits overlays renames and description changes on the generated item
+	// list, keyed by item ID. demoItems() is generated, so edits are layered on
+	// top rather than written back into the generator.
+	itemEdits map[string]fabric.Item
 }
 
 func newDemoClient() *demoClient {
@@ -689,6 +693,13 @@ func (c *demoClient) ListItems(token, workspaceID string) ([]fabric.Item, error)
 	time.Sleep(350 * time.Millisecond)
 	items, ok := demoItems(workspaceID)
 	if ok {
+		c.mu.Lock()
+		for i, it := range items {
+			if edited, ok := c.itemEdits[it.ID]; ok {
+				items[i] = edited
+			}
+		}
+		c.mu.Unlock()
 		return items, nil
 	}
 	// A workspace created during the demo has no seeded items — empty, not an
@@ -1038,6 +1049,42 @@ func (c *demoClient) DeleteWorkspace(token, workspaceID string) error {
 func (c *demoClient) ListCapacities(token string) ([]fabric.Capacity, error) {
 	time.Sleep(300 * time.Millisecond)
 	return demoCapacities(), nil
+}
+
+// ── item browser ───────────────────────────────────────────────────────────
+
+func (c *demoClient) RenameItem(token, workspaceID, itemID, displayName string) (fabric.Item, error) {
+	time.Sleep(400 * time.Millisecond)
+	return c.patchDemoItem(workspaceID, itemID, func(it *fabric.Item) { it.DisplayName = displayName })
+}
+
+func (c *demoClient) SetItemDescription(token, workspaceID, itemID, description string) (fabric.Item, error) {
+	time.Sleep(400 * time.Millisecond)
+	return c.patchDemoItem(workspaceID, itemID, func(it *fabric.Item) { it.Description = description })
+}
+
+// patchDemoItem records an edit in the overlay so ListItems serves it back. The
+// demo tenant's items are generated, so this is how a rename survives long
+// enough for the user to see it in the list they came from.
+func (c *demoClient) patchDemoItem(workspaceID, itemID string, apply func(*fabric.Item)) (fabric.Item, error) {
+	items, err := c.ListItems("", workspaceID)
+	if err != nil {
+		return fabric.Item{}, err
+	}
+	for _, it := range items {
+		if it.ID != itemID {
+			continue
+		}
+		apply(&it)
+		c.mu.Lock()
+		if c.itemEdits == nil {
+			c.itemEdits = map[string]fabric.Item{}
+		}
+		c.itemEdits[itemID] = it
+		c.mu.Unlock()
+		return it, nil
+	}
+	return fabric.Item{}, fmt.Errorf("item %q not found", itemID)
 }
 
 // NewOneLakeAPI implements the flow's optional oneLakeProvider interface, so

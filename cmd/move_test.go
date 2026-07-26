@@ -593,3 +593,11 @@ func (f *fakeMoveAPI) ListFolders(string, string) ([]fabric.Folder, error) { ret
 func (f *fakeMoveAPI) CreateFolder(_, _, name, parentID string) (fabric.Folder, error) {
 	return fabric.Folder{ID: "fld-" + name, DisplayName: name, ParentFolderID: parentID}, nil
 }
+
+// Item browser methods — not used by move tests.
+func (f *fakeMoveAPI) RenameItem(string, string, string, string) (fabric.Item, error) {
+	return fabric.Item{}, errors.New("RenameItem not used by move tests")
+}
+func (f *fakeMoveAPI) SetItemDescription(string, string, string, string) (fabric.Item, error) {
+	return fabric.Item{}, errors.New("SetItemDescription not used by move tests")
+}

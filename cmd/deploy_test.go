@@ -1632,3 +1632,11 @@ func (f *activationFakeAPI) SetVariableLibraryActiveSet(token, ws, id, valueSetN
 	f.activated = append(f.activated, [3]string{ws, id, valueSetName})
 	return nil
 }
+
+// Item browser methods — not used by deploy tests.
+func (f *deployFakeAPI) RenameItem(string, string, string, string) (fabric.Item, error) {
+	return fabric.Item{}, fmt.Errorf("RenameItem not used by deploy tests")
+}
+func (f *deployFakeAPI) SetItemDescription(string, string, string, string) (fabric.Item, error) {
+	return fabric.Item{}, fmt.Errorf("SetItemDescription not used by deploy tests")
+}

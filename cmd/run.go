@@ -90,6 +90,10 @@ type APIClient interface {
 	SetWorkspaceDescription(token, workspaceID, description string) (fabric.Workspace, error)
 	DeleteWorkspace(token, workspaceID string) error
 	ListCapacities(token string) ([]fabric.Capacity, error)
+
+	// Item browser.
+	RenameItem(token, workspaceID, itemID, displayName string) (fabric.Item, error)
+	SetItemDescription(token, workspaceID, itemID, description string) (fabric.Item, error)
 }
 
 // RealAPIClient just forwards to the internal/fabric package functions.
@@ -196,6 +200,12 @@ func (RealAPIClient) DeleteWorkspace(token, workspaceID string) error {
 }
 func (RealAPIClient) ListCapacities(token string) ([]fabric.Capacity, error) {
 	return fabric.ListCapacities(token)
+}
+func (RealAPIClient) RenameItem(token, workspaceID, itemID, displayName string) (fabric.Item, error) {
+	return fabric.RenameItem(token, workspaceID, itemID, displayName)
+}
+func (RealAPIClient) SetItemDescription(token, workspaceID, itemID, description string) (fabric.Item, error) {
+	return fabric.SetItemDescription(token, workspaceID, itemID, description)
 }
 
 // DefaultAPI is what Run() uses when called from the main menu. Test code
