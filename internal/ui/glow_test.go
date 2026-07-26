@@ -248,3 +248,24 @@ func TestGlowSweepMergesEqualNeighbours(t *testing.T) {
 		t.Errorf("%d columns painted, want %d", got, width)
 	}
 }
+
+// Benchmarks for the cursor bar. Kept because the cost here is paid on a timer
+// when the row animates, so a regression is not something a user would report
+// as "slow" — it would show up as a warm laptop.
+//
+//	go test ./internal/ui/ -bench GlowSweep -benchtime=2000x
+func BenchmarkGlowSweep(b *testing.B) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		GlowSweep("CC - DP - DEV", 158, glowFG, glowPeak, glowBase, lipgloss.Color("#8fb2bd"), i)
+	}
+}
+
+func BenchmarkGlowBar(b *testing.B) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		GlowBar("CC - DP - DEV", 158, glowFG, glowPeak, glowBase)
+	}
+}
