@@ -157,6 +157,10 @@ func (s *workspaceSession) load() ([]fabric.Workspace, map[string]bool, error) {
 		return nil, nil, fmt.Errorf("list workspaces: %w", err)
 	}
 	adminList, adminErr := s.client.ListWorkspacesByRole(s.token, "Admin")
+	// Capacities are session state, fetched here so the picker and the detail
+	// panel can name a workspace's capacity from the first screen. A failure is
+	// remembered and surfaces only where it matters — the create flow.
+	s.fetchCapacities()
 	spinner.Stop()
 
 	admin := make(map[string]bool, len(adminList))
@@ -179,7 +183,7 @@ func (s *workspaceSession) load() ([]fabric.Workspace, map[string]bool, error) {
 // pick renders the workspace picker: a create row, then every workspace with its
 // capacity and whether you can administer it.
 func (s *workspaceSession) pick(workspaces []fabric.Workspace, admin map[string]bool) (string, error) {
-	caps := s.capacitiesQuiet()
+	caps := s.capacities
 
 	options := []ui.FilterOption{{Label: "+ Create new workspace", Value: wsActionCreate}}
 	for _, ws := range workspaces {
@@ -284,7 +288,7 @@ func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, 
 	for _, row := range [][2]string{
 		{"ID", ws.ID},
 		{"Description", desc},
-		{"Capacity", capacityLabel(s.capacitiesQuiet(), ws.CapacityID)},
+		{"Capacity", capacityLabel(s.capacities, ws.CapacityID)},
 		{"Your role", role},
 		{"Items", itemLine},
 	} {
@@ -465,7 +469,7 @@ func (s *workspaceSession) create(existing []fabric.Workspace) error {
 	fmt.Println(infoStyle.Render("New workspace"))
 	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Name:", 13)), name)
 	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Description:", 13)), orNone(desc))
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Capacity:", 13)), capacityLabel(s.capacitiesQuiet(), capID))
+	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Capacity:", 13)), capacityLabel(s.capacities, capID))
 	if capID == "" {
 		fmt.Println(wsWarnStyle.Render("  Without a capacity you cannot create Fabric items in this workspace."))
 	}
@@ -599,28 +603,21 @@ func (s *workspaceSession) pickCapacity() (string, error) {
 	return choice, nil
 }
 
-// loadCapacities fetches the capacity list once per session, remembering a
-// failure so a tenant without the scope is not asked over and over.
-func (s *workspaceSession) loadCapacities() ([]fabric.Capacity, error) {
+// fetchCapacities loads the capacity list once per session, remembering a
+// failure so a tenant that does not grant Capacity.Read.All is not retried on
+// every pass. Callers that only render a name ignore the error; the create flow
+// reads it via loadCapacities.
+func (s *workspaceSession) fetchCapacities() {
 	if s.capsLoaded {
-		return s.capacities, s.capsErr
+		return
 	}
-	spinner := ui.NewSpinner("Loading capacities...")
-	spinner.Start()
-	caps, err := s.client.ListCapacities(s.token)
-	spinner.Stop()
-	s.capacities, s.capsErr, s.capsLoaded = caps, err, true
-	return caps, err
+	s.capacities, s.capsErr = s.client.ListCapacities(s.token)
+	s.capsLoaded = true
 }
 
-// capacitiesQuiet returns whatever capacities are already known without
-// triggering a fetch — used by the read-only rendering paths, where a missing
-// capacity name is cosmetic and never worth a request or an error.
-func (s *workspaceSession) capacitiesQuiet() []fabric.Capacity {
-	if s.capsLoaded {
-		return s.capacities
-	}
-	return nil
+func (s *workspaceSession) loadCapacities() ([]fabric.Capacity, error) {
+	s.fetchCapacities()
+	return s.capacities, s.capsErr
 }
 
 // updateConfig applies mutate to a freshly loaded config and saves it only when
@@ -736,9 +733,11 @@ func itemTypeCounts(items []fabric.Item) string {
 	return strings.Join(parts, ", ")
 }
 
-// capacityLabel names the capacity a workspace sits on. A capacity ID we cannot
-// resolve is reported as the raw ID rather than "none": the workspace does have
-// a capacity, we just lack access to name it.
+// capacityLabel names the capacity a workspace sits on. An ID we cannot resolve
+// is reported as the raw ID rather than "none" — the workspace does have a
+// capacity. The two unresolved cases are worded differently on purpose: an
+// empty list means we never managed to look, which is not the same as being
+// told no.
 func capacityLabel(caps []fabric.Capacity, id string) string {
 	if id == "" {
 		return "none"
@@ -747,6 +746,9 @@ func capacityLabel(caps []fabric.Capacity, id string) string {
 		if c.ID == id {
 			return fmt.Sprintf("%s · %s · %s", c.DisplayName, c.SKU, c.Region)
 		}
+	}
+	if len(caps) == 0 {
+		return id + " (capacity list unavailable)"
 	}
 	return id + " (no access to this capacity)"
 }

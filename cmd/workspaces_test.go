@@ -49,6 +49,18 @@ func TestCapacityLabel(t *testing.T) {
 	if !strings.Contains(got, "cap-unknown") || got == "none" {
 		t.Errorf("capacityLabel for an invisible capacity = %q", got)
 	}
+	if !strings.Contains(got, "no access") {
+		t.Errorf("an unresolvable id in a readable list = %q, want a no-access note", got)
+	}
+	// When the whole list failed to load, blaming access is wrong — we never
+	// looked.
+	got = capacityLabel(nil, "cap-1")
+	if strings.Contains(got, "no access") {
+		t.Errorf("capacityLabel with no list = %q, must not claim missing access", got)
+	}
+	if !strings.Contains(got, "cap-1") {
+		t.Errorf("capacityLabel with no list = %q, want the raw id", got)
+	}
 }
 
 func TestRenderWorkspaceRefsCoversEachKind(t *testing.T) {
@@ -672,4 +684,30 @@ func demoWorkspaceNamed(api *demoClient, name string) (fabric.Workspace, bool) {
 		}
 	}
 	return fabric.Workspace{}, false
+}
+
+func TestWorkspacesPanelNamesTheCapacityOnFirstVisit(t *testing.T) {
+	// Capacities are session state. If they are only fetched when creating, the
+	// very first detail panel renders a raw GUID and blames it on access the
+	// user actually has.
+	path := wsConfigFile(t)
+	api := wsTestAPI()
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin"},
+		numberPicks: []string{wsActionBack},
+	}
+	h.install(t)
+
+	out := captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Prod F64 · F64 · Norway East") {
+		t.Errorf("panel must name the capacity on the first visit:\n%s", out)
+	}
+	if strings.Contains(out, "no access to this capacity") {
+		t.Errorf("panel wrongly claims the capacity is inaccessible:\n%s", out)
+	}
 }
