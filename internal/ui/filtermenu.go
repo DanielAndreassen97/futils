@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // FilterOption is one row in a FilterMenu. Label is what the user
@@ -29,6 +32,11 @@ type FilterOption struct {
 // MUST return a uniformly-highlighted row when selected, regardless
 // of any per-row coloring it would otherwise apply.
 type FilterRowRenderer func(opt FilterOption, selected bool) string
+
+// FilterRowRendererPhase is a FilterRowRenderer that also receives a frame
+// counter, for rows that animate. Used by FilterMenuAnimated; phase advances
+// once per tick and only ever increases.
+type FilterRowRendererPhase func(opt FilterOption, selected bool, phase int) string
 
 // DefaultFilterRowRenderer renders the Label only, with the cursor
 // row highlighted in the accent color. Used when callers don't need
@@ -75,14 +83,42 @@ type filterMenuModel struct {
 	goBack   bool
 	quit     bool
 	selected int // index into options (not filtered) once done
+
+	// Animation, used only by FilterMenuAnimated. renderPhase takes precedence
+	// over render when set, and its presence is what starts the ticker — a
+	// plain FilterMenu never schedules a repaint it does not need.
+	renderPhase FilterRowRendererPhase
+	tickEvery   time.Duration
+	phase       int
 }
+
+// filterTickMsg advances the animation one frame.
+type filterTickMsg struct{}
 
 var (
 	filterMenuTitleStyle = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	filterMenuHintStyle  = lipgloss.NewStyle().Foreground(DimColor)
 )
 
-func (m filterMenuModel) Init() tea.Cmd { return textinput.Blink }
+func (m filterMenuModel) Init() tea.Cmd {
+	if m.renderPhase == nil {
+		return textinput.Blink
+	}
+	return tea.Batch(textinput.Blink, m.tick())
+}
+
+func (m filterMenuModel) tick() tea.Cmd {
+	return tea.Tick(m.tickEvery, func(time.Time) tea.Msg { return filterTickMsg{} })
+}
+
+// renderRow draws one visible row through whichever renderer is configured.
+func (m filterMenuModel) renderRow(pos int) string {
+	opt := m.options[m.filtered[pos]]
+	if m.renderPhase != nil {
+		return m.renderPhase(opt, pos == m.cursor, m.phase)
+	}
+	return m.render(opt, pos == m.cursor)
+}
 
 // refilter rebuilds the visible row set. A section header is emitted lazily —
 // only once the first matching row under it is found — so filtering can never
@@ -149,6 +185,9 @@ func (m filterMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termH = msg.Height
 		return m, nil
+	case filterTickMsg:
+		m.phase++
+		return m, m.tick()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up":
@@ -206,7 +245,7 @@ func (m filterMenuModel) View() string {
 	// Viewport: 5 header rows (title, input, hint, blanks); clip the
 	// visible window around the cursor for long lists.
 	windowedList(&b, len(m.filtered), m.cursor, m.termH, 5, filterMenuHintStyle, func(pos int) string {
-		return "  " + m.render(m.options[m.filtered[pos]], pos == m.cursor)
+		return "  " + m.renderRow(pos)
 	})
 	return b.String()
 }
@@ -226,19 +265,45 @@ func FilterMenu(title string, options []FilterOption, render FilterRowRenderer) 
 	if render == nil {
 		render = DefaultFilterRowRenderer
 	}
+	return runFilterMenu(filterMenuModel{title: title, options: options, render: render})
+}
+
+// FilterMenuAnimated is FilterMenu with a repaint ticker. `render` receives a
+// frame counter it can use to animate, typically the cursor row.
+//
+// Split from FilterMenu rather than folded into it: a ticker makes the program
+// redraw on a timer whether or not anything changed, and only a caller that
+// actually animates should pay that. Animation is suppressed when the terminal
+// has no colour to animate, and by FUTILS_NO_ANIM — recordings and anyone who
+// finds movement distracting still get the static bar.
+func FilterMenuAnimated(title string, options []FilterOption, render FilterRowRendererPhase, interval time.Duration) (string, error) {
+	m := filterMenuModel{title: title, options: options}
+	if AnimationEnabled() {
+		m.renderPhase, m.tickEvery = render, interval
+	} else {
+		m.render = func(opt FilterOption, selected bool) string { return render(opt, selected, 0) }
+	}
+	return runFilterMenu(m)
+}
+
+// AnimationEnabled reports whether animated UI should run: never without colour
+// support, and never when FUTILS_NO_ANIM is set to anything non-empty.
+func AnimationEnabled() bool {
+	if os.Getenv("FUTILS_NO_ANIM") != "" {
+		return false
+	}
+	return lipgloss.ColorProfile() != termenv.Ascii
+}
+
+func runFilterMenu(model filterMenuModel) (string, error) {
 	ti := textinput.New()
 	ti.Placeholder = "filter…"
 	ti.Focus()
 	ti.Prompt = "› "
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(AccentColor)
 
-	model := filterMenuModel{
-		title:    title,
-		input:    ti,
-		options:  options,
-		filtered: make([]int, 0, len(options)),
-		render:   render,
-	}
+	model.input = ti
+	model.filtered = make([]int, 0, len(model.options))
 	model = model.refilter()
 
 	p := tea.NewProgram(model)

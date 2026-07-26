@@ -113,7 +113,7 @@ func TestRenderWorkspaceRowAlignsNonASCIINames(t *testing.T) {
 			Value: "id",
 			Meta:  classifyWorkspace(fabric.Workspace{Type: "Workspace", CapacityID: "c"}, caps),
 		}
-		rendered := []rune(renderWorkspaceRow(opt, false))
+		rendered := []rune(renderWorkspaceRow(opt, false, 0))
 		starts = append(starts, indexOfRunes(rendered, []rune("Fabric")))
 	}
 	for i, got := range starts {
@@ -178,12 +178,12 @@ func TestRenderWorkspaceRowSelectedSpansTheFullWidth(t *testing.T) {
 		Meta:  classifyWorkspace(fabric.Workspace{Type: "Workspace", CapacityID: "c"}, caps),
 	}
 
-	if got, want := lipgloss.Width(renderWorkspaceRow(opt, true)), wsBarWidth(); got != want {
+	if got, want := lipgloss.Width(renderWorkspaceRow(opt, true, 0)), wsBarWidth(); got != want {
 		t.Errorf("selected row is %d columns wide, want %d", got, want)
 	}
 	// An unselected row must NOT be padded out — a full-width unselected row
 	// would paint the terminal background over anything to its right.
-	if got := lipgloss.Width(renderWorkspaceRow(opt, false)); got >= wsBarWidth() {
+	if got := lipgloss.Width(renderWorkspaceRow(opt, false, 0)); got >= wsBarWidth() {
 		t.Errorf("unselected row is %d columns wide, want less than %d", got, wsBarWidth())
 	}
 }
@@ -192,7 +192,7 @@ func TestRenderWorkspaceRowSelectedMatchesTheHeadingWidth(t *testing.T) {
 	// Cursor bar and role bar are the same visual device; different widths
 	// would make the list look misaligned as the cursor moves past a heading.
 	opt := ui.FilterOption{Label: "DW - Core", Value: "id", Meta: workspaceTier{Name: "Pro"}}
-	row := lipgloss.Width(renderWorkspaceRow(opt, true))
+	row := lipgloss.Width(renderWorkspaceRow(opt, true, 0))
 	bar := lipgloss.Width(renderRoleBar(wsRoleAdmin, "ADMIN · 34"))
 	if row != bar {
 		t.Errorf("cursor bar is %d wide but the role bar is %d", row, bar)

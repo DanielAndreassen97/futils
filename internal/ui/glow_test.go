@@ -2,6 +2,7 @@ package ui
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -97,5 +98,116 @@ func TestGlowBarActuallyFadesAcrossTheRow(t *testing.T) {
 	}
 	if cells[0][1] == cells[len(cells)-1][1] {
 		t.Errorf("both ends have red channel %s — the bar does not fade", cells[0][1])
+	}
+}
+
+// brightestColumn reports which column carries the lightest background, i.e.
+// where the travelling highlight currently sits.
+func brightestColumn(t *testing.T, bar string) int {
+	t.Helper()
+	cells := regexp.MustCompile(`48;2;(\d+);(\d+);(\d+)`).FindAllStringSubmatch(bar, -1)
+	best, bestSum := -1, -1
+	for i, c := range cells {
+		sum := 0
+		for _, ch := range c[1:] {
+			n, _ := strconv.Atoi(ch)
+			sum += n
+		}
+		if sum > bestSum {
+			best, bestSum = i, sum
+		}
+	}
+	return best
+}
+
+func TestGlowSweepMovesItsHighlight(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	const width = 60
+	shine := lipgloss.Color("#ffffff")
+
+	// Once the band is fully on the bar, each frame must move it right.
+	prev := -1
+	for phase := SweepBand; phase < SweepBand+20; phase++ {
+		col := brightestColumn(t, GlowSweep("row", width, glowFG, glowPeak, glowBase, shine, phase))
+		if prev >= 0 && col <= prev {
+			t.Fatalf("at phase %d the highlight sat at column %d, not right of %d", phase, col, prev)
+		}
+		prev = col
+	}
+}
+
+func TestGlowSweepWraps(t *testing.T) {
+	// The phase counter only ever grows, so a sweep that did not wrap would
+	// leave the bar permanently unlit after the first pass.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	const width = 60
+	period := width + 2*SweepBand
+	a := GlowSweep("row", width, glowFG, glowPeak, glowBase, lipgloss.Color("#ffffff"), 5)
+	b := GlowSweep("row", width, glowFG, glowPeak, glowBase, lipgloss.Color("#ffffff"), 5+period)
+	if a != b {
+		t.Error("a full period must return the sweep to the same frame")
+	}
+}
+
+func TestGlowSweepKeepsTheWidthAndText(t *testing.T) {
+	for _, phase := range []int{0, 7, 40, 1000} {
+		got := GlowSweep("DW - Core", 40, glowFG, glowPeak, glowBase, lipgloss.Color("#ffffff"), phase)
+		if lipgloss.Width(got) != 40 {
+			t.Errorf("phase %d: bar is %d columns, want 40", phase, lipgloss.Width(got))
+		}
+		if !strings.Contains(got, "DW - Core") {
+			t.Errorf("phase %d: bar dropped its text", phase)
+		}
+	}
+}
+
+func TestGlowSweepFallsBackForNonHexColours(t *testing.T) {
+	got := GlowSweep("row", 30, glowFG, lipgloss.Color("8"), glowBase, glowPeak, 3)
+	if lipgloss.Width(got) != 30 {
+		t.Errorf("fallback bar is %d columns, want 30", lipgloss.Width(got))
+	}
+}
+
+func TestBandFalloffPeaksAtTheCentre(t *testing.T) {
+	if got := bandFalloff(0, 10); got != 1 {
+		t.Errorf("falloff at the centre = %v, want 1", got)
+	}
+	if got := bandFalloff(10, 10); got != 0 {
+		t.Errorf("falloff at the edge = %v, want 0", got)
+	}
+	if got := bandFalloff(-11, 10); got != 0 {
+		t.Errorf("falloff beyond the band = %v, want 0", got)
+	}
+	// Symmetric: the band lights the same either side of its centre.
+	if bandFalloff(4, 10) != bandFalloff(-4, 10) {
+		t.Error("falloff is not symmetric")
+	}
+}
+
+func TestAnimationEnabledRespectsTheEnvironment(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
+
+	t.Setenv("FUTILS_NO_ANIM", "")
+	if !AnimationEnabled() {
+		t.Error("animation must be on by default on a colour terminal")
+	}
+	t.Setenv("FUTILS_NO_ANIM", "1")
+	if AnimationEnabled() {
+		t.Error("FUTILS_NO_ANIM must switch animation off")
+	}
+}
+
+func TestAnimationDisabledWithoutColour(t *testing.T) {
+	// Ticking a repaint on a terminal that cannot show the difference is pure
+	// waste, and it garbles piped output.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Setenv("FUTILS_NO_ANIM", "")
+	if AnimationEnabled() {
+		t.Error("animation must stay off when there is no colour to animate")
 	}
 }
