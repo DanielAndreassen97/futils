@@ -39,9 +39,21 @@ const (
 	wsDeleteWord = "Yes"
 
 	// wsNameColW aligns the name column in the workspace picker so the capacity
-	// and role annotations line up.
+	// annotations line up.
 	wsNameColW = 44
+
+	// wsRoleAdmin is the only role that may rename or delete a workspace.
+	wsRoleAdmin = "Admin"
+	// wsRoleNone is futils' own bucket for a workspace that came back under no
+	// role at all — a personal workspace, or access granted some other way. Not
+	// a value Fabric accepts in a roles filter.
+	wsRoleNone = "None"
 )
+
+// wsRoles are Fabric's workspace roles, most capable first. The order is the
+// order the picker groups them in, and each one costs a roles-filtered list
+// call. Spelling matters: these strings go straight into the API query.
+var wsRoles = []string{wsRoleAdmin, "Member", "Contributor", "Viewer"}
 
 var (
 	wsLabelStyle = lipgloss.NewStyle().Foreground(ui.DimColor)
@@ -50,6 +62,10 @@ var (
 	// in the same output as the lines that did, so they get their own colour
 	// rather than reading as one more neutral status message.
 	wsCancelStyle = lipgloss.NewStyle().Foreground(ui.StopColor).Bold(true)
+	// wsHeaderStyle is the role heading in the picker. Dim rather than accent:
+	// the cursor owns the accent colour, and a bright heading would compete with
+	// it for the eye.
+	wsHeaderStyle = lipgloss.NewStyle().Foreground(ui.DimColor).Bold(true)
 )
 
 // Workspaces is the top-level entry point for the workspace-management flow.
@@ -112,12 +128,12 @@ type workspaceSession struct {
 // name that no longer exists, and that is exactly the moment a user looks again.
 func (s *workspaceSession) loop() error {
 	for {
-		workspaces, admin, err := s.load()
+		workspaces, roleOf, err := s.load()
 		if err != nil {
 			return err
 		}
 
-		choice, err := s.pick(workspaces, admin)
+		choice, err := s.pick(workspaces, roleOf)
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {
 				return nil
@@ -140,7 +156,7 @@ func (s *workspaceSession) loop() error {
 			// The list was reloaded between render and selection — harmless.
 			continue
 		}
-		if err := s.manage(selected, admin[selected.ID]); err != nil {
+		if err := s.manage(selected, roleOf[selected.ID]); err != nil {
 			if errors.Is(err, ui.ErrGoBack) {
 				continue
 			}
@@ -149,10 +165,11 @@ func (s *workspaceSession) loop() error {
 	}
 }
 
-// load fetches the workspace list and the caller's Admin set under one spinner.
-// The roles=Admin call is what makes role gating free: one extra request for the
-// whole tenant instead of a roleAssignments lookup per workspace.
-func (s *workspaceSession) load() ([]fabric.Workspace, map[string]bool, error) {
+// load fetches the workspace list and the caller's role in each one, under a
+// single spinner. Fabric's workspace list does not carry your role, and the
+// alternative — a roleAssignments lookup per workspace — is one request per row.
+// A roles-filtered list per role is four requests for the whole tenant.
+func (s *workspaceSession) load() ([]fabric.Workspace, map[string]string, error) {
 	spinner := ui.NewSpinner("Loading workspaces...")
 	spinner.Start()
 	workspaces, err := s.client.ListWorkspaces(s.token)
@@ -160,61 +177,141 @@ func (s *workspaceSession) load() ([]fabric.Workspace, map[string]bool, error) {
 		spinner.Stop()
 		return nil, nil, fmt.Errorf("list workspaces: %w", err)
 	}
-	adminList, adminErr := s.client.ListWorkspacesByRole(s.token, "Admin")
+
+	roleOf := make(map[string]string, len(workspaces))
+	var roleErr error
+	for _, role := range wsRoles {
+		inRole, err := s.client.ListWorkspacesByRole(s.token, role)
+		if err != nil {
+			roleErr = err
+			break
+		}
+		for _, ws := range inRole {
+			roleOf[ws.ID] = role
+		}
+	}
+
 	// Capacities are session state, fetched here so the picker and the detail
 	// panel can name a workspace's capacity from the first screen. A failure is
 	// remembered and surfaces only where it matters — the create flow.
 	s.fetchCapacities()
 	spinner.Stop()
 
-	admin := make(map[string]bool, len(adminList))
-	for _, ws := range adminList {
-		admin[ws.ID] = true
-	}
-	if adminErr != nil {
-		// Without the role list the flow still works — the pre-flight check just
-		// stops helping, and Fabric answers 403 instead. Say so rather than
-		// failing a read-only listing.
-		fmt.Println(wsWarnStyle.Render("Could not read your workspace roles: " + adminErr.Error()))
+	if roleErr != nil {
+		// Without roles the flow still works: the grouping collapses and the
+		// pre-flight check stops helping, so Fabric answers 403 instead. That
+		// beats failing a read-only listing outright.
+		fmt.Println(wsWarnStyle.Render("Could not read your workspace roles: " + roleErr.Error()))
 		fmt.Println(wsLabelStyle.Render("Rename and delete will be attempted and may be refused by Fabric."))
 		for _, ws := range workspaces {
-			admin[ws.ID] = true
+			roleOf[ws.ID] = wsRoleAdmin
 		}
 	}
-	return workspaces, admin, nil
+	return workspaces, roleOf, nil
 }
 
-// pick renders the workspace picker: a create row, then every workspace with its
-// capacity and whether you can administer it.
-func (s *workspaceSession) pick(workspaces []fabric.Workspace, admin map[string]bool) (string, error) {
-	caps := s.capacities
-
+// pick renders the workspace picker: a create row, then the workspaces grouped
+// under their role heading.
+func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string]string) (string, error) {
 	options := []ui.FilterOption{{Label: "+ Create new workspace", Value: wsActionCreate}}
+	options = append(options, groupWorkspacesByRole(workspaces, roleOf, s.capacities)...)
+
+	return wsFilterPicker("Select a workspace", options, renderWorkspaceRow)
+}
+
+// renderWorkspaceRow draws one picker row. Section headings get their own dim
+// styling; workspace rows put the capacity in a fixed column so the SKUs line
+// up down the list.
+func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
+	if opt.IsHeader {
+		return wsHeaderStyle.Render(opt.Label)
+	}
+	note, _ := opt.Meta.(string)
+	label := opt.Label
+	if note != "" {
+		label = ui.FitWidth(opt.Label, wsNameColW) + "  " + note
+	}
+	if selected {
+		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(label)
+	}
+	return label
+}
+
+// groupWorkspacesByRole turns the flat workspace list into picker rows grouped
+// under a heading per role, in descending order of what the role lets you do.
+// Grouping by role rather than sorting one long list answers the question the
+// user actually has — "which of these can I act on?" — before they read a name.
+//
+// Workspaces with no role land in a final group: a personal workspace has no
+// role assignment, and neither does access inherited some other way.
+func groupWorkspacesByRole(workspaces []fabric.Workspace, roleOf map[string]string, caps []fabric.Capacity) []ui.FilterOption {
+	byRole := map[string][]fabric.Workspace{}
 	for _, ws := range workspaces {
-		note := capacityShort(caps, ws.CapacityID)
-		if !admin[ws.ID] {
-			note += " · read-only"
+		role := roleOf[ws.ID]
+		if role == "" {
+			role = wsRoleNone
 		}
-		options = append(options, ui.FilterOption{Label: ws.DisplayName, Value: ws.ID, Meta: note})
+		byRole[role] = append(byRole[role], ws)
 	}
 
-	return wsFilterPicker("Select a workspace", options, func(opt ui.FilterOption, selected bool) string {
-		note, _ := opt.Meta.(string)
-		label := opt.Label
-		if note != "" {
-			label = ui.FitWidth(opt.Label, wsNameColW) + "  " + note
+	var out []ui.FilterOption
+	for _, role := range append(append([]string{}, wsRoles...), wsRoleNone) {
+		group := byRole[role]
+		if len(group) == 0 {
+			continue
 		}
-		if selected {
-			return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(label)
+		sort.SliceStable(group, func(i, j int) bool {
+			return strings.ToLower(group[i].DisplayName) < strings.ToLower(group[j].DisplayName)
+		})
+		out = append(out, ui.FilterOption{
+			Label:    fmt.Sprintf("%s (%d)", wsRoleHeading(role), len(group)),
+			IsHeader: true,
+		})
+		for _, ws := range group {
+			out = append(out, ui.FilterOption{
+				Label: ws.DisplayName,
+				Value: ws.ID,
+				Meta:  capacityShort(caps, ws.CapacityID),
+			})
 		}
-		return label
-	})
+	}
+	return out
+}
+
+// wsRoleHeading is the section title for a role. Upper case so a heading never
+// reads as one more workspace name.
+func wsRoleHeading(role string) string {
+	if role == wsRoleNone {
+		return "NO WORKSPACE ROLE"
+	}
+	return strings.ToUpper(role)
+}
+
+// roleDisplay names a role in the detail panel. "Contributor" and "Viewer" are
+// both blocked from renaming, but they are not the same thing, and a panel that
+// flattened them to "read-only" would hide which one you need to ask about.
+func roleDisplay(role string) string {
+	if role == "" || role == wsRoleNone {
+		return "none reported"
+	}
+	return role
+}
+
+func roleWithArticle(role string) string {
+	switch role {
+	case "", wsRoleNone:
+		return "reported under no role at all"
+	case wsRoleAdmin, "Member":
+		return "a " + role
+	}
+	return "a " + role
 }
 
 // manage prints the detail panel for one workspace, then runs a single action.
 // Control returns to the picker afterwards so the next screen is always drawn
 // from freshly loaded data.
-func (s *workspaceSession) manage(ws fabric.Workspace, isAdmin bool) error {
+func (s *workspaceSession) manage(ws fabric.Workspace, role string) error {
+	isAdmin := role == wsRoleAdmin
 	spinner := ui.NewSpinner("Loading " + ws.DisplayName + "...")
 	spinner.Start()
 	detail, err := s.client.GetWorkspace(s.token, ws.ID)
@@ -231,7 +328,7 @@ func (s *workspaceSession) manage(ws fabric.Workspace, isAdmin bool) error {
 	}
 	refs := config.FindWorkspaceRefs(cfg, detail.DisplayName)
 
-	s.printPanel(detail, items, itemsErr, refs, isAdmin)
+	s.printPanel(detail, items, itemsErr, refs, role)
 
 	options := []ui.MenuOption{
 		{Label: "Rename", Value: wsActionRename, Description: "Change the display name and repair config references"},
@@ -254,7 +351,8 @@ func (s *workspaceSession) manage(ws fabric.Workspace, isAdmin bool) error {
 	}
 	if !isAdmin {
 		fmt.Println()
-		fmt.Println(wsWarnStyle.Render("Rename, description and delete all require the Admin workspace role."))
+		fmt.Println(wsWarnStyle.Render(fmt.Sprintf(
+			"Rename, description and delete all require the Admin workspace role — you are %s.", roleWithArticle(role))))
 		fmt.Println(wsLabelStyle.Render("Ask a workspace admin to grant it, then try again."))
 		return ui.ErrGoBack
 	}
@@ -273,14 +371,10 @@ func (s *workspaceSession) manage(ws fabric.Workspace, isAdmin bool) error {
 // printPanel is the read-only summary shown before any action. Item counts come
 // last of the API-backed lines because they are the ones that make a delete
 // decision, and a failure to read them must not block the flow.
-func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, itemsErr error, refs []config.WorkspaceRef, isAdmin bool) {
+func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, itemsErr error, refs []config.WorkspaceRef, role string) {
 	desc := ws.Description
 	if strings.TrimSpace(desc) == "" {
 		desc = "none"
-	}
-	role := "Admin"
-	if !isAdmin {
-		role = "read-only"
 	}
 	itemLine := itemTypeCounts(items)
 	if itemsErr != nil {
@@ -293,7 +387,7 @@ func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, 
 		{"ID", ws.ID},
 		{"Description", desc},
 		{"Capacity", capacityLabel(s.capacities, ws.CapacityID)},
-		{"Your role", role},
+		{"Your role", roleDisplay(role)},
 		{"Items", itemLine},
 	} {
 		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth(row[0]+":", 13)), row[1])

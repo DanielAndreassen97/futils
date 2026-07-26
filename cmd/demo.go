@@ -961,9 +961,14 @@ func (c *demoClient) GetWorkspace(token, workspaceID string) (fabric.Workspace, 
 }
 
 // ListWorkspacesByRole reports the demo user as Admin everywhere, so every
-// action in the flow is reachable in a demo.
+// action in the flow is reachable in a demo. The roles filter must still be
+// honoured: the flow asks once per role and takes the last answer, so a client
+// that returned everything for every role would leave the user a Viewer.
 func (c *demoClient) ListWorkspacesByRole(token, roles string) ([]fabric.Workspace, error) {
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
+	if roles != "" && roles != "Admin" {
+		return nil, nil
+	}
 	return c.ListWorkspaces(token)
 }
 

@@ -156,7 +156,7 @@ type wsFakeAPI struct {
 	APIClient // embedded nil: any unexpected call panics, making the gap obvious
 
 	workspaces []fabric.Workspace
-	adminIDs   map[string]bool
+	roleOf     map[string]string // workspaceID -> Admin/Member/Contributor/Viewer
 	items      map[string][]fabric.Item
 	capacities []fabric.Capacity
 
@@ -173,10 +173,14 @@ func (f *wsFakeAPI) GetAccessToken(string) (string, error) { return "tok", nil }
 func (f *wsFakeAPI) ListWorkspaces(string) ([]fabric.Workspace, error) {
 	return f.workspaces, nil
 }
+
+// ListWorkspacesByRole honours the roles argument, the way Fabric does — the
+// flow makes one call per role to build its role map, so a fake that ignored
+// the filter would let a broken mapping pass.
 func (f *wsFakeAPI) ListWorkspacesByRole(_, roles string) ([]fabric.Workspace, error) {
 	var out []fabric.Workspace
 	for _, ws := range f.workspaces {
-		if f.adminIDs[ws.ID] {
+		if f.roleOf[ws.ID] == roles {
 			out = append(out, ws)
 		}
 	}
@@ -321,7 +325,7 @@ func wsTestAPI() *wsFakeAPI {
 			{ID: "ws-fin", DisplayName: "DW - Finance", Description: "Finance data", CapacityID: "cap-1"},
 			{ID: "ws-sem", DisplayName: "DW - SemMod"},
 		},
-		adminIDs: map[string]bool{"ws-fin": true},
+		roleOf: map[string]string{"ws-fin": "Admin", "ws-sem": "Viewer"},
 		items: map[string][]fabric.Item{
 			"ws-fin": {{Type: "Notebook"}, {Type: "Notebook"}, {Type: "Lakehouse"}},
 		},
@@ -709,5 +713,115 @@ func TestWorkspacesPanelNamesTheCapacityOnFirstVisit(t *testing.T) {
 	}
 	if strings.Contains(out, "no access to this capacity") {
 		t.Errorf("panel wrongly claims the capacity is inaccessible:\n%s", out)
+	}
+}
+
+func TestGroupWorkspacesByRoleOrdersGroupsByPower(t *testing.T) {
+	workspaces := []fabric.Workspace{
+		{ID: "v1", DisplayName: "Viewer one"},
+		{ID: "a1", DisplayName: "Admin one"},
+		{ID: "c1", DisplayName: "Contributor one"},
+		{ID: "m1", DisplayName: "Member one"},
+		{ID: "o1", DisplayName: "My workspace"},
+	}
+	roleOf := map[string]string{
+		"v1": "Viewer", "a1": "Admin", "c1": "Contributor", "m1": "Member",
+	}
+
+	opts := groupWorkspacesByRole(workspaces, roleOf, nil)
+
+	var headers []string
+	for _, o := range opts {
+		if o.IsHeader {
+			headers = append(headers, o.Label)
+		}
+	}
+	want := []string{"ADMIN (1)", "MEMBER (1)", "CONTRIBUTOR (1)", "VIEWER (1)", "NO WORKSPACE ROLE (1)"}
+	if len(headers) != len(want) {
+		t.Fatalf("headers = %v, want %v", headers, want)
+	}
+	for i := range want {
+		if headers[i] != want[i] {
+			t.Fatalf("headers = %v, want %v", headers, want)
+		}
+	}
+}
+
+func TestGroupWorkspacesByRoleOmitsEmptyGroups(t *testing.T) {
+	workspaces := []fabric.Workspace{{ID: "a1", DisplayName: "Only admin"}}
+	opts := groupWorkspacesByRole(workspaces, map[string]string{"a1": "Admin"}, nil)
+
+	for _, o := range opts {
+		if o.IsHeader && o.Label != "ADMIN (1)" {
+			t.Errorf("unexpected header %q — empty groups must be omitted", o.Label)
+		}
+	}
+	if len(opts) != 2 {
+		t.Errorf("got %d rows, want a header plus one workspace", len(opts))
+	}
+}
+
+func TestGroupWorkspacesByRoleSortsInsideAGroup(t *testing.T) {
+	// Case-insensitive: "apple" must not sort after "Zebra" just because of
+	// where the ASCII table puts lowercase letters.
+	workspaces := []fabric.Workspace{
+		{ID: "1", DisplayName: "Zebra"},
+		{ID: "2", DisplayName: "apple"},
+		{ID: "3", DisplayName: "Mango"},
+	}
+	roleOf := map[string]string{"1": "Admin", "2": "Admin", "3": "Admin"}
+
+	opts := groupWorkspacesByRole(workspaces, roleOf, nil)
+
+	var names []string
+	for _, o := range opts {
+		if !o.IsHeader {
+			names = append(names, o.Label)
+		}
+	}
+	want := []string{"apple", "Mango", "Zebra"}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names = %v, want %v", names, want)
+		}
+	}
+}
+
+func TestGroupWorkspacesByRoleCarriesCapacityInMeta(t *testing.T) {
+	workspaces := []fabric.Workspace{{ID: "a1", DisplayName: "With capacity", CapacityID: "cap-1"}}
+	caps := []fabric.Capacity{{ID: "cap-1", DisplayName: "Prod F64", SKU: "F64", Region: "Norway East"}}
+
+	opts := groupWorkspacesByRole(workspaces, map[string]string{"a1": "Admin"}, caps)
+
+	for _, o := range opts {
+		if o.IsHeader {
+			continue
+		}
+		if note, _ := o.Meta.(string); note != "F64" {
+			t.Errorf("row meta = %q, want the SKU", note)
+		}
+	}
+}
+
+func TestWorkspacesPanelShowsTheConcreteRole(t *testing.T) {
+	// "read-only" hides which role you actually hold. Contributor and Viewer
+	// are both blocked from renaming, but they are not the same thing.
+	path := wsConfigFile(t)
+	api := wsTestAPI()
+	api.roleOf["ws-sem"] = "Contributor"
+	h := &wsHarness{
+		filterPicks: []string{"ws-sem"},
+		numberPicks: []string{wsActionBack},
+	}
+	h.install(t)
+
+	out := captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Contributor") {
+		t.Errorf("panel must name the actual role:\n%s", out)
 	}
 }

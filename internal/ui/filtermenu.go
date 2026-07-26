@@ -17,6 +17,11 @@ type FilterOption struct {
 	Label string
 	Value string
 	Meta  any
+	// IsHeader marks a section title: rendered like any other row but never
+	// selectable, skipped by the cursor, and hidden when filtering leaves its
+	// group empty. A header is never matched by the filter itself — matching it
+	// would leave a section title standing over nothing.
+	IsHeader bool
 }
 
 // FilterRowRenderer turns a FilterOption + selection state into a
@@ -29,6 +34,9 @@ type FilterRowRenderer func(opt FilterOption, selected bool) string
 // row highlighted in the accent color. Used when callers don't need
 // custom per-row styling.
 func DefaultFilterRowRenderer(opt FilterOption, selected bool) string {
+	if opt.IsHeader {
+		return lipgloss.NewStyle().Foreground(DimColor).Bold(true).Render(opt.Label)
+	}
 	if selected {
 		return lipgloss.NewStyle().Foreground(AccentColor).Bold(true).Render(opt.Label)
 	}
@@ -76,19 +84,62 @@ var (
 
 func (m filterMenuModel) Init() tea.Cmd { return textinput.Blink }
 
+// refilter rebuilds the visible row set. A section header is emitted lazily —
+// only once the first matching row under it is found — so filtering can never
+// leave a title standing over an empty section.
 func (m filterMenuModel) refilter() filterMenuModel {
 	needle := strings.ToLower(strings.TrimSpace(m.input.Value()))
 	m.filtered = m.filtered[:0]
+
+	pendingHeader := -1
 	for i, opt := range m.options {
-		if needle == "" || strings.Contains(strings.ToLower(opt.Label), needle) {
-			m.filtered = append(m.filtered, i)
+		if opt.IsHeader {
+			pendingHeader = i
+			continue
 		}
+		if needle != "" && !strings.Contains(strings.ToLower(opt.Label), needle) {
+			continue
+		}
+		if pendingHeader >= 0 {
+			m.filtered = append(m.filtered, pendingHeader)
+			pendingHeader = -1
+		}
+		m.filtered = append(m.filtered, i)
+	}
+	return m.settleCursor()
+}
+
+// settleCursor clamps the cursor into range and walks it off a header, so the
+// row under the cursor is always one Enter can act on.
+func (m filterMenuModel) settleCursor() filterMenuModel {
+	if len(m.filtered) == 0 {
+		m.cursor = 0
+		return m
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = len(m.filtered) - 1
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
+	}
+	if m.options[m.filtered[m.cursor]].IsHeader {
+		return m.step(1)
+	}
+	return m
+}
+
+// step moves the cursor by delta with wrap-around, skipping headers. The bound
+// makes a list of nothing but headers terminate instead of spinning.
+func (m filterMenuModel) step(delta int) filterMenuModel {
+	n := len(m.filtered)
+	if n == 0 {
+		return m
+	}
+	for i := 0; i < n; i++ {
+		m.cursor = (m.cursor + delta + n) % n
+		if !m.options[m.filtered[m.cursor]].IsHeader {
+			return m
+		}
 	}
 	return m
 }
@@ -101,17 +152,14 @@ func (m filterMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "up":
-			if len(m.filtered) > 0 {
-				m.cursor = (m.cursor - 1 + len(m.filtered)) % len(m.filtered)
-			}
-			return m, nil
+			return m.step(-1), nil
 		case "down":
-			if len(m.filtered) > 0 {
-				m.cursor = (m.cursor + 1) % len(m.filtered)
-			}
-			return m, nil
+			return m.step(1), nil
 		case "enter":
 			if len(m.filtered) == 0 {
+				return m, nil
+			}
+			if m.options[m.filtered[m.cursor]].IsHeader {
 				return m, nil
 			}
 			m.selected = m.filtered[m.cursor]
