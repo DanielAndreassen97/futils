@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -245,28 +244,20 @@ type wsHarness struct {
 
 func (h *wsHarness) install(t *testing.T) {
 	t.Helper()
-	origFilter, origRow := wsFilterPicker, wsRowPicker
-	origNumber, origInput := wsNumberPicker, wsPromptInput
+	origFilter, origNumber, origInput := wsFilterPicker, wsNumberPicker, wsPromptInput
 	origConfirm, origTyped := wsConfirm, wsConfirmTyped
 	t.Cleanup(func() {
-		wsFilterPicker, wsRowPicker = origFilter, origRow
-		wsNumberPicker, wsPromptInput = origNumber, origInput
+		wsFilterPicker, wsNumberPicker, wsPromptInput = origFilter, origNumber, origInput
 		wsConfirm, wsConfirmTyped = origConfirm, origTyped
 	})
 
-	pickNext := func() (string, error) {
+	wsFilterPicker = func(string, []ui.FilterOption, ui.FilterRowRenderer) (string, error) {
 		if len(h.filterPicks) == 0 {
 			return "", ui.ErrGoBack
 		}
 		pick := h.filterPicks[0]
 		h.filterPicks = h.filterPicks[1:]
 		return pick, nil
-	}
-	wsFilterPicker = func(string, []ui.FilterOption, ui.FilterRowRenderer) (string, error) {
-		return pickNext()
-	}
-	wsRowPicker = func(string, []ui.FilterOption, ui.FilterRowRendererPhase, time.Duration) (string, error) {
-		return pickNext()
 	}
 	wsNumberPicker = func(_ string, _ []ui.MenuOption) (string, error) {
 		if len(h.numberPicks) == 0 {

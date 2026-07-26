@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
@@ -18,7 +17,6 @@ import (
 // drive the prompts without spinning up bubbletea.
 var (
 	wsFilterPicker = ui.FilterMenu
-	wsRowPicker    = ui.FilterMenuAnimated
 	wsNumberPicker = ui.NumberMenu
 	wsPromptInput  = promptInputWithValue
 	wsConfirm      = ui.Confirm
@@ -82,24 +80,20 @@ var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
 
 var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
 
-// The cursor row is a full-width bar: a fade from peak on the left to base on
-// the right, with a soft shine travelling along it, so the row reads as lit
-// from a moving source rather than merely filled. On a list this dense a flat
-// block is easy to lose among the other coloured rows.
+// wsCursorStyle highlights the row under the cursor with a full-width
+// background, the same inverted device as the role bars so the two read as one
+// system. Deliberately neutral slate rather than green: every green bar on this
+// screen already means "role heading", and a green cursor row would read as one
+// more section break sliding down the list as you navigate.
 //
-// Deliberately neutral slate rather than green: every green bar on this screen
-// already means "role heading", and a green cursor row would read as one more
-// section break sliding down the list as you navigate.
-var (
-	wsCursorFG    = lipgloss.Color("#f4fafb")
-	wsCursorPeak  = lipgloss.Color("#54707a")
-	wsCursorBase  = lipgloss.Color("#232f34")
-	wsCursorShine = lipgloss.Color("#8fb2bd")
-)
-
-// wsSweepInterval is one animation frame. ~14 fps: slow enough that the sweep
-// costs little, fast enough that it reads as motion rather than stepping.
-const wsSweepInterval = 70 * time.Millisecond
+// One flat colour, not a gradient: a gradient needs truecolor to look right,
+// quantises into visible bands on a 256-colour terminal, and fades out at the
+// right edge so the bar looks like it runs out instead of ending — which
+// undercuts the crisp edge that makes the row easy to spot in the first place.
+var wsCursorStyle = lipgloss.NewStyle().
+	Background(lipgloss.Color("#54707a")).
+	Foreground(lipgloss.Color("#f4fafb")).
+	Bold(true)
 
 // wsRoleHeader is a picker row that is a role heading rather than a workspace.
 // It rides in FilterOption.Meta so the renderer knows which bar colour to use
@@ -272,7 +266,7 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 	options := []ui.FilterOption{{Label: "+ Create new workspace", Value: wsActionCreate}}
 	options = append(options, groupWorkspacesByRole(workspaces, roleOf, s.capacities)...)
 
-	return wsRowPicker("Select a workspace", options, renderWorkspaceRow, wsSweepInterval)
+	return wsFilterPicker("Select a workspace", options, renderWorkspaceRow)
 }
 
 // renderWorkspaceRow draws one picker row: a role heading bar, or a workspace
@@ -284,7 +278,7 @@ func (s *workspaceSession) pick(workspaces []fabric.Workspace, roleOf map[string
 // also lets the row survive scanning at speed. It is rendered in one uniform
 // highlight instead of keeping its tier colour — a row that is half accent and
 // half orange reads as two rows.
-func renderWorkspaceRow(opt ui.FilterOption, selected bool, phase int) string {
+func renderWorkspaceRow(opt ui.FilterOption, selected bool) string {
 	if opt.IsHeader {
 		hdr, _ := opt.Meta.(wsRoleHeader)
 		return renderRoleBar(hdr.Role, opt.Label)
@@ -296,7 +290,7 @@ func renderWorkspaceRow(opt ui.FilterOption, selected bool, phase int) string {
 		content = ui.FitWidth(opt.Label, wsNameColW) + "  " + tier.plain()
 	}
 	if selected {
-		return ui.GlowSweep(content, wsBarWidth(), wsCursorFG, wsCursorPeak, wsCursorBase, wsCursorShine, phase)
+		return wsCursorStyle.Width(wsBarWidth()).Render(content)
 	}
 	if !ok {
 		return opt.Label
