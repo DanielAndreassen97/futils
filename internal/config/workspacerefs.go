@@ -122,18 +122,19 @@ func RemoveWorkspaceRefs(cfg *Config, name string) int {
 			env.Workspaces, n = removeMatching(env.Workspaces, func(ws string) bool { return ws == name })
 			removed += n
 
-			// Baselines are cleared in place first, so a mapping whose baseline is
-			// gone survives and falls back to the customer-level one instead of
-			// being thrown away with it.
+			// Delete first, then clear the baseline on what survived. Order matters
+			// for the count: a mapping that both targets the workspace AND names it
+			// as its baseline is one reference going away, not two, and clearing
+			// first would count it twice.
+			env.Deployments, n = removeMatching(env.Deployments,
+				func(d DeployMapping) bool { return d.Workspace == name })
+			removed += n
 			for di := range env.Deployments {
 				if env.Deployments[di].BaselineWorkspace == name {
 					env.Deployments[di].BaselineWorkspace = ""
 					removed++
 				}
 			}
-			env.Deployments, n = removeMatching(env.Deployments,
-				func(d DeployMapping) bool { return d.Workspace == name })
-			removed += n
 		}
 	})
 	return removed

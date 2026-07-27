@@ -146,17 +146,19 @@ func RemoveItemRefs(cfg *Config, name string) int {
 			func(ov ReferenceOverride) bool { return ov.ItemName == name })
 		removed += n
 
-		// The filter is cleared in place first, so a rule that only narrowed on
-		// this name survives — wider than before — rather than going with it.
+		// Delete first, then clear the filter on what survived. A rule that only
+		// narrowed on this name lives on — wider than before — rather than going
+		// with it. Order matters for the count: a rule that both targets the item
+		// and filters on it is one reference going away, not two.
+		c.Substitutions, n = removeMatching(c.Substitutions,
+			func(sub Substitution) bool { return sub.TargetName == name })
+		removed += n
 		for i := range c.Substitutions {
 			if c.Substitutions[i].ItemName == name {
 				c.Substitutions[i].ItemName = ""
 				removed++
 			}
 		}
-		c.Substitutions, n = removeMatching(c.Substitutions,
-			func(sub Substitution) bool { return sub.TargetName == name })
-		removed += n
 	})
 	return removed
 }

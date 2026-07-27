@@ -177,3 +177,22 @@ func TestItemRefKindString(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveItemRefsCountsABothMatchOnce(t *testing.T) {
+	// A substitution that both TARGETS the item and FILTERS on it is one
+	// reference going away, not two. The single-pass loop this replaced counted
+	// it once because the drop branch returned before looking at the filter, and
+	// no fixture covered the case — so the count silently doubled.
+	cfg := Config{Customers: map[string]Customer{
+		"Fabrikam": {Substitutions: []Substitution{
+			{FindValue: "g", TargetName: "nb_ingest", ItemName: "nb_ingest"},
+		}},
+	}}
+
+	if n := RemoveItemRefs(&cfg, "nb_ingest"); n != 1 {
+		t.Errorf("removed %d, want 1 — the rule is gone, that is one reference", n)
+	}
+	if len(cfg.Customers["Fabrikam"].Substitutions) != 0 {
+		t.Error("the substitution should have been dropped")
+	}
+}

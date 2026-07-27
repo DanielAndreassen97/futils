@@ -54,6 +54,13 @@ func patchItem(token, workspaceID, itemID string, body any) (Item, error) {
 	if resp.StatusCode >= 400 {
 		return Item{}, itemWriteError(resp.StatusCode, respBody)
 	}
+	// A 200 with no body still means the update landed. UpdateItem — which the
+	// deploy flow uses to push descriptions — ignores the returned item entirely,
+	// so refusing an empty body here would turn a successful metadata update into
+	// a failed deploy.
+	if len(respBody) == 0 {
+		return Item{}, nil
+	}
 	var it Item
 	if err := json.Unmarshal(respBody, &it); err != nil {
 		return Item{}, fmt.Errorf("parse updated item: %w", err)

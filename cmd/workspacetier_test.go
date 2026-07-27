@@ -100,9 +100,9 @@ func TestTierLabelPadsToTheWidestName(t *testing.T) {
 }
 
 func TestRenderWorkspaceRowAlignsNonASCIINames(t *testing.T) {
-	// "DW - Ærlig & Øst" is a real workspace name. FitWidth counts runes,
-	// so æ costs one column like any other letter — a byte-based pad would
-	// short the row and ragged the whole tier column.
+	// Names like "DW - Ærlig & Øst" turn up in real tenants. FitWidth counts
+	// runes, so æ and ø cost one column like any other letter — a byte-based pad
+	// would short the row and ragged the whole tier column.
 	caps := []fabric.Capacity{{ID: "c", SKU: "F128"}}
 	rows := []string{"DW - Core", "DW - Ærlig & Øst", "DW - Reports - Contoso - TEST"}
 

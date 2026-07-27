@@ -205,3 +205,24 @@ func TestWorkspaceRefKindString(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveWorkspaceRefsCountsABothMatchOnce(t *testing.T) {
+	// A mapping that both deploys TO the workspace and names it as its baseline
+	// is one reference going away, not two: the mapping is dropped, so its
+	// baseline never needed clearing.
+	cfg := Config{Customers: map[string]Customer{
+		"Fabrikam": {Environments: []Environment{{
+			Alias: "DEV",
+			Deployments: []DeployMapping{
+				{Folder: "Backend", Workspace: "DW - Finance", BaselineWorkspace: "DW - Finance"},
+			},
+		}}},
+	}}
+
+	if n := RemoveWorkspaceRefs(&cfg, "DW - Finance"); n != 1 {
+		t.Errorf("removed %d, want 1", n)
+	}
+	if len(cfg.Customers["Fabrikam"].Environments[0].Deployments) != 0 {
+		t.Error("the mapping should have been dropped")
+	}
+}
