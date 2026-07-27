@@ -110,3 +110,43 @@ func TestMaxItemDescLenIsNotTheWorkspaceLimit(t *testing.T) {
 		t.Error("item and workspace description limits must not share a value")
 	}
 }
+
+func TestGetItemDefinitionRecordsTheRequestedFormat(t *testing.T) {
+	// Fabric takes the format as a query parameter and does not echo it in the
+	// response, so a definition fetched as ipynb came back with Format empty.
+	// Handing that straight to CreateItem omits the field, Fabric assumes the
+	// .py convention, sees a .ipynb part path and fails with PyToIPynbFailure —
+	// which reads like a permissions problem and is not one.
+	transport := stubTransport(t, seqResponse{status: 200, body: `{
+	  "definition": {
+	    "parts": [
+	      {"path": "notebook-content.ipynb", "payload": "e30=", "payloadType": "InlineBase64"}
+	    ]
+	  }
+	}`})
+
+	def, err := GetItemDefinition("tok", testWSID, testItemID, "ipynb")
+	if err != nil {
+		t.Fatalf("GetItemDefinition: %v", err)
+	}
+	if def.Format != "ipynb" {
+		t.Errorf("Format = %q, want ipynb — a round trip must preserve the format", def.Format)
+	}
+	if !strings.Contains(transport.urls[0], "format=ipynb") {
+		t.Errorf("url = %q, want a format query", transport.urls[0])
+	}
+}
+
+func TestGetItemDefinitionLeavesFormatEmptyWhenNoneWasAsked(t *testing.T) {
+	// Reports and semantic models use the default format; inventing one would
+	// send a format Fabric never offered for that type.
+	stubTransport(t, seqResponse{status: 200, body: `{"definition":{"parts":[]}}`})
+
+	def, err := GetItemDefinition("tok", testWSID, testItemID, "")
+	if err != nil {
+		t.Fatalf("GetItemDefinition: %v", err)
+	}
+	if def.Format != "" {
+		t.Errorf("Format = %q, want empty", def.Format)
+	}
+}

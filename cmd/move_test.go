@@ -601,3 +601,31 @@ func (f *fakeMoveAPI) RenameItem(string, string, string, string) (fabric.Item, e
 func (f *fakeMoveAPI) SetItemDescription(string, string, string, string) (fabric.Item, error) {
 	return fabric.Item{}, errors.New("SetItemDescription not used by move tests")
 }
+
+func TestMoveWriteErrorOnlyBlamesPermissionsWhenItIsPermissions(t *testing.T) {
+	// The hint was appended to every failed write. A Fabric conversion failure
+	// names its own cause perfectly well, and telling the user to go check
+	// access rights that were already fine sends them the wrong way entirely.
+	conversion := errors.New(`operation failed: {"errorCode":"PyToIPynbFailure","message":"Convert py to ipynb failed"}`)
+	got := moveWriteError("create item", conversion, "DW - PROD - Config").Error()
+	if strings.Contains(got, "Member or higher") {
+		t.Errorf("a conversion failure must not blame permissions:\n%s", got)
+	}
+	if !strings.Contains(got, "PyToIPynbFailure") {
+		t.Errorf("the real cause must survive:\n%s", got)
+	}
+
+	for _, denial := range []error{
+		errors.New("create item 403: InsufficientPrivileges"),
+		errors.New("update item 401: Unauthorized"),
+		errors.New("needs read and write permission on the item"),
+	} {
+		got := moveWriteError("create item", denial, "Target WS").Error()
+		if !strings.Contains(got, "Member or higher") {
+			t.Errorf("a denial must carry the hint:\n%s", got)
+		}
+		if !strings.Contains(got, "Target WS") {
+			t.Errorf("the hint must name the destination:\n%s", got)
+		}
+	}
+}

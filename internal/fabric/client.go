@@ -688,6 +688,12 @@ func GetItemDefinition(token, workspaceID, itemID, format string) (*Definition, 
 	if err := json.Unmarshal(body, &wrapper); err != nil {
 		return nil, fmt.Errorf("parse definition: %w", err)
 	}
+	// Fabric takes the format as a query parameter and does not echo it in the
+	// response, so record what was asked for. Without this a definition fetched
+	// as ipynb round-trips into CreateItem with no format, Fabric falls back to
+	// the .py convention, meets a .ipynb part path, and fails with
+	// PyToIPynbFailure — an error that reads like a permissions problem.
+	wrapper.Definition.Format = format
 	return &wrapper.Definition, nil
 }
 

@@ -148,6 +148,31 @@ func moveItemFrom(client APIClient, token string, srcWS fabric.Workspace, srcIte
 	return executeMove(client, token, srcWS, srcItem, dstWS, targetName, collisionAction, def, rebindDatasetID, rebindLabel)
 }
 
+// moveWriteError wraps a failed write to the destination workspace. The
+// permission hint is only added when the failure actually looks like one:
+// appending it to every error sent a Fabric conversion failure — which names its
+// own cause perfectly well — off to check access rights that were already fine.
+func moveWriteError(what string, err error, dstName string) error {
+	if looksLikePermissionDenied(err) {
+		return fmt.Errorf("%s: %w (check that you have Member or higher on %s)", what, err, dstName)
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
+// looksLikePermissionDenied recognises the shapes Fabric refuses a write in.
+// Matching on the message is crude, but the error has already been flattened to
+// a string by the time it reaches here, and the alternative — threading status
+// codes through every client method — buys nothing else.
+func looksLikePermissionDenied(err error) bool {
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{"401", "403", "unauthorized", "forbidden", "insufficientprivileges", "permission"} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultPromptInput shows a single-field huh form for free text.
 // Used for the rename branch of collision resolution.
 func defaultPromptInput(title, placeholder string) (string, error) {
@@ -452,14 +477,14 @@ func executeMove(client APIClient, token string, srcWS fabric.Workspace, srcItem
 		if len(action) == 2 && action[0] == collisionOverwrite {
 			existingID := action[1]
 			if err := client.UpdateItemDefinition(token, dstWS.ID, existingID, def); err != nil {
-				moveErr = fmt.Errorf("update item: %w (check that you have Member or higher on %s)", err, dstWS.DisplayName)
+				moveErr = moveWriteError("update item", err, dstWS.DisplayName)
 				return
 			}
 			newID = existingID
 		} else {
 			created, err := client.CreateItem(token, dstWS.ID, targetName, srcItem.Type, def, nil, "")
 			if err != nil {
-				moveErr = fmt.Errorf("create item: %w (check that you have Member or higher on %s)", err, dstWS.DisplayName)
+				moveErr = moveWriteError("create item", err, dstWS.DisplayName)
 				return
 			}
 			newID = created.ID
