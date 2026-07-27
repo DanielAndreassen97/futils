@@ -22,6 +22,12 @@ type FilterOption struct {
 	// group empty. A header is never matched by the filter itself — matching it
 	// would leave a section title standing over nothing.
 	IsHeader bool
+	// Pinned keeps a row visible no matter what the filter says, and excludes it
+	// from matching. It exists for screens that put a few fixed actions above a
+	// long filterable list: typing narrows the list, and the actions stay
+	// reachable without clearing the filter first. Pinned rows are expected to
+	// come before any header.
+	Pinned bool
 }
 
 // FilterRowRenderer turns a FilterOption + selection state into a
@@ -94,6 +100,13 @@ func (m filterMenuModel) refilter() filterMenuModel {
 			pendingHeader = i
 			continue
 		}
+		if opt.Pinned {
+			// Always visible, and never counted as a match — otherwise typing a
+			// word that happens to appear in a pinned label would keep the whole
+			// list rather than narrowing it.
+			m.filtered = append(m.filtered, i)
+			continue
+		}
 		if needle != "" && !strings.Contains(strings.ToLower(opt.Label), needle) {
 			continue
 		}
@@ -123,6 +136,20 @@ func (m filterMenuModel) settleCursor() filterMenuModel {
 		return m.step(1)
 	}
 	return m
+}
+
+// filterVisible reports whether the filter input belongs on screen: whenever it
+// holds text, or whenever the cursor is somewhere the filter actually applies.
+// A list with no pinned rows always shows it, which is every caller but the
+// workspace screen.
+func (m filterMenuModel) filterVisible() bool {
+	if strings.TrimSpace(m.input.Value()) != "" {
+		return true
+	}
+	if len(m.filtered) == 0 {
+		return true
+	}
+	return !m.options[m.filtered[m.cursor]].Pinned
 }
 
 // step moves the cursor by delta with wrap-around, skipping headers. The bound
@@ -191,9 +218,17 @@ func (m filterMenuModel) View() string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "  %s\n", filterMenuTitleStyle.Render(m.title))
-	fmt.Fprintf(&b, "  %s\n", m.input.View())
-	fmt.Fprintf(&b, "  %s\n\n",
-		filterMenuHintStyle.Render("type to filter • ↑↓ navigate • enter select • esc back"))
+	if m.filterVisible() {
+		fmt.Fprintf(&b, "  %s\n", m.input.View())
+		fmt.Fprintf(&b, "  %s\n\n",
+			filterMenuHintStyle.Render("type to filter • ↑↓ navigate • enter select • esc back"))
+	} else {
+		// No filter box while the cursor sits on a pinned row: it could not
+		// filter anything the user is looking at, and showing it would
+		// misrepresent what typing does.
+		fmt.Fprintf(&b, "  %s\n\n",
+			filterMenuHintStyle.Render("↑↓ navigate • ↓ to browse the list • enter select • esc back"))
+	}
 
 	if len(m.filtered) == 0 {
 		fmt.Fprintf(&b, "  %s\n", filterMenuHintStyle.Render("(no matches)"))

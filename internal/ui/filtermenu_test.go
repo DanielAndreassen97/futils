@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -229,5 +230,97 @@ func TestFilterMenu_RowsBeforeTheFirstHeaderSurviveFiltering(t *testing.T) {
 	m = typeRunes(m, "creat")
 	if len(m.filtered) != 1 || m.options[m.filtered[0]].Label != "+ Create" {
 		t.Errorf("the ungrouped create row must still match on its own")
+	}
+}
+
+func pinnedFixture() []FilterOption {
+	return []FilterOption{
+		{Label: "Rename workspace", Value: "__rename", Pinned: true},
+		{Label: "Delete workspace", Value: "__delete", Pinned: true},
+		{Label: "NOTEBOOK", IsHeader: true},
+		{Label: "nb_sales", Value: "nb1"},
+		{Label: "nb_orders", Value: "nb2"},
+		{Label: "LAKEHOUSE", IsHeader: true},
+		{Label: "lh_bronze", Value: "lh1"},
+	}
+}
+
+func visibleLabels(m filterMenuModel) []string {
+	var out []string
+	for _, idx := range m.filtered {
+		out = append(out, m.options[idx].Label)
+	}
+	return out
+}
+
+func TestFilterMenu_PinnedRowsSurviveFiltering(t *testing.T) {
+	// The workspace actions sit above the item list on the same screen. Typing
+	// narrows the items; losing Rename because it does not match "sales" would
+	// mean clearing the filter just to reach it.
+	m := typeRunes(newGroupedTestModel(pinnedFixture()), "sales")
+
+	want := []string{"Rename workspace", "Delete workspace", "NOTEBOOK", "nb_sales"}
+	got := visibleLabels(m)
+	if len(got) != len(want) {
+		t.Fatalf("visible = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("visible = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestFilterMenu_PinnedRowsAreNotMatchedByTheFilter(t *testing.T) {
+	// "workspace" appears in both pinned labels. They show because they are
+	// pinned, not because they matched — so the items must still be filtered
+	// out rather than the whole list surviving.
+	m := typeRunes(newGroupedTestModel(pinnedFixture()), "workspace")
+
+	for _, label := range visibleLabels(m) {
+		if label == "nb_sales" || label == "lh_bronze" {
+			t.Errorf("item %q survived a filter it does not match", label)
+		}
+	}
+}
+
+func TestFilterMenu_FilterInputHiddenWhileOnAPinnedRow(t *testing.T) {
+	// A filter box above rows it cannot filter is a lie about what typing does.
+	m := newGroupedTestModel(pinnedFixture())
+	if m.filterVisible() {
+		t.Error("the filter must be hidden while the cursor sits on a pinned row")
+	}
+	if !strings.Contains(m.View(), "browse") {
+		t.Errorf("the hint should point down to the list:\n%s", m.View())
+	}
+
+	// Arrow down past both pinned rows and the header into the items.
+	for i := 0; i < 2; i++ {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = next.(filterMenuModel)
+	}
+	if !m.filterVisible() {
+		t.Error("the filter must appear once the cursor reaches the list")
+	}
+}
+
+func TestFilterMenu_FilterInputShowsWhenTextIsTyped(t *testing.T) {
+	// Typing while still on a pinned row has to reveal the box, or the user
+	// cannot see what they just typed.
+	m := typeRunes(newGroupedTestModel(pinnedFixture()), "sal")
+	if !m.filterVisible() {
+		t.Error("the filter must be visible whenever it holds text")
+	}
+}
+
+func TestFilterMenu_PinnedRowIsSelectable(t *testing.T) {
+	m := newGroupedTestModel(pinnedFixture())
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	res := next.(filterMenuModel)
+	if !res.done {
+		t.Fatal("enter on a pinned row must select it")
+	}
+	if res.options[res.selected].Value != "__rename" {
+		t.Errorf("selected %q, want __rename", res.options[res.selected].Value)
 	}
 }
