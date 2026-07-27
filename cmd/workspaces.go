@@ -80,6 +80,16 @@ var wsRoleBarPalette = map[string]struct{ bg, fg lipgloss.Color }{
 
 var wsRoleBarFallback = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
 
+// wsFieldColW is the label column in every detail panel. One constant, because
+// the width was pasted at fourteen call sites and a single narrow label would
+// have ragged the column with nothing to point at.
+const wsFieldColW = 13
+
+// printField writes one "Label:  value" line of a detail panel.
+func printField(label, value string) {
+	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth(label+":", wsFieldColW)), value)
+}
+
 // wsRoleHeader is a picker row that is a role heading rather than a workspace.
 // It rides in FilterOption.Meta so the renderer knows which bar colour to use
 // without parsing the label back apart.
@@ -402,12 +412,14 @@ func roleDisplay(role string) string {
 	return role
 }
 
+// roleWithArticle names a role for a sentence. Admin is the only role starting
+// with a vowel, and the switch this replaces produced "you are a Admin".
 func roleWithArticle(role string) string {
-	switch role {
-	case "", wsRoleNone:
+	if role == "" || role == wsRoleNone {
 		return "reported under no role at all"
-	case wsRoleAdmin, "Member":
-		return "a " + role
+	}
+	if role == wsRoleAdmin {
+		return "an " + role
 	}
 	return "a " + role
 }
@@ -498,26 +510,28 @@ func (s *workspaceSession) manage(ws fabric.Workspace, role string) (mutated boo
 // items are what you came to look at. Pinning the actions means typing filters
 // the items while Rename stays one arrow-up away — see ui.FilterOption.Pinned.
 func workspaceScreenOptions(items []fabric.Item, isAdmin bool) []ui.FilterOption {
-	// Numbered like the menus they behave like: FilterMenu answers 1-9 for pinned
-	// rows, and a workspace with no items shows nothing but these — a plain menu
-	// that would look broken without numbers.
-	actions := []ui.FilterOption{
-		{Label: "1) Rename workspace", Value: wsActionRename, Pinned: true},
-		{Label: "2) Edit description", Value: wsActionDesc, Pinned: true},
-		{Label: "3) Delete workspace", Value: wsActionDelete, Pinned: true},
-		{Label: "4) Back", Value: wsActionBack, Pinned: true},
+	// The digits are the widget's job: it numbers pinned rows by position and
+	// dispatches on the same positions, so a hand-written "1)" here could drift
+	// from the key that actually selects the row.
+	actions := []struct {
+		label, value string
+		needsAdmin   bool
+	}{
+		{"Rename workspace", wsActionRename, true},
+		{"Edit description", wsActionDesc, true},
+		{"Delete workspace", wsActionDelete, true},
+		{"Back", wsActionBack, false},
 	}
-	if !isAdmin {
-		for i := range actions[:3] {
-			actions[i].Meta = wsPinnedAction{Badge: "NEEDS ADMIN"}
+	out := make([]ui.FilterOption, 0, len(actions)+len(items)+8)
+	for _, a := range actions {
+		opt := ui.FilterOption{Label: a.label, Value: a.value, Pinned: true}
+		if a.needsAdmin && !isAdmin {
+			opt.Badge = "NEEDS ADMIN"
 		}
+		out = append(out, opt)
 	}
-	return append(actions, groupItemsByType(items)...)
+	return append(out, groupItemsByType(items)...)
 }
-
-// wsPinnedAction carries a pinned row's badge. Only set when the action is
-// unavailable, so the zero value means "no badge".
-type wsPinnedAction struct{ Badge string }
 
 // renderWorkspaceScreenRow draws a row of the combined workspace screen: a
 // pinned workspace action, a coloured item-type heading, or an item.
@@ -528,15 +542,7 @@ func renderWorkspaceScreenRow(opt ui.FilterOption, selected bool) string {
 		return renderSectionBar(bg, fg, opt.Label)
 	}
 
-	lead := ui.CursorPointer(selected)
-	if opt.Pinned {
-		row := lead + ui.CursorLabel(opt.Label, selected)
-		if action, ok := opt.Meta.(wsPinnedAction); ok && action.Badge != "" {
-			row += "  " + wsWarnStyle.Render("["+action.Badge+"]")
-		}
-		return row
-	}
-	return lead + ui.CursorLabel(opt.Label, selected)
+	return ui.CursorPointer(selected) + ui.CursorLabel(ui.RowLabel(opt), selected) + ui.RowBadge(opt)
 }
 
 func itemByID(items []fabric.Item, id string) (fabric.Item, bool) {
@@ -572,12 +578,12 @@ func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, 
 		{"Your role", roleDisplay(role)},
 		{"Items", itemLine},
 	} {
-		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth(row[0]+":", 13)), row[1])
+		printField(row[0], row[1])
 	}
 	if rendered := renderWorkspaceRefs(refs); rendered != "" {
 		fmt.Printf("  %s\n%s", wsLabelStyle.Render("Used by:"), rendered)
 	} else {
-		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Used by:", 13)), "no futils config references")
+		printField("Used by", "no futils config references")
 	}
 	fmt.Println()
 }
@@ -586,16 +592,14 @@ func (s *workspaceSession) printPanel(ws fabric.Workspace, items []fabric.Item, 
 // reference. The order matters: config must never claim a name Fabric does not
 // have, so a failed PATCH leaves the config exactly as it was.
 func (s *workspaceSession) rename(ws fabric.Workspace, refs []config.WorkspaceRef) error {
-	workspaces, err := s.client.ListWorkspaces(s.token)
-	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
-	}
-
+	// The collision check reads the list this screen was rendered from. Refetching
+	// it would be the request the session cache exists to avoid, and create()
+	// already takes its list from the caller.
 	newName, err := wsPromptInput("New name for "+ws.DisplayName, ws.DisplayName)
 	if err != nil {
 		return err
 	}
-	if err := validateWorkspaceName(newName, workspaces, ws.DisplayName); err != nil {
+	if err := validateWorkspaceName(newName, s.workspaces, ws.DisplayName); err != nil {
 		fmt.Println(wsWarnStyle.Render(err.Error()))
 		return ui.ErrGoBack
 	}
@@ -672,11 +676,11 @@ func (s *workspaceSession) setDescription(ws fabric.Workspace) error {
 func (s *workspaceSession) delete(ws fabric.Workspace, items []fabric.Item, itemsErr error, refs []config.WorkspaceRef) error {
 	fmt.Println()
 	fmt.Println(wsWarnStyle.Render("Deleting a workspace deletes every item inside it. This cannot be undone."))
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Workspace:", 13)), ws.DisplayName)
+	printField("Workspace", ws.DisplayName)
 	if itemsErr != nil {
-		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Items:", 13)), wsWarnStyle.Render("could not be listed — delete blind at your own risk"))
+		printField("Items", wsWarnStyle.Render("could not be listed — delete blind at your own risk"))
 	} else {
-		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Items:", 13)), itemTypeCounts(items))
+		printField("Items", itemTypeCounts(items))
 	}
 	if rendered := renderWorkspaceRefs(refs); rendered != "" {
 		fmt.Printf("  %s\n%s", wsLabelStyle.Render("Config references (will be removed):"), rendered)
@@ -747,9 +751,9 @@ func (s *workspaceSession) create(existing []fabric.Workspace) error {
 
 	fmt.Println()
 	fmt.Println(infoStyle.Render("New workspace"))
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Name:", 13)), name)
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Description:", 13)), orNone(desc))
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Capacity:", 13)), capacityLabel(s.capacities, capID))
+	printField("Name", name)
+	printField("Description", orNone(desc))
+	printField("Capacity", capacityLabel(s.capacities, capID))
 	if capID == "" {
 		fmt.Println(wsWarnStyle.Render("  Without a capacity you cannot create Fabric items in this workspace."))
 	}
@@ -926,7 +930,7 @@ func warnEmptyEnvironments(configPath string) {
 	if err != nil {
 		return
 	}
-	for _, customer := range sortedKeys(cfg.Customers) {
+	for _, customer := range sortedCustomerNames(cfg) {
 		for _, env := range cfg.Customers[customer].Environments {
 			if len(env.Workspaces) == 0 {
 				fmt.Println(wsWarnStyle.Render(fmt.Sprintf("%s / %s has no workspaces left — add one before using it.", customer, env.Alias)))
@@ -1055,11 +1059,15 @@ func renderWorkspaceRefs(refs []config.WorkspaceRef) string {
 	return b.String()
 }
 
-func pluralRefs(n int) string {
+func pluralRefs(n int) string { return countNoun(n, "reference", "references") }
+
+// countNoun writes "1 reference" / "3 references". One helper, because a third
+// flow would otherwise have added a fourth hand-rolled variant.
+func countNoun(n int, singular, plural string) string {
 	if n == 1 {
-		return "1 reference"
+		return "1 " + singular
 	}
-	return fmt.Sprintf("%d references", n)
+	return fmt.Sprintf("%d %s", n, plural)
 }
 
 func orNone(s string) string {

@@ -480,13 +480,12 @@ func TestWorkspaceScreenPinsItsActionsAboveTheItems(t *testing.T) {
 func TestWorkspaceScreenBadgesActionsForANonAdmin(t *testing.T) {
 	opts := workspaceScreenOptions(nil, false)
 	for _, o := range opts[:3] {
-		action, ok := o.Meta.(wsPinnedAction)
-		if !ok || action.Badge == "" {
+		if o.Badge == "" {
 			t.Errorf("action %q is not badged for a non-admin", o.Label)
 		}
 	}
-	if _, ok := opts[3].Meta.(wsPinnedAction); ok {
-		t.Error("Back must never be badged")
+	if opts[3].Badge != "" {
+		t.Errorf("Back must never be badged, got %q", opts[3].Badge)
 	}
 }
 
@@ -653,19 +652,24 @@ func TestMoveReusesTheCachedWorkspaceList(t *testing.T) {
 	}
 }
 
-func TestWorkspaceScreenNumbersItsPinnedActions(t *testing.T) {
-	// A workspace with no items shows nothing but these rows. Unnumbered, it
-	// looks like a menu whose digit keys are broken — which is exactly how the
-	// bug presented.
+func TestWorkspaceScreenPinsFourActionsInOrder(t *testing.T) {
+	// A workspace with no items shows nothing but these rows, so they have to
+	// behave as a numbered menu. The digits themselves are the widget's job —
+	// FilterMenu numbers pinned rows by position and dispatches on the same
+	// positions, so a label written "1)" here could drift from the key that
+	// selects it.
 	opts := workspaceScreenOptions(nil, true)
 
-	want := []string{"1) Rename workspace", "2) Edit description", "3) Delete workspace", "4) Back"}
+	want := []string{"Rename workspace", "Edit description", "Delete workspace", "Back"}
 	if len(opts) != len(want) {
 		t.Fatalf("got %d rows for an empty workspace, want just the four actions", len(opts))
 	}
 	for i := range want {
 		if opts[i].Label != want[i] {
 			t.Errorf("row %d = %q, want %q", i, opts[i].Label, want[i])
+		}
+		if !opts[i].Pinned {
+			t.Errorf("row %d (%q) is not pinned", i, opts[i].Label)
 		}
 	}
 }

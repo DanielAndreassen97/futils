@@ -22,12 +22,30 @@ type FilterOption struct {
 	// group empty. A header is never matched by the filter itself — matching it
 	// would leave a section title standing over nothing.
 	IsHeader bool
-	// Pinned keeps a row visible no matter what the filter says, and excludes it
-	// from matching. It exists for screens that put a few fixed actions above a
-	// long filterable list: typing narrows the list, and the actions stay
-	// reachable without clearing the filter first. Pinned rows are expected to
-	// come before any header.
+	// Badge is a short tag rendered after the label, e.g. "NEEDS ADMIN". Same
+	// concept as MenuOption.Badge, so the two widgets render it the same way
+	// instead of each caller inventing its own.
+	Badge string
+	// Pinned turns a row into part of a fixed action section above the filterable
+	// list. It carries more than stickiness, and all of it is deliberate:
+	//
+	//   - the row is always visible, whatever the filter says
+	//   - the filter never matches it, so typing a word that appears in a pinned
+	//     label narrows the list rather than preserving all of it
+	//   - while the cursor is ON a pinned row the section behaves like a numbered
+	//     menu: 1-9 selects the Nth pinned row, and letters are ignored rather
+	//     than filtering a list the user is not looking at
+	//   - the filter input is hidden in that state, since it could not filter
+	//     anything on screen
+	//
+	// FilterMenu moves pinned rows to the front, so their order in the input
+	// slice sets their numbers but their position among other rows does not
+	// matter.
 	Pinned bool
+	// pinnedNum is the 1-based digit that selects this pinned row. Assigned by
+	// FilterMenu, never by a caller: the number shown and the key that acts on
+	// it have to come from the same place or they drift.
+	pinnedNum int
 }
 
 // FilterRowRenderer turns a FilterOption + selection state into a
@@ -43,7 +61,26 @@ func DefaultFilterRowRenderer(opt FilterOption, selected bool) string {
 	if opt.IsHeader {
 		return lipgloss.NewStyle().Foreground(DimColor).Bold(true).Render(opt.Label)
 	}
-	return CursorPointer(selected) + CursorLabel(opt.Label, selected)
+	return CursorPointer(selected) + CursorLabel(RowLabel(opt), selected) + RowBadge(opt)
+}
+
+// RowLabel is a row's label with its pinned-section number prefixed, so the
+// digit shown is by construction the digit that selects it. Custom renderers
+// should use this rather than numbering labels themselves — hand-written numbers
+// drift from the widget's positional dispatch the moment an action is reordered.
+func RowLabel(opt FilterOption) string {
+	if opt.pinnedNum > 0 {
+		return fmt.Sprintf("%d) %s", opt.pinnedNum, opt.Label)
+	}
+	return opt.Label
+}
+
+// RowBadge renders a row's badge, or the empty string when it has none.
+func RowBadge(opt FilterOption) string {
+	if opt.Badge == "" {
+		return ""
+	}
+	return "  " + filterMenuBadgeStyle.Render("["+opt.Badge+"]")
 }
 
 // FitWidth sizes s to exactly width display columns: padded with trailing
@@ -83,6 +120,7 @@ type filterMenuModel struct {
 var (
 	filterMenuTitleStyle = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 	filterMenuHintStyle  = lipgloss.NewStyle().Foreground(DimColor)
+	filterMenuBadgeStyle = lipgloss.NewStyle().Foreground(WarnColor)
 )
 
 func (m filterMenuModel) Init() tea.Cmd { return textinput.Blink }
@@ -138,10 +176,30 @@ func (m filterMenuModel) settleCursor() filterMenuModel {
 	return m
 }
 
+// frontLoadPinned moves pinned rows ahead of everything else, preserving their
+// relative order, and numbers them. Enforced rather than documented: a pinned row
+// left after a header would render above that header and still answer to digit 1
+// from the middle of the list.
+func frontLoadPinned(options []FilterOption) []FilterOption {
+	pinned := make([]FilterOption, 0, len(options))
+	rest := make([]FilterOption, 0, len(options))
+	for _, opt := range options {
+		if opt.Pinned {
+			opt.pinnedNum = len(pinned) + 1
+			pinned = append(pinned, opt)
+			continue
+		}
+		rest = append(rest, opt)
+	}
+	if len(pinned) == 0 {
+		return options
+	}
+	return append(pinned, rest...)
+}
+
 // filterVisible reports whether the filter input belongs on screen: whenever it
 // holds text, or whenever the cursor is somewhere the filter actually applies.
-// A list with no pinned rows always shows it, which is every caller but the
-// workspace screen.
+// A list with no pinned rows always shows it.
 func (m filterMenuModel) filterVisible() bool {
 	if strings.TrimSpace(m.input.Value()) != "" {
 		return true
@@ -170,9 +228,8 @@ func (m filterMenuModel) pinnedIndices() []int {
 	return out
 }
 
-// hasFilterableRows reports whether anything below the pinned rows exists. A
-// workspace with no items has none, and the hint must not promise a list that
-// is not there.
+// hasFilterableRows reports whether there is a filterable section at all. When
+// the pinned rows are the whole list the hint must not offer to browse one.
 func (m filterMenuModel) hasFilterableRows() bool {
 	for _, opt := range m.options {
 		if !opt.Pinned && !opt.IsHeader {
@@ -321,16 +378,20 @@ func FilterMenu(title string, options []FilterOption, render FilterRowRenderer) 
 	if render == nil {
 		render = DefaultFilterRowRenderer
 	}
-	model := filterMenuModel{title: title, options: options, render: render}
-
 	ti := textinput.New()
 	ti.Placeholder = "filter…"
 	ti.Focus()
 	ti.Prompt = "› "
 	ti.PromptStyle = lipgloss.NewStyle().Foreground(AccentColor)
 
-	model.input = ti
-	model.filtered = make([]int, 0, len(model.options))
+	options = frontLoadPinned(options)
+	model := filterMenuModel{
+		title:    title,
+		options:  options,
+		render:   render,
+		input:    ti,
+		filtered: make([]int, 0, len(options)),
+	}
 	model = model.refilter()
 
 	p := tea.NewProgram(model)

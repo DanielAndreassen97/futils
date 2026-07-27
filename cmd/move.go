@@ -199,14 +199,11 @@ func formatForType(itemType string) string {
 // hides the one thing that decides whether a move will work — whether you have
 // more than read access where it is going.
 func pickWorkspace(prompt string, idx workspaceIndex, excludeID string) (fabric.Workspace, error) {
-	byValue := make(map[string]fabric.Workspace, len(idx.Workspaces))
 	eligible := make([]fabric.Workspace, 0, len(idx.Workspaces))
 	for _, w := range idx.Workspaces {
-		if w.ID == excludeID {
-			continue
+		if w.ID != excludeID {
+			eligible = append(eligible, w)
 		}
-		eligible = append(eligible, w)
-		byValue[w.ID] = w
 	}
 	if len(eligible) == 0 {
 		return fabric.Workspace{}, fmt.Errorf("no workspaces available for %s", prompt)
@@ -217,7 +214,8 @@ func pickWorkspace(prompt string, idx workspaceIndex, excludeID string) (fabric.
 	if err != nil {
 		return fabric.Workspace{}, err
 	}
-	return byValue[chosen], nil
+	ws, _ := workspaceByID(eligible, chosen)
+	return ws, nil
 }
 
 // pickSourceItem lists items in the source workspace, filters to
@@ -255,20 +253,18 @@ func pickSourceItem(client APIClient, token string, srcWS fabric.Workspace) (fab
 	return byID[chosen], nil
 }
 
-// itemRowRenderer renders one row of the item picker as
-// "<name>  <type>" with the type column colorized via
-// ui.ItemTypeColor. Cursor row inverts the entire row regardless
-// of type color so the highlight is always visible.
+// itemRowRenderer renders one row of the item picker as "<name>  <type>", with
+// the type column in the item's Fabric colour. The cursor row takes the shared
+// arrow-plus-accent treatment and drops the type colour: selection wins, and a
+// row in two colours reads as two rows.
 func itemRowRenderer(opt ui.FilterOption, selected bool) string {
 	itemType, _ := opt.Meta.(string)
+	lead := ui.CursorPointer(selected)
 	if selected {
-		// Selection wins over type coloring: a uniform accent-on-
-		// black row so the cursor is unambiguous.
-		row := fmt.Sprintf("%-40s  %s", opt.Label, itemType)
-		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(row)
+		return lead + ui.CursorLabel(fmt.Sprintf("%s  %s", ui.FitWidth(opt.Label, labelColW), itemType), true)
 	}
 	typeColored := lipgloss.NewStyle().Foreground(ui.ItemTypeColor(itemType)).Render(itemType)
-	return fmt.Sprintf("%-40s  %s", opt.Label, typeColored)
+	return lead + ui.FitWidth(opt.Label, labelColW) + "  " + typeColored
 }
 
 // resolveCollision returns (targetName, action). action is one of
@@ -424,18 +420,15 @@ func pickRebindTarget(client APIClient, token string, dstWS fabric.Workspace, wo
 // dimming, so the cursor is always visible.
 func rebindRowRenderer(opt ui.FilterOption, selected bool) string {
 	wsName, _ := opt.Meta.(string)
-	if selected {
-		if wsName == "" {
-			return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(opt.Label)
-		}
-		row := fmt.Sprintf("%-*s  %s", labelColW, opt.Label, wsName)
-		return lipgloss.NewStyle().Foreground(ui.AccentColor).Bold(true).Render(row)
-	}
+	lead := ui.CursorPointer(selected)
 	if wsName == "" {
-		return opt.Label
+		return lead + ui.CursorLabel(opt.Label, selected)
 	}
-	return fmt.Sprintf("%s  %s", ui.FitWidth(opt.Label, labelColW),
-		lipgloss.NewStyle().Foreground(ui.DimColor).Render(wsName))
+	if selected {
+		return lead + ui.CursorLabel(ui.FitWidth(opt.Label, labelColW)+"  "+wsName, true)
+	}
+	return lead + ui.FitWidth(opt.Label, labelColW) + "  " +
+		lipgloss.NewStyle().Foreground(ui.DimColor).Render(wsName)
 }
 
 // printMoveSummary writes the summary box (same look as run.go's

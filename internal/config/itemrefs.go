@@ -133,49 +133,30 @@ func RenameItemRefs(cfg *Config, oldName, newName string) int {
 func RemoveItemRefs(cfg *Config, name string) int {
 	removed := 0
 	forEachCustomer(cfg, func(c *Customer) {
-		keptFavs := c.Favorites[:0]
-		for _, fav := range c.Favorites {
-			if fav.Name == name {
-				removed++
-				continue
-			}
-			keptFavs = append(keptFavs, fav)
-		}
-		c.Favorites = keptFavs
+		var n int
+		c.Favorites, n = removeMatching(c.Favorites,
+			func(f NotebookFavorite) bool { return f.Name == name })
+		removed += n
 
-		keptRuns := c.PostDeployRuns[:0]
-		for _, run := range c.PostDeployRuns {
-			if run == name {
-				removed++
-				continue
-			}
-			keptRuns = append(keptRuns, run)
-		}
-		c.PostDeployRuns = keptRuns
+		c.PostDeployRuns, n = removeMatching(c.PostDeployRuns,
+			func(run string) bool { return run == name })
+		removed += n
 
-		keptOverrides := c.ReferenceOverrides[:0]
-		for _, ov := range c.ReferenceOverrides {
-			if ov.ItemName == name {
-				removed++
-				continue
-			}
-			keptOverrides = append(keptOverrides, ov)
-		}
-		c.ReferenceOverrides = keptOverrides
+		c.ReferenceOverrides, n = removeMatching(c.ReferenceOverrides,
+			func(ov ReferenceOverride) bool { return ov.ItemName == name })
+		removed += n
 
-		keptSubs := c.Substitutions[:0]
-		for _, sub := range c.Substitutions {
-			if sub.TargetName == name {
-				removed++
-				continue
-			}
-			if sub.ItemName == name {
-				sub.ItemName = ""
+		// The filter is cleared in place first, so a rule that only narrowed on
+		// this name survives — wider than before — rather than going with it.
+		for i := range c.Substitutions {
+			if c.Substitutions[i].ItemName == name {
+				c.Substitutions[i].ItemName = ""
 				removed++
 			}
-			keptSubs = append(keptSubs, sub)
 		}
-		c.Substitutions = keptSubs
+		c.Substitutions, n = removeMatching(c.Substitutions,
+			func(sub Substitution) bool { return sub.TargetName == name })
+		removed += n
 	})
 	return removed
 }

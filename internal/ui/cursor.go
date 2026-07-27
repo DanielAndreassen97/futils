@@ -21,16 +21,15 @@ const (
 	CursorGutterW = 2
 )
 
-var (
-	cursorPointerStyle = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
-	cursorLabelStyle   = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
-)
+// One style, not one per element: the arrow and the label are the same treatment,
+// and two identical definitions are two things to keep in sync for no gain.
+var cursorStyle = lipgloss.NewStyle().Foreground(AccentColor).Bold(true)
 
 // CursorPointer returns the cursor gutter for a row: the accent arrow when the
 // row is under the cursor, blank space of the same width otherwise.
 func CursorPointer(selected bool) string {
 	if selected {
-		return cursorPointerStyle.Render(cursorArrow)
+		return cursorStyle.Render(cursorArrow)
 	}
 	return cursorBlank
 }
@@ -39,7 +38,7 @@ func CursorPointer(selected bool) string {
 // returns it untouched otherwise.
 func CursorLabel(s string, selected bool) string {
 	if selected {
-		return cursorLabelStyle.Render(s)
+		return cursorStyle.Render(s)
 	}
 	return s
 }

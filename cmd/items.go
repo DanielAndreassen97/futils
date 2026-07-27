@@ -30,45 +30,6 @@ var itemTypeGroupOrder = []string{
 	"Notebook", "DataPipeline", "SemanticModel", "Report", "Lakehouse", "Warehouse",
 }
 
-// itemTypePalette is Fabric's own item colouring, lifted from Microsoft's
-// published icon set rather than invented: a lakehouse is blue in the portal and
-// a notebook is green, so they are blue and green here. The point is that a
-// glance at this list feels like a glance at the workspace in the browser.
-//
-// The colours are used as section-bar backgrounds. Several of them — the report
-// gold and the lakehouse blue especially — are too dark to read as foreground
-// text on a dark terminal.
-var itemTypePalette = map[string]struct{ bg, fg lipgloss.Color }{
-	// Data Engineering and Data Factory — green.
-	"Notebook":           {"#45913e", "#f0fdf4"},
-	"DataPipeline":       {"#45913e", "#f0fdf4"},
-	"Environment":        {"#45913e", "#f0fdf4"},
-	"Dataflow":           {"#45913e", "#f0fdf4"},
-	"SparkJobDefinition": {"#45913e", "#f0fdf4"},
-	"MLModel":            {"#45913e", "#f0fdf4"},
-	"MLExperiment":       {"#45913e", "#f0fdf4"},
-	"VariableLibrary":    {"#45913e", "#f0fdf4"},
-	"CopyJob":            {"#45913e", "#f0fdf4"},
-	// Lakehouse and Warehouse — blue and cyan.
-	"Lakehouse": {"#2661be", "#eef4fd"},
-	"Warehouse": {"#20b6ef", "#06222c"},
-	// Databases and Real-Time Intelligence — blue.
-	"SQLDatabase":  {"#007fca", "#eaf6ff"},
-	"SQLEndpoint":  {"#007fca", "#eaf6ff"},
-	"Eventhouse":   {"#007fca", "#eaf6ff"},
-	"Eventstream":  {"#007fca", "#eaf6ff"},
-	"KQLDatabase":  {"#007fca", "#eaf6ff"},
-	"KQLQueryset":  {"#007fca", "#eaf6ff"},
-	"KQLDashboard": {"#007fca", "#eaf6ff"},
-	// Power BI — purple for models, gold for reports.
-	"SemanticModel":   {"#744fb5", "#f6f0fc"},
-	"Report":          {"#bc7d00", "#1c1300"},
-	"PaginatedReport": {"#bc7d00", "#1c1300"},
-	"Dashboard":       {"#bc7d00", "#1c1300"},
-}
-
-var itemTypeFallbackColor = struct{ bg, fg lipgloss.Color }{"#3a4547", "#d7dfe0"}
-
 // runnableItemLabels maps an item type to the label of the action that runs it.
 // A type absent here cannot be run, and its entry is badged rather than hidden.
 var runnableItemLabels = map[string]string{
@@ -77,12 +38,17 @@ var runnableItemLabels = map[string]string{
 	"SemanticModel": "Refresh tables",
 }
 
-// itemTypeColor returns the section-bar colours for an item type.
+// itemTypeColor returns the section-bar colours for an item type. The hues live
+// in internal/ui's theme so the move picker and this browser cannot disagree
+// about what colour a report is — they did.
 func itemTypeColor(itemType string) (bg, fg lipgloss.Color) {
-	if c, ok := itemTypePalette[itemType]; ok {
-		return c.bg, c.fg
-	}
-	return itemTypeFallbackColor.bg, itemTypeFallbackColor.fg
+	st := ui.ItemTypeStyleFor(itemType)
+	return st.BarBG, st.BarFG
+}
+
+// renderItemType is the item's type as coloured text, for a detail panel.
+func renderItemType(itemType string) string {
+	return lipgloss.NewStyle().Foreground(ui.ItemTypeColor(itemType)).Bold(true).Render(itemType)
 }
 
 // groupItemsByType turns a workspace's items into picker rows grouped under a
@@ -149,13 +115,13 @@ func itemActions(item fabric.Item) []ui.MenuOption {
 	runOpt := ui.MenuOption{Value: itemActionRun, Label: runLabel}
 	if !runnable {
 		runOpt.Badge = "NOT RUNNABLE"
-		runOpt.Description = item.Type + " items have nothing to run"
+		runOpt.Description = runUnavailable(item.Type)
 	}
 
 	moveOpt := ui.MenuOption{Value: itemActionMove, Label: "Move to another workspace"}
 	if !moveSupportedTypes[item.Type] {
 		moveOpt.Badge = "NOT MOVABLE"
-		moveOpt.Description = "Move supports Report, SemanticModel and Notebook"
+		moveOpt.Description = moveUnavailable(item.Type)
 	}
 
 	delDesc := "Delete this item"
@@ -171,6 +137,17 @@ func itemActions(item fabric.Item) []ui.MenuOption {
 		{Value: itemActionDelete, Label: "Delete", Description: delDesc},
 		{Value: itemActionBack, Label: "Back"},
 	}
+}
+
+// runUnavailable and moveUnavailable are the one wording each refusal has, used
+// by both the badge in the action menu and the guard that refuses a stale
+// selection. Two copies drifted by a trailing full stop the first time.
+func runUnavailable(itemType string) string {
+	return itemType + " items have nothing to run"
+}
+
+func moveUnavailable(itemType string) string {
+	return "Move supports Report, SemanticModel and Notebook — not " + itemType
 }
 
 // validateItemName enforces a non-empty name that does not collide with a
@@ -266,10 +243,7 @@ func (s *workspaceSession) manageItem(ws fabric.Workspace, item fabric.Item, sib
 // field comes from the list response already in hand, so opening an item costs
 // no extra request.
 func printItemPanel(ws fabric.Workspace, item fabric.Item, refs []config.ItemRef) {
-	desc := item.Description
-	if strings.TrimSpace(desc) == "" {
-		desc = "none"
-	}
+	desc := orNone(item.Description)
 	bg, _ := itemTypeColor(item.Type)
 
 	fmt.Println()
@@ -286,7 +260,7 @@ func printItemPanel(ws fabric.Workspace, item fabric.Item, refs []config.ItemRef
 	if rendered := renderItemRefs(refs); rendered != "" {
 		fmt.Printf("  %s\n%s", wsLabelStyle.Render("Used by:"), rendered)
 	} else {
-		fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Used by:", 13)), "no futils config references")
+		printField("Used by", "no futils config references")
 	}
 	fmt.Println()
 }
@@ -296,7 +270,7 @@ func printItemPanel(ws fabric.Workspace, item fabric.Item, refs []config.ItemRef
 // tenant-wide workspace list, so there is no environment to name.
 func (s *workspaceSession) runItem(ws fabric.Workspace, item fabric.Item, cfg config.Config) error {
 	if _, ok := runnableItemLabels[item.Type]; !ok {
-		fmt.Println(wsWarnStyle.Render(item.Type + " items have nothing to run."))
+		fmt.Println(wsWarnStyle.Render(runUnavailable(item.Type) + "."))
 		return ui.ErrGoBack
 	}
 	ref := WorkspaceRef{Name: ws.DisplayName, ID: ws.ID}
@@ -319,8 +293,7 @@ func (s *workspaceSession) runItem(ws fabric.Workspace, item fabric.Item, cfg co
 // same code the top-level Move item entry uses.
 func (s *workspaceSession) moveItem(ws fabric.Workspace, item fabric.Item) (bool, error) {
 	if !moveSupportedTypes[item.Type] {
-		fmt.Println(wsWarnStyle.Render(
-			"Move supports Report, SemanticModel and Notebook — not " + item.Type + "."))
+		fmt.Println(wsWarnStyle.Render(moveUnavailable(item.Type) + "."))
 		return false, ui.ErrGoBack
 	}
 	// The destination picker renders the same grouped tenant view as the screen
@@ -453,9 +426,9 @@ func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, ref
 	} else {
 		fmt.Println(wsWarnStyle.Render("This cannot be undone from futils."))
 	}
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Item:", 13)), item.DisplayName)
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Type:", 13)), item.Type)
-	fmt.Printf("  %s %s\n", wsLabelStyle.Render(ui.FitWidth("Workspace:", 13)), ws.DisplayName)
+	printField("Item", item.DisplayName)
+	printField("Type", item.Type)
+	printField("Workspace", ws.DisplayName)
 	if rendered := renderItemRefs(refs); rendered != "" {
 		fmt.Printf("  %s\n%s", wsLabelStyle.Render("Config entries that name it:"), rendered)
 	}
@@ -515,9 +488,4 @@ func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, ref
 	return true, ui.ErrGoBack
 }
 
-func pluralItemRefs(n int) string {
-	if n == 1 {
-		return "1 config entry"
-	}
-	return fmt.Sprintf("%d config entries", n)
-}
+func pluralItemRefs(n int) string { return countNoun(n, "config entry", "config entries") }

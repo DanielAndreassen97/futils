@@ -98,23 +98,18 @@ func nextDir(cur, choice string) (next string, done bool) {
 // takes precedence with a uniform accent highlight (FilterMenu contract).
 func dirRowRenderer(opt FilterOption, selected bool) string {
 	// The arrow gutter comes first, ahead of the git marker column, so the two
-	// never compete for the same two columns.
-	lead := CursorPointer(selected)
-	if selected {
-		marker := "  "
-		if opt.Meta == "git" {
-			marker = lipgloss.NewStyle().Foreground(AccentColor).Render("● ")
-		}
-		return lead + marker + CursorLabel(opt.Label, true)
+	// never compete for the same two columns. One return path: the marker and the
+	// label are decided independently, and duplicating the git-marker test in a
+	// selected branch is how the two got out of step.
+	marker := "  "
+	if opt.Meta == "git" {
+		marker = lipgloss.NewStyle().Foreground(AccentColor).Render("● ")
 	}
-	switch opt.Meta {
-	case "git":
-		return lead + lipgloss.NewStyle().Foreground(AccentColor).Render("● ") + opt.Label
-	case "action":
-		return lead + "  " + lipgloss.NewStyle().Foreground(DimColor).Render(opt.Label)
-	default:
-		return lead + "  " + opt.Label
+	label := opt.Label
+	if opt.Meta == "action" && !selected {
+		label = lipgloss.NewStyle().Foreground(DimColor).Render(label)
 	}
+	return CursorPointer(selected) + marker + CursorLabel(label, selected)
 }
 
 // PickDirectory shows a searchable, navigable directory browser rooted at

@@ -118,29 +118,22 @@ func RemoveWorkspaceRefs(cfg *Config, name string) int {
 		for ei := range c.Environments {
 			env := &c.Environments[ei]
 
-			kept := env.Workspaces[:0]
-			for _, ws := range env.Workspaces {
-				if ws == name {
-					removed++
-					continue
-				}
-				kept = append(kept, ws)
-			}
-			env.Workspaces = kept
+			var n int
+			env.Workspaces, n = removeMatching(env.Workspaces, func(ws string) bool { return ws == name })
+			removed += n
 
-			keptDeps := env.Deployments[:0]
-			for _, dep := range env.Deployments {
-				if dep.Workspace == name {
-					removed++
-					continue
-				}
-				if dep.BaselineWorkspace == name {
-					dep.BaselineWorkspace = ""
+			// Baselines are cleared in place first, so a mapping whose baseline is
+			// gone survives and falls back to the customer-level one instead of
+			// being thrown away with it.
+			for di := range env.Deployments {
+				if env.Deployments[di].BaselineWorkspace == name {
+					env.Deployments[di].BaselineWorkspace = ""
 					removed++
 				}
-				keptDeps = append(keptDeps, dep)
 			}
-			env.Deployments = keptDeps
+			env.Deployments, n = removeMatching(env.Deployments,
+				func(d DeployMapping) bool { return d.Workspace == name })
+			removed += n
 		}
 	})
 	return removed
@@ -155,6 +148,22 @@ func forEachCustomer(cfg *Config, fn func(*Customer)) {
 		fn(&customer)
 		cfg.Customers[name] = customer
 	}
+}
+
+// removeMatching drops every element match reports on, returning the kept slice
+// and how many went. Six copies of this loop existed across the two ref files,
+// differing only in the predicate.
+func removeMatching[T any](in []T, match func(T) bool) ([]T, int) {
+	kept := in[:0]
+	removed := 0
+	for _, v := range in {
+		if match(v) {
+			removed++
+			continue
+		}
+		kept = append(kept, v)
+	}
+	return kept, removed
 }
 
 func sortedCustomerNames(cfg Config) []string {
