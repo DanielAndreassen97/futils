@@ -174,6 +174,11 @@ type wsFakeAPI struct {
 	deletedItems  []string
 	renameItemErr error
 	deleteItemErr error
+
+	// Call counters, so a test can assert that backing out or cancelling costs
+	// no round trip.
+	listWorkspacesCalls int
+	listItemsCalls      int
 }
 
 func (f *wsFakeAPI) RenameItem(_, _, itemID, name string) (fabric.Item, error) {
@@ -199,6 +204,7 @@ func (f *wsFakeAPI) DeleteItem(_, _, itemID string) error {
 
 func (f *wsFakeAPI) GetAccessToken(string) (string, error) { return "tok", nil }
 func (f *wsFakeAPI) ListWorkspaces(string) ([]fabric.Workspace, error) {
+	f.listWorkspacesCalls++
 	return f.workspaces, nil
 }
 
@@ -222,7 +228,10 @@ func (f *wsFakeAPI) GetWorkspace(_, id string) (fabric.Workspace, error) {
 	}
 	return fabric.Workspace{}, errors.New("not found")
 }
-func (f *wsFakeAPI) ListItems(_, id string) ([]fabric.Item, error) { return f.items[id], nil }
+func (f *wsFakeAPI) ListItems(_, id string) ([]fabric.Item, error) {
+	f.listItemsCalls++
+	return f.items[id], nil
+}
 func (f *wsFakeAPI) ListCapacities(string) ([]fabric.Capacity, error) {
 	return f.capacities, nil
 }

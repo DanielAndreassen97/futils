@@ -220,12 +220,17 @@ func renderItemRefs(refs []config.ItemRef) string {
 	return b.String()
 }
 
-// manageItem shows one item's details and runs a single action on it, then
-// returns to the workspace screen so the next screen is drawn from fresh data.
-func (s *workspaceSession) manageItem(ws fabric.Workspace, item fabric.Item, siblings []fabric.Item) error {
+// manageItem shows one item's details and runs a single action on it, then hands
+// control back to the workspace screen.
+//
+// Returns mutated=true only when the workspace's contents actually changed, so
+// the screen above knows whether to re-list. Running a notebook, backing out and
+// cancelling a rename are all "nothing changed" — none of them should cost a
+// round trip on the way back.
+func (s *workspaceSession) manageItem(ws fabric.Workspace, item fabric.Item, siblings []fabric.Item) (mutated bool, err error) {
 	cfg, err := config.Load(s.configPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	refs := config.FindItemRefs(cfg, item.DisplayName)
 
@@ -233,14 +238,18 @@ func (s *workspaceSession) manageItem(ws fabric.Workspace, item fabric.Item, sib
 
 	choice, err := wsNumberPicker(item.DisplayName, itemActions(item))
 	if err != nil {
-		return err
+		if errors.Is(err, ui.ErrGoBack) {
+			return false, ui.ErrGoBack
+		}
+		return false, err
 	}
 
 	switch choice {
 	case itemActionBack:
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	case itemActionRun:
-		return s.runItem(ws, item, cfg)
+		// A run leaves the workspace's contents exactly as they were.
+		return false, s.runItem(ws, item, cfg)
 	case itemActionMove:
 		return s.moveItem(ws, item)
 	case itemActionRename:
@@ -250,7 +259,7 @@ func (s *workspaceSession) manageItem(ws fabric.Workspace, item fabric.Item, sib
 	case itemActionDelete:
 		return s.deleteItem(ws, item, refs)
 	}
-	return ui.ErrGoBack
+	return false, ui.ErrGoBack
 }
 
 // printItemPanel is the read-only summary shown before any item action. Every
@@ -308,17 +317,26 @@ func (s *workspaceSession) runItem(ws fabric.Workspace, item fabric.Item, cfg co
 // moveItem hands the item to the existing move flow with the source workspace
 // and item already chosen, so collision handling and the report rebind are the
 // same code the top-level Move item entry uses.
-func (s *workspaceSession) moveItem(ws fabric.Workspace, item fabric.Item) error {
+func (s *workspaceSession) moveItem(ws fabric.Workspace, item fabric.Item) (bool, error) {
 	if !moveSupportedTypes[item.Type] {
 		fmt.Println(wsWarnStyle.Render(
 			"Move supports Report, SemanticModel and Notebook — not " + item.Type + "."))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
-	workspaces, err := s.client.ListWorkspaces(s.token)
-	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
+	// The destination picker needs the whole tenant, which the screen this was
+	// launched from already loaded. Refetching it here would be a second
+	// identical request in the same breath.
+	workspaces := s.workspaces
+	if len(workspaces) == 0 {
+		var err error
+		if workspaces, err = s.client.ListWorkspaces(s.token); err != nil {
+			return false, fmt.Errorf("list workspaces: %w", err)
+		}
 	}
-	return moveItemFrom(s.client, s.token, ws, item, workspaces, s.customer)
+	// A move copies into the destination and may delete the source, so treat it
+	// as changed whatever the outcome: the flow has its own cancel points and
+	// tracking which one fired would be guesswork from here.
+	return true, moveItemFrom(s.client, s.token, ws, item, workspaces, s.customer)
 }
 
 // renameItem renames the item in Fabric, then OFFERS to update the config
@@ -329,23 +347,23 @@ func (s *workspaceSession) moveItem(ws fabric.Workspace, item fabric.Item) error
 // notebook exists in DEV, TEST and PROD. Renaming one copy and rewriting config
 // would make the entry right here and wrong everywhere else, so the choice is
 // the user's and the default is no.
-func (s *workspaceSession) renameItem(ws fabric.Workspace, item fabric.Item, siblings []fabric.Item, refs []config.ItemRef) error {
+func (s *workspaceSession) renameItem(ws fabric.Workspace, item fabric.Item, siblings []fabric.Item, refs []config.ItemRef) (bool, error) {
 	newName, err := wsPromptInput("New name for "+item.DisplayName, item.DisplayName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := validateItemName(newName, siblings, item.DisplayName); err != nil {
 		fmt.Println(wsWarnStyle.Render(err.Error()))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
 
 	ok, err := wsConfirm(fmt.Sprintf("Rename %q to %q?", item.DisplayName, newName))
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !ok {
 		fmt.Println(wsCancelStyle.Render("Cancelled."))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
 
 	spinner := ui.NewSpinner("Renaming...")
@@ -353,11 +371,11 @@ func (s *workspaceSession) renameItem(ws fabric.Workspace, item fabric.Item, sib
 	_, err = s.client.RenameItem(s.token, ws.ID, item.ID, newName)
 	spinner.Stop()
 	if err != nil {
-		return fmt.Errorf("rename item: %w", err)
+		return false, fmt.Errorf("rename item: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Renamed to " + newName + "."))
 
-	return s.offerItemRefUpdate(item.DisplayName, newName, refs)
+	return true, s.offerItemRefUpdate(item.DisplayName, newName, refs)
 }
 
 // offerItemRefUpdate asks whether the config entries naming the old item should
@@ -397,18 +415,18 @@ func (s *workspaceSession) offerItemRefUpdate(oldName, newName string, refs []co
 	return ui.ErrGoBack
 }
 
-func (s *workspaceSession) setItemDescription(ws fabric.Workspace, item fabric.Item) error {
+func (s *workspaceSession) setItemDescription(ws fabric.Workspace, item fabric.Item) (bool, error) {
 	desc, err := wsPromptInput("Description for "+item.DisplayName+" (clear to remove)", item.Description)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := validateItemDescription(desc); err != nil {
 		fmt.Println(wsWarnStyle.Render(err.Error()))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
 	if desc == item.Description {
 		fmt.Println(wsLabelStyle.Render("Description unchanged."))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
 
 	spinner := ui.NewSpinner("Updating description...")
@@ -416,16 +434,16 @@ func (s *workspaceSession) setItemDescription(ws fabric.Workspace, item fabric.I
 	_, err = s.client.SetItemDescription(s.token, ws.ID, item.ID, desc)
 	spinner.Stop()
 	if err != nil {
-		return fmt.Errorf("update description: %w", err)
+		return false, fmt.Errorf("update description: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Description updated."))
-	return ui.ErrGoBack
+	return true, ui.ErrGoBack
 }
 
 // deleteItem removes one item. Data-bearing types take the typed confirmation,
 // because deleting a lakehouse destroys its tables and files — the same
 // distinction the deploy flow makes before removing orphans.
-func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, refs []config.ItemRef) error {
+func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, refs []config.ItemRef) (bool, error) {
 	destroysData := dataBearingItemTypes[item.Type]
 
 	fmt.Println()
@@ -453,13 +471,13 @@ func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, ref
 	if err != nil {
 		if errors.Is(err, ui.ErrGoBack) {
 			fmt.Println(wsCancelStyle.Render("Cancelled."))
-			return ui.ErrGoBack
+			return false, ui.ErrGoBack
 		}
-		return err
+		return false, err
 	}
 	if !ok {
 		fmt.Println(wsCancelStyle.Render("Cancelled — nothing was deleted."))
-		return ui.ErrGoBack
+		return false, ui.ErrGoBack
 	}
 
 	spinner := ui.NewSpinner("Deleting " + item.DisplayName + "...")
@@ -467,34 +485,34 @@ func (s *workspaceSession) deleteItem(ws fabric.Workspace, item fabric.Item, ref
 	err = s.client.DeleteItem(s.token, ws.ID, item.ID)
 	spinner.Stop()
 	if err != nil {
-		return fmt.Errorf("delete item: %w", err)
+		return false, fmt.Errorf("delete item: %w", err)
 	}
 	fmt.Println(infoStyle.Render("Deleted " + item.DisplayName + "."))
 
 	if len(refs) == 0 {
-		return ui.ErrGoBack
+		return true, ui.ErrGoBack
 	}
 	// Same reasoning as rename: the config entries may still be valid for other
 	// environments, so removing them is the user's call.
 	remove, err := wsConfirm(fmt.Sprintf("Also remove %s from config?", pluralItemRefs(len(refs))))
 	if err != nil {
 		if errors.Is(err, ui.ErrGoBack) {
-			return ui.ErrGoBack
+			return true, ui.ErrGoBack
 		}
-		return err
+		return true, err
 	}
 	if !remove {
 		fmt.Println(wsLabelStyle.Render("Config left unchanged — the entries may still apply in other environments."))
-		return ui.ErrGoBack
+		return true, ui.ErrGoBack
 	}
 	changed, err := s.updateConfig(func(cfg *config.Config) int {
 		return config.RemoveItemRefs(cfg, item.DisplayName)
 	})
 	if err != nil {
-		return fmt.Errorf("item was deleted in Fabric but config was NOT cleaned: %w", err)
+		return true, fmt.Errorf("item was deleted in Fabric but config was NOT cleaned: %w", err)
 	}
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Removed %s from config.", pluralItemRefs(changed))))
-	return ui.ErrGoBack
+	return true, ui.ErrGoBack
 }
 
 func pluralItemRefs(n int) string {

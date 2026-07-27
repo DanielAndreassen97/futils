@@ -163,16 +163,34 @@ type workspaceSession struct {
 	capacities []fabric.Capacity
 	capsLoaded bool
 	capsErr    error
+
+	// workspaces is the tenant listing from the most recent load(), kept so a
+	// flow that needs the whole list — the move destination picker — does not
+	// refetch what the screen it was launched from already has. Refreshed by
+	// load(), which only runs when something invalidated the list.
+	workspaces []fabric.Workspace
 }
 
 // loop shows the workspace picker until the user backs out. The list is
 // reloaded on every pass: after a rename or delete a stale list would show a
 // name that no longer exists, and that is exactly the moment a user looks again.
 func (s *workspaceSession) loop() error {
+	var (
+		workspaces []fabric.Workspace
+		roleOf     map[string]string
+		err        error
+		// The tenant listing costs six requests — the workspace list plus one
+		// roles-filtered list per role plus capacities. Only refetch it when
+		// something has actually changed it: creating, renaming or deleting a
+		// workspace. Coming back from an item does not.
+		stale = true
+	)
 	for {
-		workspaces, roleOf, err := s.load()
-		if err != nil {
-			return err
+		if stale {
+			if workspaces, roleOf, err = s.load(); err != nil {
+				return err
+			}
+			stale = false
 		}
 
 		choice, err := s.pick(workspaces, roleOf)
@@ -184,10 +202,11 @@ func (s *workspaceSession) loop() error {
 		}
 
 		if choice == wsActionCreate {
-			if err := s.create(workspaces); err != nil {
-				if errors.Is(err, ui.ErrGoBack) {
-					continue
-				}
+			err := s.create(workspaces)
+			// A create that got as far as prompting may have landed even if it
+			// then failed to register in config, so refetch either way.
+			stale = true
+			if err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
 			continue
@@ -195,13 +214,15 @@ func (s *workspaceSession) loop() error {
 
 		selected, ok := workspaceByID(workspaces, choice)
 		if !ok {
-			// The list was reloaded between render and selection — harmless.
+			// The list changed between render and selection — harmless.
+			stale = true
 			continue
 		}
-		if err := s.manage(selected, roleOf[selected.ID]); err != nil {
-			if errors.Is(err, ui.ErrGoBack) {
-				continue
-			}
+		mutated, err := s.manage(selected, roleOf[selected.ID])
+		if mutated {
+			stale = true
+		}
+		if err != nil && !errors.Is(err, ui.ErrGoBack) {
 			return err
 		}
 	}
@@ -249,6 +270,7 @@ func (s *workspaceSession) load() ([]fabric.Workspace, map[string]string, error)
 			roleOf[ws.ID] = wsRoleAdmin
 		}
 	}
+	s.workspaces = workspaces
 	return workspaces, roleOf, nil
 }
 
@@ -356,60 +378,82 @@ func roleWithArticle(role string) string {
 	return "a " + role
 }
 
-// manage prints the detail panel for one workspace, then runs a single action.
-// Control returns to the picker afterwards so the next screen is always drawn
-// from freshly loaded data.
-func (s *workspaceSession) manage(ws fabric.Workspace, role string) error {
+// manage is the screen you stay on while working inside one workspace: its own
+// actions above its items. It loops, so acting on an item — or backing out of
+// one — returns here rather than dropping you back to the tenant-wide list you
+// came through. Only a workspace-level change, or Back, leaves.
+//
+// Returns mutated=true when something happened that invalidates the caller's
+// workspace list, so the caller knows whether its six-request listing needs
+// refetching.
+func (s *workspaceSession) manage(ws fabric.Workspace, role string) (mutated bool, err error) {
 	isAdmin := role == wsRoleAdmin
+
 	spinner := ui.NewSpinner("Loading " + ws.DisplayName + "...")
 	spinner.Start()
 	detail, err := s.client.GetWorkspace(s.token, ws.ID)
 	if err != nil {
 		spinner.Stop()
-		return fmt.Errorf("get workspace %q: %w", ws.DisplayName, err)
+		return false, fmt.Errorf("get workspace %q: %w", ws.DisplayName, err)
 	}
 	items, itemsErr := s.client.ListItems(s.token, ws.ID)
 	spinner.Stop()
 
-	cfg, err := config.Load(s.configPath)
-	if err != nil {
-		return err
-	}
-	refs := config.FindWorkspaceRefs(cfg, detail.DisplayName)
+	for {
+		cfg, err := config.Load(s.configPath)
+		if err != nil {
+			return false, err
+		}
+		refs := config.FindWorkspaceRefs(cfg, detail.DisplayName)
 
-	s.printPanel(detail, items, itemsErr, refs, role)
+		s.printPanel(detail, items, itemsErr, refs, role)
 
-	choice, err := wsFilterPicker("Manage "+detail.DisplayName,
-		workspaceScreenOptions(items, isAdmin), renderWorkspaceScreenRow)
-	if err != nil {
-		return err
-	}
-	if choice == wsActionBack {
-		return ui.ErrGoBack
-	}
+		choice, err := wsFilterPicker("Manage "+detail.DisplayName,
+			workspaceScreenOptions(items, isAdmin), renderWorkspaceScreenRow)
+		if err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				return false, ui.ErrGoBack
+			}
+			return false, err
+		}
+		if choice == wsActionBack {
+			return false, ui.ErrGoBack
+		}
 
-	// An item was chosen rather than one of the pinned workspace actions.
-	if item, ok := itemByID(items, choice); ok {
-		return s.manageItem(detail, item, items)
-	}
+		// An item was chosen rather than one of the pinned workspace actions.
+		if item, ok := itemByID(items, choice); ok {
+			changed, err := s.manageItem(detail, item, items)
+			if err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return false, err
+			}
+			if changed {
+				// The item list is stale — but only that. The tenant list, the
+				// workspace's own metadata and the capacities are all untouched.
+				items, itemsErr = s.client.ListItems(s.token, ws.ID)
+			}
+			continue
+		}
 
-	if !isAdmin {
-		fmt.Println()
-		fmt.Println(wsWarnStyle.Render(fmt.Sprintf(
-			"Rename, description and delete all require the Admin workspace role — you are %s.", roleWithArticle(role))))
-		fmt.Println(wsLabelStyle.Render("Ask a workspace admin to grant it, then try again."))
-		return ui.ErrGoBack
-	}
+		if !isAdmin {
+			fmt.Println()
+			fmt.Println(wsWarnStyle.Render(fmt.Sprintf(
+				"Rename, description and delete all require the Admin workspace role — you are %s.", roleWithArticle(role))))
+			fmt.Println(wsLabelStyle.Render("Ask a workspace admin to grant it, then try again."))
+			continue
+		}
 
-	switch choice {
-	case wsActionRename:
-		return s.rename(detail, refs)
-	case wsActionDesc:
-		return s.setDescription(detail)
-	case wsActionDelete:
-		return s.delete(detail, items, itemsErr, refs)
+		// Every remaining action changes the workspace itself, so the list this
+		// screen was reached from is now wrong either way.
+		switch choice {
+		case wsActionRename:
+			return true, s.rename(detail, refs)
+		case wsActionDesc:
+			return true, s.setDescription(detail)
+		case wsActionDelete:
+			return true, s.delete(detail, items, itemsErr, refs)
+		}
+		return false, ui.ErrGoBack
 	}
-	return ui.ErrGoBack
 }
 
 // workspaceScreenOptions builds the one screen you land on inside a workspace:

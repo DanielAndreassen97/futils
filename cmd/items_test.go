@@ -489,3 +489,166 @@ func TestWorkspaceScreenBadgesActionsForANonAdmin(t *testing.T) {
 		t.Error("Back must never be badged")
 	}
 }
+
+func TestBackFromAnItemReturnsToTheWorkspaceNotTheList(t *testing.T) {
+	// Backing out of an item is a step up, not a step out. Landing on the
+	// tenant-wide workspace list loses the place you were working in — and
+	// costs a full reload to get back to it.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	h := &wsHarness{
+		// Workspace, then the item, then the workspace screen again (which runs
+		// out of picks and backs out for real).
+		filterPicks: []string{"ws-fin", "nb1"},
+		numberPicks: []string{itemActionBack},
+	}
+	h.install(t)
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	// Two workspace-screen renders: the first visit, and the one Back returns
+	// to. Three would mean it bounced out to the list and back in.
+	if api.listWorkspacesCalls != 1 {
+		t.Errorf("ListWorkspaces called %d times, want 1 — Back must not reload the tenant", api.listWorkspacesCalls)
+	}
+}
+
+func TestBackFromAnItemDoesNotRelistItems(t *testing.T) {
+	// Nothing changed, so the cached item list is still correct.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", "nb1"},
+		numberPicks: []string{itemActionBack},
+	}
+	h.install(t)
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if api.listItemsCalls != 1 {
+		t.Errorf("ListItems called %d times, want 1 — backing out changes nothing", api.listItemsCalls)
+	}
+}
+
+func TestACancelledItemRenameDoesNotRelistItems(t *testing.T) {
+	// Declining the rename leaves the workspace exactly as it was, so the
+	// cached list is still good.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", "nb1"},
+		numberPicks: []string{itemActionRename},
+		inputs:      []string{"nb_new_name"},
+		confirms:    []bool{false},
+	}
+	h.install(t)
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if len(api.renamedItems) != 0 {
+		t.Fatalf("a declined rename hit the API: %v", api.renamedItems)
+	}
+	if api.listItemsCalls != 1 {
+		t.Errorf("ListItems called %d times, want 1 after a cancelled rename", api.listItemsCalls)
+	}
+}
+
+func TestACompletedItemRenameRelistsItemsOnce(t *testing.T) {
+	// The rename DID land, so the cached names are stale and the screen must
+	// re-list before drawing again — exactly once.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", "nb1"},
+		numberPicks: []string{itemActionRename},
+		inputs:      []string{"nb_ingest_customers"},
+		confirms:    []bool{true, false},
+	}
+	h.install(t)
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if len(api.renamedItems) != 1 {
+		t.Fatalf("renamedItems = %v", api.renamedItems)
+	}
+	if api.listItemsCalls != 2 {
+		t.Errorf("ListItems called %d times, want 2 — one per screen render", api.listItemsCalls)
+	}
+	// The tenant list is untouched by an item rename.
+	if api.listWorkspacesCalls != 1 {
+		t.Errorf("ListWorkspaces called %d times, want 1", api.listWorkspacesCalls)
+	}
+}
+
+func TestAWorkspaceRenameReloadsTheTenantList(t *testing.T) {
+	// A workspace rename changes the list you came from, so that one DOES have
+	// to be refetched.
+	path := wsConfigFile(t)
+	api := wsItemAPI()
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", wsActionRename},
+		inputs:      []string{"DW - Finance PROD"},
+		confirms:    []bool{true},
+	}
+	h.install(t)
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if api.listWorkspacesCalls < 2 {
+		t.Errorf("ListWorkspaces called %d times, want a reload after the rename", api.listWorkspacesCalls)
+	}
+}
+
+func TestMoveReusesTheCachedWorkspaceList(t *testing.T) {
+	// The destination picker needs the whole tenant, which the screen the move
+	// was launched from already loaded. Fetching it again is a second identical
+	// request in the same breath.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	api.items["ws-fin"] = []fabric.Item{
+		{ID: "r1", DisplayName: "Sales overview", Type: "Report"},
+	}
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", "r1"},
+		numberPicks: []string{itemActionMove},
+	}
+	h.install(t)
+
+	// The move flow has its own picker hook; back out of it immediately so the
+	// test measures the listing, not the whole move.
+	origMoveFilter := moveFilterPicker
+	t.Cleanup(func() { moveFilterPicker = origMoveFilter })
+	moveFilterPicker = func(string, []ui.FilterOption, ui.FilterRowRenderer) (string, error) {
+		return "", ui.ErrGoBack
+	}
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if api.listWorkspacesCalls != 1 {
+		t.Errorf("ListWorkspaces called %d times, want 1 — move must reuse the loaded list", api.listWorkspacesCalls)
+	}
+}
