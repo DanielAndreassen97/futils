@@ -379,25 +379,20 @@ func (s *workspaceSession) manage(ws fabric.Workspace, role string) error {
 
 	s.printPanel(detail, items, itemsErr, refs, role)
 
-	options := []ui.MenuOption{
-		{Label: "Rename", Value: wsActionRename, Description: "Change the display name and repair config references"},
-		{Label: "Edit description", Value: wsActionDesc, Description: "Replace the workspace description"},
-		{Label: "Delete", Value: wsActionDelete, Description: "Delete the workspace and every item in it"},
-		{Label: "Back", Value: wsActionBack},
-	}
-	if !isAdmin {
-		for i := range options[:3] {
-			options[i].Badge = "NEEDS ADMIN"
-		}
-	}
-
-	choice, err := wsNumberPicker("Manage "+detail.DisplayName, options)
+	choice, err := wsFilterPicker("Manage "+detail.DisplayName,
+		workspaceScreenOptions(items, isAdmin), renderWorkspaceScreenRow)
 	if err != nil {
 		return err
 	}
 	if choice == wsActionBack {
 		return ui.ErrGoBack
 	}
+
+	// An item was chosen rather than one of the pinned workspace actions.
+	if item, ok := itemByID(items, choice); ok {
+		return s.manageItem(detail, item, items)
+	}
+
 	if !isAdmin {
 		fmt.Println()
 		fmt.Println(wsWarnStyle.Render(fmt.Sprintf(
@@ -415,6 +410,61 @@ func (s *workspaceSession) manage(ws fabric.Workspace, role string) error {
 		return s.delete(detail, items, itemsErr, refs)
 	}
 	return ui.ErrGoBack
+}
+
+// workspaceScreenOptions builds the one screen you land on inside a workspace:
+// the workspace's own actions pinned at the top, then every item it holds,
+// grouped by type.
+//
+// One screen rather than an action menu with a "browse items" entry, because the
+// items are what you came to look at. Pinning the actions means typing filters
+// the items while Rename stays one arrow-up away — see ui.FilterOption.Pinned.
+func workspaceScreenOptions(items []fabric.Item, isAdmin bool) []ui.FilterOption {
+	actions := []ui.FilterOption{
+		{Label: "Rename workspace", Value: wsActionRename, Pinned: true},
+		{Label: "Edit description", Value: wsActionDesc, Pinned: true},
+		{Label: "Delete workspace", Value: wsActionDelete, Pinned: true},
+		{Label: "Back", Value: wsActionBack, Pinned: true},
+	}
+	if !isAdmin {
+		for i := range actions[:3] {
+			actions[i].Meta = wsPinnedAction{Badge: "NEEDS ADMIN"}
+		}
+	}
+	return append(actions, groupItemsByType(items)...)
+}
+
+// wsPinnedAction carries a pinned row's badge. Only set when the action is
+// unavailable, so the zero value means "no badge".
+type wsPinnedAction struct{ Badge string }
+
+// renderWorkspaceScreenRow draws a row of the combined workspace screen: a
+// pinned workspace action, a coloured item-type heading, or an item.
+func renderWorkspaceScreenRow(opt ui.FilterOption, selected bool) string {
+	if opt.IsHeader {
+		hdr, _ := opt.Meta.(itemTypeHeader)
+		bg, fg := itemTypeColor(hdr.Type)
+		return renderSectionBar(bg, fg, opt.Label)
+	}
+
+	lead := ui.CursorPointer(selected)
+	if opt.Pinned {
+		row := lead + ui.CursorLabel(opt.Label, selected)
+		if action, ok := opt.Meta.(wsPinnedAction); ok && action.Badge != "" {
+			row += "  " + wsWarnStyle.Render("["+action.Badge+"]")
+		}
+		return row
+	}
+	return lead + ui.CursorLabel(opt.Label, selected)
+}
+
+func itemByID(items []fabric.Item, id string) (fabric.Item, bool) {
+	for _, it := range items {
+		if it.ID == id {
+			return it, true
+		}
+	}
+	return fabric.Item{}, false
 }
 
 // printPanel is the read-only summary shown before any action. Item counts come

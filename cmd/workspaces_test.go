@@ -167,6 +167,34 @@ type wsFakeAPI struct {
 	createErr error
 	renameErr error
 	deleteErr error
+
+	// Item browser.
+	renamedItems  [][2]string // {itemID, newName}
+	itemDescSet   [][2]string // {itemID, description}
+	deletedItems  []string
+	renameItemErr error
+	deleteItemErr error
+}
+
+func (f *wsFakeAPI) RenameItem(_, _, itemID, name string) (fabric.Item, error) {
+	if f.renameItemErr != nil {
+		return fabric.Item{}, f.renameItemErr
+	}
+	f.renamedItems = append(f.renamedItems, [2]string{itemID, name})
+	return fabric.Item{ID: itemID, DisplayName: name}, nil
+}
+
+func (f *wsFakeAPI) SetItemDescription(_, _, itemID, desc string) (fabric.Item, error) {
+	f.itemDescSet = append(f.itemDescSet, [2]string{itemID, desc})
+	return fabric.Item{ID: itemID, Description: desc}, nil
+}
+
+func (f *wsFakeAPI) DeleteItem(_, _, itemID string) error {
+	if f.deleteItemErr != nil {
+		return f.deleteItemErr
+	}
+	f.deletedItems = append(f.deletedItems, itemID)
+	return nil
 }
 
 func (f *wsFakeAPI) GetAccessToken(string) (string, error) { return "tok", nil }
@@ -339,8 +367,7 @@ func TestWorkspacesRenameRewritesConfigReferences(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionRename},
+		filterPicks: []string{"ws-fin", wsActionRename},
 		inputs:      []string{"DW - Finance PROD"},
 		confirms:    []bool{true},
 	}
@@ -375,8 +402,7 @@ func TestWorkspacesRenameDeclinedTouchesNothing(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionRename},
+		filterPicks: []string{"ws-fin", wsActionRename},
 		inputs:      []string{"DW - Finance PROD"},
 		confirms:    []bool{false},
 	}
@@ -403,8 +429,7 @@ func TestWorkspacesRenameAPIFailureLeavesConfigUntouched(t *testing.T) {
 	api := wsTestAPI()
 	api.renameErr = errors.New("update workspace 403: requires the Admin workspace role")
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionRename},
+		filterPicks: []string{"ws-fin", wsActionRename},
 		inputs:      []string{"DW - Finance PROD"},
 		confirms:    []bool{true},
 	}
@@ -426,8 +451,7 @@ func TestWorkspacesDeleteRequiresTypedYesAndCleansConfig(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionDelete},
+		filterPicks: []string{"ws-fin", wsActionDelete},
 		typedOK:     []bool{true},
 	}
 	h.install(t)
@@ -460,8 +484,7 @@ func TestWorkspacesDeleteWithoutTypedYesAborts(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionDelete},
+		filterPicks: []string{"ws-fin", wsActionDelete},
 		typedOK:     []bool{false},
 	}
 	h.install(t)
@@ -487,8 +510,7 @@ func TestWorkspacesNonAdminCannotReachTheAPI(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-sem"},
-		numberPicks: []string{wsActionDelete},
+		filterPicks: []string{"ws-sem", wsActionDelete},
 		typedOK:     []bool{true},
 	}
 	h.install(t)
@@ -640,8 +662,7 @@ func TestWorkspacesAgainstDemoTenant(t *testing.T) {
 
 	// Rename it.
 	h = &wsHarness{
-		filterPicks: []string{created.ID},
-		numberPicks: []string{wsActionRename},
+		filterPicks: []string{created.ID, wsActionRename},
 		inputs:      []string{"DW - Smoke renamed"},
 		confirms:    []bool{true},
 	}
@@ -657,8 +678,7 @@ func TestWorkspacesAgainstDemoTenant(t *testing.T) {
 
 	// Delete it.
 	h = &wsHarness{
-		filterPicks: []string{created.ID},
-		numberPicks: []string{wsActionDelete},
+		filterPicks: []string{created.ID, wsActionDelete},
 		typedOK:     []bool{true},
 	}
 	h.install(t)
@@ -697,8 +717,7 @@ func TestWorkspacesPanelNamesTheCapacityOnFirstVisit(t *testing.T) {
 	path := wsConfigFile(t)
 	api := wsTestAPI()
 	h := &wsHarness{
-		filterPicks: []string{"ws-fin"},
-		numberPicks: []string{wsActionBack},
+		filterPicks: []string{"ws-fin", wsActionBack},
 	}
 	h.install(t)
 
@@ -816,8 +835,7 @@ func TestWorkspacesPanelNamesTheLicenceTier(t *testing.T) {
 	api := wsTestAPI()
 	api.workspaces[1].Type = "Workspace" // ws-sem has no capacity — a Pro workspace
 	h := &wsHarness{
-		filterPicks: []string{"ws-sem"},
-		numberPicks: []string{wsActionBack},
+		filterPicks: []string{"ws-sem", wsActionBack},
 	}
 	h.install(t)
 
@@ -842,8 +860,7 @@ func TestWorkspacesPanelShowsTheConcreteRole(t *testing.T) {
 	api := wsTestAPI()
 	api.roleOf["ws-sem"] = "Contributor"
 	h := &wsHarness{
-		filterPicks: []string{"ws-sem"},
-		numberPicks: []string{wsActionBack},
+		filterPicks: []string{"ws-sem", wsActionBack},
 	}
 	h.install(t)
 
