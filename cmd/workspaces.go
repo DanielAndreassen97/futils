@@ -464,11 +464,14 @@ func (s *workspaceSession) manage(ws fabric.Workspace, role string) (mutated boo
 // items are what you came to look at. Pinning the actions means typing filters
 // the items while Rename stays one arrow-up away — see ui.FilterOption.Pinned.
 func workspaceScreenOptions(items []fabric.Item, isAdmin bool) []ui.FilterOption {
+	// Numbered like the menus they behave like: FilterMenu answers 1-9 for pinned
+	// rows, and a workspace with no items shows nothing but these — a plain menu
+	// that would look broken without numbers.
 	actions := []ui.FilterOption{
-		{Label: "Rename workspace", Value: wsActionRename, Pinned: true},
-		{Label: "Edit description", Value: wsActionDesc, Pinned: true},
-		{Label: "Delete workspace", Value: wsActionDelete, Pinned: true},
-		{Label: "Back", Value: wsActionBack, Pinned: true},
+		{Label: "1) Rename workspace", Value: wsActionRename, Pinned: true},
+		{Label: "2) Edit description", Value: wsActionDesc, Pinned: true},
+		{Label: "3) Delete workspace", Value: wsActionDelete, Pinned: true},
+		{Label: "4) Back", Value: wsActionBack, Pinned: true},
 	}
 	if !isAdmin {
 		for i := range actions[:3] {

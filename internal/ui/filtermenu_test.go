@@ -245,6 +245,26 @@ func pinnedFixture() []FilterOption {
 	}
 }
 
+// intoList walks the cursor down until it leaves the pinned rows, which is where
+// typing starts filtering. Counting arrow presses by hand is fragile — headers
+// are skipped, so the number of downs needed depends on the fixture.
+func intoList(m filterMenuModel) filterMenuModel {
+	for i := 0; i < len(m.options)+1 && m.onPinnedRow(); i++ {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = next.(filterMenuModel)
+	}
+	return m
+}
+
+// ontoPinned walks the cursor up until it reaches a pinned row.
+func ontoPinned(m filterMenuModel) filterMenuModel {
+	for i := 0; i < len(m.options)+1 && !m.onPinnedRow(); i++ {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+		m = next.(filterMenuModel)
+	}
+	return m
+}
+
 func visibleLabels(m filterMenuModel) []string {
 	var out []string
 	for _, idx := range m.filtered {
@@ -257,7 +277,7 @@ func TestFilterMenu_PinnedRowsSurviveFiltering(t *testing.T) {
 	// The workspace actions sit above the item list on the same screen. Typing
 	// narrows the items; losing Rename because it does not match "sales" would
 	// mean clearing the filter just to reach it.
-	m := typeRunes(newGroupedTestModel(pinnedFixture()), "sales")
+	m := typeRunes(intoList(newGroupedTestModel(pinnedFixture())), "sales")
 
 	want := []string{"Rename workspace", "Delete workspace", "NOTEBOOK", "nb_sales"}
 	got := visibleLabels(m)
@@ -275,7 +295,7 @@ func TestFilterMenu_PinnedRowsAreNotMatchedByTheFilter(t *testing.T) {
 	// "workspace" appears in both pinned labels. They show because they are
 	// pinned, not because they matched — so the items must still be filtered
 	// out rather than the whole list surviving.
-	m := typeRunes(newGroupedTestModel(pinnedFixture()), "workspace")
+	m := typeRunes(intoList(newGroupedTestModel(pinnedFixture())), "workspace")
 
 	for _, label := range visibleLabels(m) {
 		if label == "nb_sales" || label == "lh_bronze" {
@@ -294,22 +314,20 @@ func TestFilterMenu_FilterInputHiddenWhileOnAPinnedRow(t *testing.T) {
 		t.Errorf("the hint should point down to the list:\n%s", m.View())
 	}
 
-	// Arrow down past both pinned rows and the header into the items.
-	for i := 0; i < 2; i++ {
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = next.(filterMenuModel)
-	}
-	if !m.filterVisible() {
+	if !intoList(m).filterVisible() {
 		t.Error("the filter must appear once the cursor reaches the list")
 	}
 }
 
 func TestFilterMenu_FilterInputShowsWhenTextIsTyped(t *testing.T) {
-	// Typing while still on a pinned row has to reveal the box, or the user
-	// cannot see what they just typed.
-	m := typeRunes(newGroupedTestModel(pinnedFixture()), "sal")
+	// Once text has been typed the box has to stay on screen even if the cursor
+	// walks back up to a pinned row, or the user cannot see what is filtering.
+	m := typeRunes(intoList(newGroupedTestModel(pinnedFixture())), "sal")
 	if !m.filterVisible() {
-		t.Error("the filter must be visible whenever it holds text")
+		t.Fatal("the filter must be visible while the cursor is in the list")
+	}
+	if !ontoPinned(m).filterVisible() {
+		t.Error("the filter must stay visible while it holds text")
 	}
 }
 
@@ -322,5 +340,129 @@ func TestFilterMenu_PinnedRowIsSelectable(t *testing.T) {
 	}
 	if res.options[res.selected].Value != "__rename" {
 		t.Errorf("selected %q, want __rename", res.options[res.selected].Value)
+	}
+}
+
+// noItemsFixture is a workspace with nothing in it: pinned actions and no list.
+func noItemsFixture() []FilterOption {
+	return []FilterOption{
+		{Label: "1) Rename workspace", Value: "__rename", Pinned: true},
+		{Label: "2) Edit description", Value: "__desc", Pinned: true},
+		{Label: "3) Delete workspace", Value: "__delete", Pinned: true},
+		{Label: "4) Back", Value: "__back", Pinned: true},
+	}
+}
+
+func TestFilterMenu_DigitJumpsToAPinnedRow(t *testing.T) {
+	// The pinned rows look like a numbered menu, so they have to answer to
+	// digits like one. Losing that was the whole complaint about an empty
+	// workspace: the screen became a menu you could not use as a menu.
+	m := newGroupedTestModel(noItemsFixture())
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	res := next.(filterMenuModel)
+
+	if !res.done {
+		t.Fatal("a digit must select the matching pinned row")
+	}
+	if res.options[res.selected].Value != "__delete" {
+		t.Errorf("selected %q, want __delete", res.options[res.selected].Value)
+	}
+}
+
+func TestFilterMenu_DigitBeyondThePinnedRowsIsIgnored(t *testing.T) {
+	m := newGroupedTestModel(noItemsFixture())
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("9")})
+	res := next.(filterMenuModel)
+	if res.done {
+		t.Error("a digit with no matching row must do nothing")
+	}
+}
+
+func TestFilterMenu_TypingOnAPinnedRowDoesNotFilter(t *testing.T) {
+	// Filtering belongs to the list. While the cursor is up among the actions,
+	// letters must not quietly start narrowing something off-screen.
+	m := typeRunes(newGroupedTestModel(pinnedFixture()), "sales")
+
+	if got := m.input.Value(); got != "" {
+		t.Errorf("filter holds %q — typing on a pinned row must not filter", got)
+	}
+	if len(m.filtered) != len(pinnedFixture())-2 {
+		// Two headers are only emitted when their group has a visible row; with
+		// no filter every row shows, so the count is everything but nothing.
+		t.Logf("visible = %v", visibleLabels(m))
+	}
+	for _, want := range []string{"nb_sales", "nb_orders", "lh_bronze"} {
+		found := false
+		for _, l := range visibleLabels(m) {
+			if l == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q disappeared — nothing should have been filtered", want)
+		}
+	}
+}
+
+func TestFilterMenu_TypingInTheListFilters(t *testing.T) {
+	m := typeRunes(intoList(newGroupedTestModel(pinnedFixture())), "sales")
+
+	if m.input.Value() != "sales" {
+		t.Fatalf("filter holds %q, want sales", m.input.Value())
+	}
+	for _, l := range visibleLabels(m) {
+		if l == "lh_bronze" {
+			t.Error("lh_bronze survived a filter it does not match")
+		}
+	}
+}
+
+func TestFilterMenu_BackspaceClearsTheFilterFromAnywhere(t *testing.T) {
+	// Otherwise a user who filters, arrows up to an action, and changes their
+	// mind is stuck with a filter they cannot clear.
+	m := typeRunes(intoList(newGroupedTestModel(pinnedFixture())), "sales")
+
+	m = ontoPinned(m)
+	if !m.onPinnedRow() {
+		t.Fatalf("expected to be on a pinned row, got %q", m.options[m.filtered[m.cursor]].Label)
+	}
+	for i := 0; i < len("sales"); i++ {
+		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m = next.(filterMenuModel)
+	}
+	if got := m.input.Value(); got != "" {
+		t.Errorf("filter still holds %q after backspacing it away", got)
+	}
+}
+
+func TestFilterMenu_HintOmitsTheListWhenThereIsNothingToBrowse(t *testing.T) {
+	// An empty workspace has no list, so promising one is a lie.
+	view := newGroupedTestModel(noItemsFixture()).View()
+	if strings.Contains(view, "browse") {
+		t.Errorf("hint offers to browse a list that does not exist:\n%s", view)
+	}
+	if !strings.Contains(view, "1-9") {
+		t.Errorf("hint should mention the digit jump:\n%s", view)
+	}
+}
+
+func TestFilterMenu_HintMentionsTheListWhenThereIsOne(t *testing.T) {
+	view := newGroupedTestModel(pinnedFixture()).View()
+	if !strings.Contains(view, "browse") {
+		t.Errorf("hint should point down to the list:\n%s", view)
+	}
+}
+
+func TestFilterMenu_SpaceOnAPinnedRowDoesNotFilter(t *testing.T) {
+	// Space arrives as its own key type in some bubbletea versions, so it needs
+	// swallowing explicitly. A stray space starting a filter from the action
+	// rows is the same bug as a letter doing it.
+	m := newGroupedTestModel(pinnedFixture())
+	for _, k := range []tea.KeyMsg{{Type: tea.KeySpace}, {Type: tea.KeyRunes, Runes: []rune(" ")}} {
+		next, _ := m.Update(k)
+		m = next.(filterMenuModel)
+	}
+	if got := m.input.Value(); got != "" {
+		t.Errorf("filter holds %q after spaces on a pinned row", got)
 	}
 }

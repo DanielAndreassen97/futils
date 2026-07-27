@@ -652,3 +652,20 @@ func TestMoveReusesTheCachedWorkspaceList(t *testing.T) {
 		t.Errorf("ListWorkspaces called %d times, want 1 — move must reuse the loaded list", api.listWorkspacesCalls)
 	}
 }
+
+func TestWorkspaceScreenNumbersItsPinnedActions(t *testing.T) {
+	// A workspace with no items shows nothing but these rows. Unnumbered, it
+	// looks like a menu whose digit keys are broken — which is exactly how the
+	// bug presented.
+	opts := workspaceScreenOptions(nil, true)
+
+	want := []string{"1) Rename workspace", "2) Edit description", "3) Delete workspace", "4) Back"}
+	if len(opts) != len(want) {
+		t.Fatalf("got %d rows for an empty workspace, want just the four actions", len(opts))
+	}
+	for i := range want {
+		if opts[i].Label != want[i] {
+			t.Errorf("row %d = %q, want %q", i, opts[i].Label, want[i])
+		}
+	}
+}

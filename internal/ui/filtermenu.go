@@ -146,10 +146,49 @@ func (m filterMenuModel) filterVisible() bool {
 	if strings.TrimSpace(m.input.Value()) != "" {
 		return true
 	}
+	return !m.onPinnedRow()
+}
+
+// onPinnedRow reports whether the cursor sits on a pinned row, i.e. outside the
+// filterable part of the list.
+func (m filterMenuModel) onPinnedRow() bool {
 	if len(m.filtered) == 0 {
-		return true
+		return false
 	}
-	return !m.options[m.filtered[m.cursor]].Pinned
+	return m.options[m.filtered[m.cursor]].Pinned
+}
+
+// pinnedIndices returns the option indices of the pinned rows, in order, so a
+// digit can select the Nth one.
+func (m filterMenuModel) pinnedIndices() []int {
+	var out []int
+	for i, opt := range m.options {
+		if opt.Pinned {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// hasFilterableRows reports whether anything below the pinned rows exists. A
+// workspace with no items has none, and the hint must not promise a list that
+// is not there.
+func (m filterMenuModel) hasFilterableRows() bool {
+	for _, opt := range m.options {
+		if !opt.Pinned && !opt.IsHeader {
+			return true
+		}
+	}
+	return false
+}
+
+// digitIndex maps a 1-9 keypress to a zero-based row index.
+func digitIndex(msg tea.KeyMsg) (int, bool) {
+	s := msg.String()
+	if len(s) != 1 || s[0] < '1' || s[0] > '9' {
+		return 0, false
+	}
+	return int(s[0] - '1'), true
 }
 
 // step moves the cursor by delta with wrap-around, skipping headers. The bound
@@ -174,6 +213,27 @@ func (m filterMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.termH = msg.Height
 		return m, nil
 	case tea.KeyMsg:
+		// While the cursor is up among the pinned rows the filter is not in play:
+		// those rows look like a numbered menu, so they answer to digits like one,
+		// and letters are ignored rather than quietly narrowing a list the user is
+		// not looking at. Erasing stays allowed from anywhere, or a filter typed
+		// in the list and then arrowed away from could never be cleared.
+		if m.onPinnedRow() {
+			if idx, ok := digitIndex(msg); ok {
+				if pinned := m.pinnedIndices(); idx < len(pinned) {
+					m.selected = pinned[idx]
+					m.done = true
+					return m, tea.Quit
+				}
+				return m, nil
+			}
+			// Space arrives as its own key type in some bubbletea versions, so
+			// swallow it explicitly — a stray space starting a filter from up here
+			// is the same bug as a letter doing it.
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "up":
 			return m.step(-1), nil
@@ -226,8 +286,11 @@ func (m filterMenuModel) View() string {
 		// No filter box while the cursor sits on a pinned row: it could not
 		// filter anything the user is looking at, and showing it would
 		// misrepresent what typing does.
-		fmt.Fprintf(&b, "  %s\n\n",
-			filterMenuHintStyle.Render("↑↓ navigate • ↓ to browse the list • enter select • esc back"))
+		hint := "↑↓ navigate • 1-9 jump • enter select • esc back"
+		if m.hasFilterableRows() {
+			hint = "↑↓ navigate • 1-9 jump • ↓ to browse the list • enter select • esc back"
+		}
+		fmt.Fprintf(&b, "  %s\n\n", filterMenuHintStyle.Render(hint))
 	}
 
 	if len(m.filtered) == 0 {
