@@ -669,3 +669,90 @@ func TestWorkspaceScreenNumbersItsPinnedActions(t *testing.T) {
 		}
 	}
 }
+
+func TestMoveDestinationPickerIsGroupedByRole(t *testing.T) {
+	// Choosing a destination is choosing somewhere to write. A flat list of
+	// forty names hides the one fact that decides whether the move works.
+	idx := workspaceIndex{
+		Workspaces: []fabric.Workspace{
+			{ID: "a1", DisplayName: "Admin target", Type: "Workspace", CapacityID: "cap-1"},
+			{ID: "v1", DisplayName: "Viewer target", Type: "Workspace"},
+			{ID: "src", DisplayName: "Source", Type: "Workspace"},
+		},
+		RoleOf:     map[string]string{"a1": "Admin", "v1": "Viewer", "src": "Admin"},
+		Capacities: []fabric.Capacity{{ID: "cap-1", DisplayName: "Prod", SKU: "F64", Region: "Norway East"}},
+	}
+
+	var seen []ui.FilterOption
+	orig := moveFilterPicker
+	t.Cleanup(func() { moveFilterPicker = orig })
+	moveFilterPicker = func(_ string, opts []ui.FilterOption, _ ui.FilterRowRenderer) (string, error) {
+		seen = opts
+		return "a1", nil
+	}
+
+	got, err := pickWorkspace("Select destination workspace", idx, "src")
+	if err != nil {
+		t.Fatalf("pickWorkspace: %v", err)
+	}
+	if got.ID != "a1" {
+		t.Errorf("picked %q, want a1", got.ID)
+	}
+
+	var headers, rows []string
+	for _, o := range seen {
+		if o.IsHeader {
+			headers = append(headers, o.Label)
+			continue
+		}
+		rows = append(rows, o.Label)
+	}
+	if len(headers) != 2 || headers[0] != "ADMIN · 1" || headers[1] != "VIEWER · 1" {
+		t.Errorf("headers = %v, want an ADMIN and a VIEWER section", headers)
+	}
+	// The source must not be offered as its own destination.
+	for _, r := range rows {
+		if r == "Source" {
+			t.Error("the source workspace was offered as a destination")
+		}
+	}
+	// Rows carry the licence tier so the picker can colour it, same as the
+	// workspace screen.
+	for _, o := range seen {
+		if o.IsHeader {
+			continue
+		}
+		if _, ok := o.Meta.(workspaceTier); !ok {
+			t.Errorf("row %q meta is %T, want a workspaceTier", o.Label, o.Meta)
+		}
+	}
+}
+
+func TestMoveFromTheBrowserStillReusesTheCachedIndex(t *testing.T) {
+	// The grouped view needs roles and capacities as well as the list. All three
+	// were already loaded by the screen the move was launched from.
+	path := itemConfigFile(t)
+	api := wsItemAPI()
+	api.items["ws-fin"] = []fabric.Item{{ID: "r1", DisplayName: "Sales overview", Type: "Report"}}
+	h := &wsHarness{
+		filterPicks: []string{"ws-fin", "r1"},
+		numberPicks: []string{itemActionMove},
+	}
+	h.install(t)
+
+	origMoveFilter := moveFilterPicker
+	t.Cleanup(func() { moveFilterPicker = origMoveFilter })
+	moveFilterPicker = func(string, []ui.FilterOption, ui.FilterRowRenderer) (string, error) {
+		return "", ui.ErrGoBack
+	}
+
+	captureStdout(t, func() {
+		if err := WorkspacesWithAPI(path, api); err != nil {
+			t.Fatalf("WorkspacesWithAPI: %v", err)
+		}
+	})
+
+	if api.listWorkspacesCalls != 1 {
+		t.Errorf("ListWorkspaces called %d times, want 1", api.listWorkspacesCalls)
+	}
+}

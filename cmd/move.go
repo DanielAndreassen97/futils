@@ -75,18 +75,15 @@ func MoveWithAPI(configPath string, client APIClient) error {
 	fmt.Println(infoStyle.Render("Authenticated."))
 	fmt.Println()
 
-	spinner := ui.NewSpinner("Loading workspaces...")
-	spinner.Start()
-	workspaces, err := client.ListWorkspaces(token)
-	spinner.Stop()
+	idx, err := loadWorkspaceIndex(client, token)
 	if err != nil {
-		return fmt.Errorf("list workspaces: %w", err)
+		return err
 	}
-	if len(workspaces) < 2 {
+	if len(idx.Workspaces) < 2 {
 		return fmt.Errorf("only one workspace available — nothing to move to")
 	}
 
-	srcWS, err := pickWorkspace("Select source workspace", workspaces, "")
+	srcWS, err := pickWorkspace("Select source workspace", idx, "")
 	if err != nil {
 		return err
 	}
@@ -96,7 +93,7 @@ func MoveWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
-	return moveItemFrom(client, token, srcWS, srcItem, workspaces, customerName)
+	return moveItemFrom(client, token, srcWS, srcItem, idx, customerName)
 }
 
 // moveItemFrom is everything the move flow does once the source workspace and
@@ -106,8 +103,8 @@ func MoveWithAPI(configPath string, client APIClient) error {
 // Split out so the workspace item browser can move an item it is already
 // looking at. Both entry points share the collision handling and the report
 // rebind, which are the parts most expensive to get wrong twice.
-func moveItemFrom(client APIClient, token string, srcWS fabric.Workspace, srcItem fabric.Item, workspaces []fabric.Workspace, customerName string) error {
-	dstWS, err := pickWorkspace("Select destination workspace", workspaces, srcWS.ID)
+func moveItemFrom(client APIClient, token string, srcWS fabric.Workspace, srcItem fabric.Item, idx workspaceIndex, customerName string) error {
+	dstWS, err := pickWorkspace("Select destination workspace", idx, srcWS.ID)
 	if err != nil {
 		return err
 	}
@@ -132,7 +129,7 @@ func moveItemFrom(client APIClient, token string, srcWS fabric.Workspace, srcIte
 	rebindDatasetID := ""
 	rebindLabel := ""
 	if srcItem.Type == "Report" {
-		rebindDatasetID, rebindLabel, err = pickRebindTarget(client, token, dstWS, workspaces)
+		rebindDatasetID, rebindLabel, err = pickRebindTarget(client, token, dstWS, idx.Workspaces)
 		if err != nil {
 			return err
 		}
@@ -172,23 +169,26 @@ func formatForType(itemType string) string {
 	return ""
 }
 
-// pickWorkspace renders the searchable workspace picker, excluding
-// excludeID if non-empty (used for the destination picker so the
-// source can't be selected again).
-func pickWorkspace(prompt string, workspaces []fabric.Workspace, excludeID string) (fabric.Workspace, error) {
-	options := make([]ui.FilterOption, 0, len(workspaces))
-	byValue := make(map[string]fabric.Workspace, len(workspaces))
-	for _, w := range workspaces {
+// pickWorkspace shows the same grouped view as the Manage workspaces screen:
+// role sections, licence tier per row, filterable. A flat list of forty names
+// hides the one thing that decides whether a move will work — whether you have
+// more than read access where it is going.
+func pickWorkspace(prompt string, idx workspaceIndex, excludeID string) (fabric.Workspace, error) {
+	byValue := make(map[string]fabric.Workspace, len(idx.Workspaces))
+	eligible := make([]fabric.Workspace, 0, len(idx.Workspaces))
+	for _, w := range idx.Workspaces {
 		if w.ID == excludeID {
 			continue
 		}
-		options = append(options, ui.FilterOption{Label: w.DisplayName, Value: w.ID})
+		eligible = append(eligible, w)
 		byValue[w.ID] = w
 	}
-	if len(options) == 0 {
+	if len(eligible) == 0 {
 		return fabric.Workspace{}, fmt.Errorf("no workspaces available for %s", prompt)
 	}
-	chosen, err := moveFilterPicker(prompt, options, ui.DefaultFilterRowRenderer)
+
+	options := groupWorkspacesByRole(eligible, idx.RoleOf, idx.Capacities)
+	chosen, err := moveFilterPicker(prompt, options, renderWorkspaceRow)
 	if err != nil {
 		return fabric.Workspace{}, err
 	}

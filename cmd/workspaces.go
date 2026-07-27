@@ -164,11 +164,12 @@ type workspaceSession struct {
 	capsLoaded bool
 	capsErr    error
 
-	// workspaces is the tenant listing from the most recent load(), kept so a
-	// flow that needs the whole list — the move destination picker — does not
-	// refetch what the screen it was launched from already has. Refreshed by
-	// load(), which only runs when something invalidated the list.
+	// workspaces and roleOf are the tenant listing from the most recent load(),
+	// kept so a flow that needs the whole view — the move destination picker —
+	// does not refetch what the screen it was launched from already has.
+	// Refreshed by load(), which only runs when something invalidated the list.
 	workspaces []fabric.Workspace
+	roleOf     map[string]string
 }
 
 // loop shows the workspace picker until the user backs out. The list is
@@ -228,23 +229,42 @@ func (s *workspaceSession) loop() error {
 	}
 }
 
-// load fetches the workspace list and the caller's role in each one, under a
-// single spinner. Fabric's workspace list does not carry your role, and the
-// alternative — a roleAssignments lookup per workspace — is one request per row.
-// A roles-filtered list per role is four requests for the whole tenant.
-func (s *workspaceSession) load() ([]fabric.Workspace, map[string]string, error) {
+// workspaceIndex is the tenant view every workspace picker renders: the list,
+// what you are in each one, and the capacities that name their licence tiers.
+//
+// Shared so the move destination picker looks like the workspace screen. That is
+// not only for consistency — you are choosing somewhere to write into, and
+// "you are only a Viewer here" is exactly what stops a move that was going to
+// fail.
+type workspaceIndex struct {
+	Workspaces []fabric.Workspace
+	RoleOf     map[string]string
+	Capacities []fabric.Capacity
+}
+
+// loadWorkspaceIndex fetches the whole tenant view under one spinner.
+//
+// Fabric's workspace list does not carry your role, and the alternative — a
+// roleAssignments lookup per workspace — is one request per row. A
+// roles-filtered list per role is four requests for the whole tenant however
+// large it is.
+//
+// A roles failure is not fatal: the grouping collapses and the pre-flight
+// permission check stops helping, so Fabric answers 403 instead. That beats
+// refusing to show a read-only listing.
+func loadWorkspaceIndex(client APIClient, token string) (workspaceIndex, error) {
 	spinner := ui.NewSpinner("Loading workspaces...")
 	spinner.Start()
-	workspaces, err := s.client.ListWorkspaces(s.token)
+	workspaces, err := client.ListWorkspaces(token)
 	if err != nil {
 		spinner.Stop()
-		return nil, nil, fmt.Errorf("list workspaces: %w", err)
+		return workspaceIndex{}, fmt.Errorf("list workspaces: %w", err)
 	}
 
 	roleOf := make(map[string]string, len(workspaces))
 	var roleErr error
 	for _, role := range wsRoles {
-		inRole, err := s.client.ListWorkspacesByRole(s.token, role)
+		inRole, err := client.ListWorkspacesByRole(token, role)
 		if err != nil {
 			roleErr = err
 			break
@@ -253,25 +273,39 @@ func (s *workspaceSession) load() ([]fabric.Workspace, map[string]string, error)
 			roleOf[ws.ID] = role
 		}
 	}
-
-	// Capacities are session state, fetched here so the picker and the detail
-	// panel can name a workspace's capacity from the first screen. A failure is
-	// remembered and surfaces only where it matters — the create flow.
-	s.fetchCapacities()
+	caps, _ := client.ListCapacities(token)
 	spinner.Stop()
 
 	if roleErr != nil {
-		// Without roles the flow still works: the grouping collapses and the
-		// pre-flight check stops helping, so Fabric answers 403 instead. That
-		// beats failing a read-only listing outright.
 		fmt.Println(wsWarnStyle.Render("Could not read your workspace roles: " + roleErr.Error()))
-		fmt.Println(wsLabelStyle.Render("Rename and delete will be attempted and may be refused by Fabric."))
+		fmt.Println(wsLabelStyle.Render("Actions that need a role will be attempted and may be refused by Fabric."))
 		for _, ws := range workspaces {
 			roleOf[ws.ID] = wsRoleAdmin
 		}
 	}
-	s.workspaces = workspaces
-	return workspaces, roleOf, nil
+	return workspaceIndex{Workspaces: workspaces, RoleOf: roleOf, Capacities: caps}, nil
+}
+
+// load fetches the tenant view for this session and remembers the parts later
+// screens reuse: the capacities, and the workspace list the move destination
+// picker needs.
+func (s *workspaceSession) load() ([]fabric.Workspace, map[string]string, error) {
+	idx, err := loadWorkspaceIndex(s.client, s.token)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.workspaces = idx.Workspaces
+	s.roleOf = idx.RoleOf
+	if !s.capsLoaded {
+		s.capacities, s.capsLoaded = idx.Capacities, true
+	}
+	return idx.Workspaces, idx.RoleOf, nil
+}
+
+// index rebuilds the shared tenant view from what this session already holds, so
+// handing it to the move picker costs nothing.
+func (s *workspaceSession) index() workspaceIndex {
+	return workspaceIndex{Workspaces: s.workspaces, RoleOf: s.roleOf, Capacities: s.capacities}
 }
 
 // pick renders the workspace picker: a create row, then the workspaces grouped

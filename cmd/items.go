@@ -323,20 +323,20 @@ func (s *workspaceSession) moveItem(ws fabric.Workspace, item fabric.Item) (bool
 			"Move supports Report, SemanticModel and Notebook — not " + item.Type + "."))
 		return false, ui.ErrGoBack
 	}
-	// The destination picker needs the whole tenant, which the screen this was
-	// launched from already loaded. Refetching it here would be a second
-	// identical request in the same breath.
-	workspaces := s.workspaces
-	if len(workspaces) == 0 {
+	// The destination picker renders the same grouped tenant view as the screen
+	// this was launched from, which already loaded it. Refetching would be five
+	// identical requests in the same breath.
+	idx := s.index()
+	if len(idx.Workspaces) == 0 {
 		var err error
-		if workspaces, err = s.client.ListWorkspaces(s.token); err != nil {
-			return false, fmt.Errorf("list workspaces: %w", err)
+		if idx, err = loadWorkspaceIndex(s.client, s.token); err != nil {
+			return false, err
 		}
 	}
 	// A move copies into the destination and may delete the source, so treat it
 	// as changed whatever the outcome: the flow has its own cancel points and
 	// tracking which one fired would be guesswork from here.
-	return true, moveItemFrom(s.client, s.token, ws, item, workspaces, s.customer)
+	return true, moveItemFrom(s.client, s.token, ws, item, idx, s.customer)
 }
 
 // renameItem renames the item in Fabric, then OFFERS to update the config
