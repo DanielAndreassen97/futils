@@ -81,26 +81,33 @@ func RunPipelineWithAPI(configPath string, client APIClient) error {
 	}
 	picked := pipelines[idx]
 
+	return runPipelineOn(client, token, picked.Workspace, picked.Item,
+		runContext{Customer: customerName, Environment: env})
+}
+
+// runPipelineOn is everything the pipeline flow does once the workspace and
+// pipeline are known: collect parameter overrides, summarise and submit.
+//
+// Split out so the workspace item browser can run a pipeline it is already
+// looking at without walking the customer → environment → pipeline funnel
+// again.
+func runPipelineOn(client APIClient, token string, ws WorkspaceRef, pipeline fabric.Item, ctx runContext) error {
 	// Read the pipeline's declared parameters and their defaults, then let the
 	// user override them in a pre-filled form. Omitted/unchanged params keep the
 	// pipeline's own defaults (Fabric applies them server-side), so the form
 	// only sends what actually changed. Best-effort: a definition that can't be
 	// fetched or parsed just runs the pipeline with no overrides.
-	params := pipelineParamOverrides(client, token, picked.Workspace.ID, picked.Item)
+	params := pipelineParamOverrides(client, token, ws.ID, pipeline)
 
-	fmt.Println()
-	fmt.Println(infoStyle.Render("Run summary"))
-	fmt.Printf("  Customer:    %s\n", customerName)
-	fmt.Printf("  Environment: %s\n", env)
-	fmt.Printf("  Workspace:   %s\n", picked.Workspace.Name)
-	fmt.Printf("  Pipeline:    %s\n", picked.Item.DisplayName)
+	printRunSummaryHead("Run summary", ctx, ws.Name)
+	fmt.Printf("  Pipeline:    %s\n", pipeline.DisplayName)
 	if len(params) > 0 {
 		fmt.Printf("  Parameters:  %s\n", describePipelineParams(params))
 	}
 	fmt.Println()
 
 	return runJobAndReport(client, token, "Pipeline", func() (string, error) {
-		return client.RunPipeline(token, picked.Workspace.ID, picked.Item.ID, params)
+		return client.RunPipeline(token, ws.ID, pipeline.ID, params)
 	})
 }
 

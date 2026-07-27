@@ -96,6 +96,17 @@ func MoveWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
+	return moveItemFrom(client, token, srcWS, srcItem, workspaces, customerName)
+}
+
+// moveItemFrom is everything the move flow does once the source workspace and
+// item are known: pick a destination, read the definition, resolve a name
+// collision, optionally rebind a report, summarise and execute.
+//
+// Split out so the workspace item browser can move an item it is already
+// looking at. Both entry points share the collision handling and the report
+// rebind, which are the parts most expensive to get wrong twice.
+func moveItemFrom(client APIClient, token string, srcWS fabric.Workspace, srcItem fabric.Item, workspaces []fabric.Workspace, customerName string) error {
 	dstWS, err := pickWorkspace("Select destination workspace", workspaces, srcWS.ID)
 	if err != nil {
 		return err

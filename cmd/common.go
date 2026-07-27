@@ -78,6 +78,30 @@ type WorkspaceRef struct {
 	ID   string
 }
 
+// runContext labels the summary box a run, refresh or move prints. Environment
+// is empty when the flow was entered from the workspace item browser, which is
+// tenant-wide and has no environment to name — printing a blank line there
+// would suggest the environment was somehow unknown rather than irrelevant.
+type runContext struct {
+	Customer    string
+	Environment string
+}
+
+// printRunSummaryHead writes the customer / environment / workspace lines every
+// summary box opens with, so the two entry points into a flow cannot drift on
+// what they claim about where the job is going.
+func printRunSummaryHead(title string, ctx runContext, workspace string) {
+	fmt.Println()
+	fmt.Println(infoStyle.Render(title))
+	if ctx.Customer != "" {
+		fmt.Printf("  Customer:    %s\n", ctx.Customer)
+	}
+	if ctx.Environment != "" {
+		fmt.Printf("  Environment: %s\n", ctx.Environment)
+	}
+	fmt.Printf("  Workspace:   %s\n", workspace)
+}
+
 // authAndResolveWorkspaces authenticates the customer once and resolves
 // every workspace name in `workspaceNames` to its Fabric UUID. Callers
 // fan out from there — typically by calling ListNotebooks or

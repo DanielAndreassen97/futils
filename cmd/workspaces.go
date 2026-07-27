@@ -97,8 +97,15 @@ func renderRoleBar(role, label string) string {
 	if !ok {
 		c = wsRoleBarFallback
 	}
+	return renderSectionBar(c.bg, c.fg, label)
+}
+
+// renderSectionBar is the full-width inverted heading used to break a long
+// picker into sections — roles in the workspace list, item types in the item
+// browser. One definition so the two lists cannot drift apart on width or inset.
+func renderSectionBar(bg, fg lipgloss.Color, label string) string {
 	return lipgloss.NewStyle().
-		Background(c.bg).Foreground(c.fg).Bold(true).
+		Background(bg).Foreground(fg).Bold(true).
 		Width(wsBarWidth()).
 		Render(" " + label)
 }

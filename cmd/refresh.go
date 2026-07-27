@@ -95,15 +95,26 @@ func RefreshWithAPI(configPath string, client APIClient) error {
 		return err
 	}
 
+	return refreshDatasetOn(client, token, picked.Workspace, picked.Dataset,
+		runContext{Customer: customerName, Environment: env})
+}
+
+// refreshDatasetOn is everything the refresh flow does once the workspace and
+// semantic model are known: list refreshable tables, take the selection,
+// summarise, trigger and wait.
+//
+// Split out so the workspace item browser can refresh a model it is already
+// looking at without walking the customer → environment → model funnel again.
+func refreshDatasetOn(client APIClient, token string, ws WorkspaceRef, dataset fabric.Dataset, ctx runContext) error {
 	tableSpinner := ui.NewSpinner("Retrieving tables...")
 	tableSpinner.Start()
-	tables, err := client.QueryRefreshableTables(token, picked.Workspace.ID, picked.Dataset.ID)
+	tables, err := client.QueryRefreshableTables(token, ws.ID, dataset.ID)
 	tableSpinner.Stop()
 	if err != nil {
 		return fmt.Errorf("query tables: %w", err)
 	}
 	if len(tables) == 0 {
-		return fmt.Errorf("no refreshable tables found in %s", picked.Dataset.Name)
+		return fmt.Errorf("no refreshable tables found in %s", dataset.Name)
 	}
 
 	selection, err := ui.TableCheckbox("Select tables to refresh", tables, categorizeRefreshTable)
@@ -115,12 +126,8 @@ func RefreshWithAPI(configPath string, client APIClient) error {
 		return nil
 	}
 
-	fmt.Println()
-	fmt.Println(infoStyle.Render("Refresh Summary"))
-	fmt.Printf("  Customer:    %s\n", customerName)
-	fmt.Printf("  Environment: %s\n", env)
-	fmt.Printf("  Workspace:   %s\n", picked.Workspace.Name)
-	fmt.Printf("  Model:       %s\n", picked.Dataset.Name)
+	printRunSummaryHead("Refresh Summary", ctx, ws.Name)
+	fmt.Printf("  Model:       %s\n", dataset.Name)
 	fmt.Printf("  Tables:      %s\n", selection.Summary)
 	fmt.Println()
 
@@ -144,12 +151,12 @@ func RefreshWithAPI(configPath string, client APIClient) error {
 	)
 	func() {
 		defer spinner.Stop()
-		requestID, err := client.TriggerRefresh(token, picked.Workspace.ID, picked.Dataset.ID, selection.Tables)
+		requestID, err := client.TriggerRefresh(token, ws.ID, dataset.ID, selection.Tables)
 		if err != nil {
 			refreshErr = err
 			return
 		}
-		status, err = client.WaitForRefresh(token, picked.Workspace.ID, picked.Dataset.ID, requestID)
+		status, err = client.WaitForRefresh(token, ws.ID, dataset.ID, requestID)
 		if err != nil {
 			refreshErr = err
 			return

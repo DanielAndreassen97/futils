@@ -263,13 +263,22 @@ func RunWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return err
 	}
-	notebook := picked.Notebook
-	workspaceName := picked.Workspace.Name
-	workspaceID := picked.Workspace.ID
+	return runNotebookOn(client, token, picked.Workspace, picked.Notebook, customer,
+		runContext{Customer: customerName, Environment: env})
+}
 
+// runNotebookOn is everything the notebook flow does once the workspace and
+// notebook are known: read the definition, collect parameter overrides, repair
+// a broken lakehouse binding, summarise and submit.
+//
+// Split out so the workspace item browser can run a notebook it is already
+// looking at without walking the customer → environment → notebook funnel
+// again. Both entry points share this, so a change to the parameter form or the
+// lakehouse repair lands in both.
+func runNotebookOn(client APIClient, token string, ws WorkspaceRef, notebook fabric.Item, customer config.Customer, ctx runContext) error {
 	defSpinner := ui.NewSpinner("Fetching notebook definition...")
 	defSpinner.Start()
-	ipynb, err := client.GetNotebookIpynb(token, workspaceID, notebook.ID)
+	ipynb, err := client.GetNotebookIpynb(token, ws.ID, notebook.ID)
 	defSpinner.Stop()
 	if err != nil {
 		return fmt.Errorf("get notebook definition: %w", err)
@@ -304,16 +313,12 @@ func RunWithAPI(configPath string, client APIClient) error {
 	// We resolve the lakehouse's real home workspace and pass it as a per-run
 	// override. Notebooks with a complete binding — or none at all — are left
 	// untouched; futils only intervenes for this one pattern.
-	lakehouse, err := resolveLakehouseOverride(client, token, ipynb, workspaceID)
+	lakehouse, err := resolveLakehouseOverride(client, token, ipynb, ws.ID)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println()
-	fmt.Println(infoStyle.Render("Run summary"))
-	fmt.Printf("  Customer:    %s\n", customerName)
-	fmt.Printf("  Environment: %s\n", env)
-	fmt.Printf("  Workspace:   %s\n", workspaceName)
+	printRunSummaryHead("Run summary", ctx, ws.Name)
 	fmt.Printf("  Notebook:    %s\n", notebook.DisplayName)
 	fmt.Printf("  Overrides:   %s\n", describeOverrides(overrides))
 	if lakehouse != nil {
@@ -322,7 +327,7 @@ func RunWithAPI(configPath string, client APIClient) error {
 	fmt.Println()
 
 	return runJobAndReport(client, token, "Notebook", func() (string, error) {
-		return client.RunNotebook(token, workspaceID, notebook.ID, overrides, lakehouse)
+		return client.RunNotebook(token, ws.ID, notebook.ID, overrides, lakehouse)
 	})
 }
 
