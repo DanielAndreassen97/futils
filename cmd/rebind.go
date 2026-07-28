@@ -24,8 +24,10 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 	}
 
 	var baselineWS []fabric.Workspace
+	var baselineEnv config.Environment
 	if customer.BaselineEnvironment != "" {
-		baselineEnv, ok := customer.EnvironmentByAlias(customer.BaselineEnvironment)
+		var ok bool
+		baselineEnv, ok = customer.EnvironmentByAlias(customer.BaselineEnvironment)
 		if !ok {
 			return nil, fmt.Errorf("baseline environment %q is not one of the customer's environments", customer.BaselineEnvironment)
 		}
@@ -50,7 +52,35 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
+	if customer.BaselineEnvironment != "" {
+		rb.SetWorkspaceSeeds(workspaceSeeds(baselineEnv, targetEnv, workspaces))
+	}
 	return rb, nil
+}
+
+// workspaceSeeds pairs baseline→target workspace GUIDs through the deploy
+// mappings: a folder mapped in both environments pairs its two workspaces.
+// Errors resolving a name are skipped — seeds are best-effort on top of the
+// engine's consensus map.
+func workspaceSeeds(baselineEnv, targetEnv config.Environment, workspaces []fabric.Workspace) map[string]string {
+	byFolder := map[string]string{}
+	for _, m := range baselineEnv.Deployments {
+		byFolder[m.Repo+"\x00"+m.Folder] = m.Workspace
+	}
+	seeds := map[string]string{}
+	for _, m := range targetEnv.Deployments {
+		baseName, ok := byFolder[m.Repo+"\x00"+m.Folder]
+		if !ok {
+			continue
+		}
+		baseWS, err1 := resolveWorkspaceByName(workspaces, baseName)
+		tgtWS, err2 := resolveWorkspaceByName(workspaces, m.Workspace)
+		if err1 != nil || err2 != nil || baseWS.ID == tgtWS.ID {
+			continue
+		}
+		seeds[baseWS.ID] = tgtWS.ID
+	}
+	return seeds
 }
 
 // overridesFromConfig converts the customer's reference overrides into the
@@ -123,6 +153,7 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
+	rb.SetWorkspaceSeeds(map[string]string{baseWS[0].ID: targetWS[0].ID})
 	rs.cache[key] = rb
 	return rb, nil
 }

@@ -142,6 +142,13 @@ type Rebinder struct {
 	targetEndpoint map[string][2]string // target lakehouse GUID -> {host, id} (cache, guarded by mu)
 	targetWSNames  map[string]string    // target workspace GUID -> display name (for summaries)
 
+	// wsMap, wsAmbiguous, and baselineWSNames are all set in NewRebinder and
+	// SetWorkspaceSeeds before any concurrent use (the compare phase) and are
+	// never mutated afterward, so no lock guards them.
+	wsMap           map[string]string // baseline workspace GUID -> target workspace GUID (consensus + seeds)
+	wsAmbiguous     map[string]bool   // baseline workspace GUID -> true when votes conflicted and no seed resolved it
+	baselineWSNames map[string]string // baseline workspace GUID -> display name (for summaries)
+
 	substitutions []Substitution
 }
 
@@ -174,7 +181,15 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	for _, w := range targetWS {
 		wsNames[w.ID] = w.DisplayName
 	}
-	return &Rebinder{client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames}, nil
+	wsMap, wsAmb := buildWorkspaceMap(b, t)
+	baseNames := make(map[string]string, len(baselineWS))
+	for _, w := range baselineWS {
+		baseNames[w.ID] = w.DisplayName
+	}
+	return &Rebinder{
+		client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames,
+		wsMap: wsMap, wsAmbiguous: wsAmb, baselineWSNames: baseNames,
+	}, nil
 }
 
 // RegisterTargetItem adds a just-created item to the target name index so later
