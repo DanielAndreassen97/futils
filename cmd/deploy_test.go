@@ -986,6 +986,44 @@ func TestPrintUnresolvedSilentWhenNone(t *testing.T) {
 	}
 }
 
+func TestPrintUnresolvedLeftoverSection(t *testing.T) {
+	groups := []deployGroup{{
+		Folder: "Backend",
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Workspace", Location: "notebook-content.py", ItemName: "NB_Config",
+				Reason: deploy.ReasonLeftover, Hint: `workspace "DW - DEV - Data"; in the target this is 7c3c0000-1111-4222-8333-444455556666`},
+		},
+	}}
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	if !strings.Contains(out, "leftover baseline reference") {
+		t.Errorf("leftover output missing its own section header:\n%s", out)
+	}
+	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, `DW - DEV - Data`) {
+		t.Errorf("leftover output missing item name / hint:\n%s", out)
+	}
+	if strings.Contains(out, "unresolved reference(s) — left as-is") {
+		t.Errorf("a pure leftover ref must not trigger the override-hint section:\n%s", out)
+	}
+}
+
+func TestPrintUnresolvedCountsExcludeLeftovers(t *testing.T) {
+	groups := []deployGroup{{
+		Folder: "Backend",
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
+			{GUID: "1c1c1c1c-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Workspace", Location: "p", ItemName: "NB_Config", Reason: deploy.ReasonLeftover, Hint: "workspace X"},
+		},
+	}}
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	if !strings.Contains(out, "1 unresolved reference(s)") {
+		t.Errorf("leftover ref must not inflate the unresolved heading count:\n%s", out)
+	}
+	if !strings.Contains(out, "1 leftover baseline reference(s)") {
+		t.Errorf("leftover heading count wrong:\n%s", out)
+	}
+}
+
 func TestPrintRebindSummaryDedupesByValue(t *testing.T) {
 	groups := []deployGroup{
 		{Changes: []deploy.RebindChange{

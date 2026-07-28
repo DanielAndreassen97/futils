@@ -313,7 +313,14 @@ func DeployWithAPI(configPath string, client APIClient) error {
 
 	var unresolved []deploy.UnresolvedRef
 	for _, g := range groups {
-		unresolved = append(unresolved, g.Unresolved...)
+		for _, u := range g.Unresolved {
+			// Leftovers sit where no pass rewrites, so an override can't fix
+			// them — offering the mapping flow here would be a false promise.
+			if u.Reason == deploy.ReasonLeftover {
+				continue
+			}
+			unresolved = append(unresolved, u)
+		}
 	}
 	if len(unresolved) > 0 {
 		if ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved))); cerr == nil && ok {
@@ -1657,46 +1664,69 @@ func printReportBindings(groups []deployGroup) {
 // environment's workspace list, which no amount of overrides fixes properly.
 // Silent when everything resolved.
 func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
-	var total int
+	var total, leftoverTotal int
 	reasons := map[string]bool{}
 	for _, g := range groups {
-		total += len(g.Unresolved)
 		for _, u := range g.Unresolved {
+			if u.Reason == deploy.ReasonLeftover {
+				leftoverTotal++
+				continue
+			}
+			total++
 			reasons[u.Reason] = true
 		}
 	}
-	if total == 0 {
-		return
-	}
-	fmt.Println()
-	fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
-	for _, g := range groups {
-		for _, u := range g.Unresolved {
-			fmt.Printf("  %s in %s — looks like a %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason), countSuffix(u.Count))
-		}
-	}
-	var hints []string
-	if reasons[deploy.ReasonNameUnknown] {
-		env := "the baseline environment"
-		if baselineAlias != "" {
-			env = fmt.Sprintf("baseline environment %q", baselineAlias)
-		}
-		hints = append(hints, fmt.Sprintf("GUID not found in any baseline workspace: the item probably lives in a workspace that isn't registered on %s — reference-only workspaces (e.g. a Data workspace you never deploy to) must be added too. Fix: Edit customer → Edit %s → Add workspace, then redeploy.", env, orAlias(baselineAlias, "<baseline env>")))
-	}
-	if reasons[deploy.ReasonNotInTarget] {
-		hints = append(hints, fmt.Sprintf("no same-named item in the target workspaces: the name resolved in the baseline, but env %q has no workspace containing an item with that name — check that the counterpart workspace is registered on the target environment (and that the item exists there).", targetAlias))
-	}
-	if reasons[deploy.ReasonAmbiguous] {
-		hints = append(hints, fmt.Sprintf("name matches items in several target workspaces: the same name+type exists in more than one of env %q's workspaces, so name-matching is unsafe — resolve it with a reference override, or give the mapping a dedicated baseline workspace to scope the lookup.", targetAlias))
-	}
-	if len(hints) > 0 {
+	if total > 0 {
 		fmt.Println()
-		fmt.Println(infoStyle.Render("Likely causes:"))
-		for _, h := range hints {
-			fmt.Println(wrapIndented("• "+h, 2))
+		fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
+		for _, g := range groups {
+			for _, u := range g.Unresolved {
+				if u.Reason == deploy.ReasonLeftover {
+					continue
+				}
+				fmt.Printf("  %s in %s — looks like a %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason), countSuffix(u.Count))
+			}
 		}
+		var hints []string
+		if reasons[deploy.ReasonNameUnknown] {
+			env := "the baseline environment"
+			if baselineAlias != "" {
+				env = fmt.Sprintf("baseline environment %q", baselineAlias)
+			}
+			hints = append(hints, fmt.Sprintf("GUID not found in any baseline workspace: the item probably lives in a workspace that isn't registered on %s — reference-only workspaces (e.g. a Data workspace you never deploy to) must be added too. Fix: Edit customer → Edit %s → Add workspace, then redeploy.", env, orAlias(baselineAlias, "<baseline env>")))
+		}
+		if reasons[deploy.ReasonNotInTarget] {
+			hints = append(hints, fmt.Sprintf("no same-named item in the target workspaces: the name resolved in the baseline, but env %q has no workspace containing an item with that name — check that the counterpart workspace is registered on the target environment (and that the item exists there).", targetAlias))
+		}
+		if reasons[deploy.ReasonAmbiguous] {
+			hints = append(hints, fmt.Sprintf("name matches items in several target workspaces: the same name+type exists in more than one of env %q's workspaces, so name-matching is unsafe — resolve it with a reference override, or give the mapping a dedicated baseline workspace to scope the lookup.", targetAlias))
+		}
+		if len(hints) > 0 {
+			fmt.Println()
+			fmt.Println(infoStyle.Render("Likely causes:"))
+			for _, h := range hints {
+				fmt.Println(wrapIndented("• "+h, 2))
+			}
+		}
+		fmt.Println()
 	}
-	fmt.Println()
+
+	if leftoverTotal > 0 {
+		fmt.Println()
+		fmt.Println(warningStyle.Render(fmt.Sprintf("%d leftover baseline reference(s) — deployed content still points at the baseline env (warn-only, nothing was rewritten):", leftoverTotal)))
+		for _, g := range groups {
+			for _, u := range g.Unresolved {
+				if u.Reason != deploy.ReasonLeftover {
+					continue
+				}
+				fmt.Printf("  %s in %s (%s)\n", shortGUID(u.GUID), u.ItemName, u.Location)
+				if u.Hint != "" {
+					fmt.Printf("    %s\n", u.Hint)
+				}
+			}
+		}
+		fmt.Println()
+	}
 }
 
 // orAlias returns the alias, or a placeholder when it is empty.

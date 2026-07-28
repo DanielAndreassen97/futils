@@ -40,6 +40,11 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 				u.ItemName = item.DisplayName
 				outcome.AddUnresolved(u)
 			}
+
+			for _, u := range rb.ScanLeftovers(part.Path, substituted) {
+				u.ItemName = item.DisplayName
+				outcome.AddUnresolved(u)
+			}
 		}
 		out[part.Path] = substituted
 	}

@@ -27,17 +27,21 @@ type UnresolvedRef struct {
 	ItemType string
 	Location string // "default_lakehouse" | "known_lakehouses"
 	ItemName string
-	Reason   string // ReasonNameUnknown | ReasonNotInTarget | ReasonAmbiguous
+	Reason   string // ReasonNameUnknown | ReasonNotInTarget | ReasonAmbiguous | ReasonLeftover
 	// Count is how many occurrences collapsed into this ref (a model can carry
 	// the same broken reference in every table expression). 0 means 1 — set
 	// only by AddUnresolved.
 	Count int
+	// Hint is an optional human explanation: what the value is, and the
+	// target-side value when known. Only ReasonLeftover refs set it.
+	Hint string
 }
 
 const (
-	ReasonNameUnknown = "name-unknown"  // baseline GUID not in baseline index — no name to match by
-	ReasonNotInTarget = "not-in-target" // name known but absent from every registered target workspace
-	ReasonAmbiguous   = "ambiguous"     // name appears in 2+ target workspaces
+	ReasonNameUnknown = "name-unknown"      // baseline GUID not in baseline index — no name to match by
+	ReasonNotInTarget = "not-in-target"     // name known but absent from every registered target workspace
+	ReasonAmbiguous   = "ambiguous"         // name appears in 2+ target workspaces
+	ReasonLeftover    = "leftover-baseline" // value still matches the baseline env after every pass — warn-only
 )
 
 // AddUnresolved records an unresolved reference on the outcome, deduplicated

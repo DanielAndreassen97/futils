@@ -8,11 +8,12 @@ import (
 // GUID-shaped fixtures: the scanner only sees canonical GUIDs, so tests use
 // full fake GUIDs and the index keys must match them.
 const (
-	gWSDev = "534b0000-1111-4222-8333-444455556666"
-	gWSTst = "7c3c0000-1111-4222-8333-444455556666"
-	gLHDev = "c0de0000-1111-4222-8333-444455556666"
-	gLHTst = "f00d0000-1111-4222-8333-444455556666"
-	gUnkwn = "9999e000-1111-4222-8333-444455556666"
+	gWSDev  = "534b0000-1111-4222-8333-444455556666"
+	gWSTst  = "7c3c0000-1111-4222-8333-444455556666"
+	gLHDev  = "c0de0000-1111-4222-8333-444455556666"
+	gLHTst  = "f00d0000-1111-4222-8333-444455556666"
+	gUnkwn  = "9999e000-1111-4222-8333-444455556666"
+	gShared = "aaaa0000-1111-4222-8333-444455556666" // shared reference workspace: maps to itself
 )
 
 func pipelineRebinderGUIDs() *Rebinder {
