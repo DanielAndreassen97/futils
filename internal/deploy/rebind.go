@@ -81,6 +81,7 @@ type RebindChange struct {
 	Name string
 	Old  string
 	New  string
+	Form string // copied from the rule that produced this change; "" for non-substitution kinds
 }
 
 // RebindOutcome bundles what a rebind pass produced: the applied changes (for
@@ -116,6 +117,7 @@ type Substitution struct {
 	TargetName string
 	Attr       string
 	Literal    string
+	Form       string         // "all" | "per-env" | "" (target-form); display metadata for the summary
 	compiled   *regexp.Regexp // non-nil for valid IsRegex rules after SetSubstitutions
 }
 
@@ -518,7 +520,7 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 					if !seen[m] {
 						seen[m] = true
 						expanded := re.ReplaceAllString(m, repl)
-						out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: m, New: expanded})
+						out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: m, New: expanded, Form: sub.Form})
 					}
 				}
 				s = next
@@ -526,7 +528,7 @@ func (rb *Rebinder) ApplyCustomSubstitutions(item LocalItem, partPath string, co
 		} else {
 			next := strings.ReplaceAll(s, sub.FindValue, repl)
 			if next != s {
-				out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl})
+				out.Changes = append(out.Changes, RebindChange{Kind: "Substitution", Old: sub.FindValue, New: repl, Form: sub.Form})
 				s = next
 			}
 		}

@@ -148,6 +148,15 @@ func TestApplyCustomSubstitutionsRegexExpandedNew(t *testing.T) {
 	}
 }
 
+func TestApplyCustomSubstitutionsRecordsForm(t *testing.T) {
+	rb := newSemmodSQLRebinder(t)
+	rb.SetSubstitutions([]Substitution{{FindValue: "dev", Literal: "test", Form: "per-env"}})
+	_, outcome := rb.ApplyCustomSubstitutions(LocalItem{Type: "Notebook", DisplayName: "NB"}, "notebook-content.py", []byte("dev"))
+	if len(outcome.Changes) != 1 || outcome.Changes[0].Form != "per-env" {
+		t.Fatalf("changes = %#v", outcome.Changes)
+	}
+}
+
 func TestApplyCustomSubstitutionsItemFilter(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	rb.SetSubstitutions([]Substitution{{FindValue: "X", Literal: "Y", ItemType: "DataPipeline"}})

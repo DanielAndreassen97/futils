@@ -49,7 +49,7 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 	if err != nil {
 		return nil, err
 	}
-	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions))
+	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
 	return rb, nil
 }
 
@@ -72,12 +72,13 @@ func overridesFromConfig(customer config.Customer) map[string]deploy.Override {
 // workspace pair, so same-named backend items can't collide or go ambiguous.
 // Reference overrides and custom substitutions are shared across all rebinders.
 type rebinderSet struct {
-	client     deploy.FabricClient
-	token      string
-	customer   config.Customer
-	workspaces []fabric.Workspace
-	shared     *deploy.Rebinder // env-level; nil when rebinding is disabled
-	cache      map[string]*deploy.Rebinder
+	client      deploy.FabricClient
+	token       string
+	customer    config.Customer
+	targetAlias string
+	workspaces  []fabric.Workspace
+	shared      *deploy.Rebinder // env-level; nil when rebinding is disabled
+	cache       map[string]*deploy.Rebinder
 }
 
 // newRebinderSet builds the shared env-level rebinder eagerly (same semantics
@@ -89,7 +90,7 @@ func newRebinderSet(client deploy.FabricClient, token string, customer config.Cu
 		return nil, err
 	}
 	return &rebinderSet{
-		client: client, token: token, customer: customer, workspaces: workspaces,
+		client: client, token: token, customer: customer, targetAlias: targetAlias, workspaces: workspaces,
 		shared: shared, cache: map[string]*deploy.Rebinder{},
 	}, nil
 }
@@ -121,21 +122,34 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 	if err != nil {
 		return nil, err
 	}
-	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions))
+	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
 	rs.cache[key] = rb
 	return rb, nil
 }
 
 // toDeploySubstitutions converts config substitution rules into the engine's
-// config-free mirror.
-func toDeploySubstitutions(subs []config.Substitution) []deploy.Substitution {
-	out := make([]deploy.Substitution, len(subs))
-	for i, s := range subs {
-		out[i] = deploy.Substitution{
+// config-free mirror, resolving per-environment literals against the deploy's
+// target alias. A rule whose Literals map has no entry for the alias is
+// inactive for this deploy and dropped.
+func toDeploySubstitutions(subs []config.Substitution, targetAlias string) []deploy.Substitution {
+	out := make([]deploy.Substitution, 0, len(subs))
+	for _, s := range subs {
+		d := deploy.Substitution{
 			FindValue: s.FindValue, IsRegex: s.IsRegex,
 			ItemType: s.ItemType, ItemName: s.ItemName, FilePath: s.FilePath,
 			TargetType: s.TargetType, TargetName: s.TargetName, Attr: s.Attr, Literal: s.Literal,
 		}
+		if len(s.Literals) > 0 {
+			v, ok := s.Literals[targetAlias]
+			if !ok {
+				continue
+			}
+			d.Literal = v
+			d.Form = "per-env"
+		} else if s.TargetType == "" {
+			d.Form = "all"
+		}
+		out = append(out, d)
 	}
 	return out
 }

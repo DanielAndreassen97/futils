@@ -179,6 +179,32 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 	}
 }
 
+func TestToDeploySubstitutionsPerEnv(t *testing.T) {
+	subs := []config.Substitution{
+		{FindValue: "dev", Literals: map[string]string{"TEST": "test", "PROD": "prod"}},
+		{FindValue: "only-prod", Literals: map[string]string{"PROD": "p"}},
+		{FindValue: "x", Literal: "y"},
+		{FindValue: "both", Literal: "ignored", Literals: map[string]string{"TEST": "wins"}},
+		{FindValue: "guid", TargetType: "Lakehouse", TargetName: "LH_Gold", Attr: "id"},
+	}
+	got := toDeploySubstitutions(subs, "TEST")
+	if len(got) != 4 { // "only-prod" dropped for TEST
+		t.Fatalf("got %d rules: %#v", len(got), got)
+	}
+	if got[0].Literal != "test" || got[0].Form != "per-env" {
+		t.Errorf("per-env rule = %#v", got[0])
+	}
+	if got[1].Literal != "y" || got[1].Form != "all" {
+		t.Errorf("all-env rule = %#v", got[1])
+	}
+	if got[2].Literal != "wins" || got[2].Form != "per-env" {
+		t.Errorf("both-set precedence = %#v", got[2])
+	}
+	if got[3].TargetName != "LH_Gold" || got[3].Form != "" {
+		t.Errorf("target-form rule = %#v", got[3])
+	}
+}
+
 // TestRebinderSetIsolatedWithoutEnvBaseline: a mapping-level baseline works
 // even when the customer has no baseline environment at all.
 func TestRebinderSetIsolatedWithoutEnvBaseline(t *testing.T) {
