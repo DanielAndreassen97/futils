@@ -45,6 +45,32 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 	return host, id, true
 }
 
+// baselineLakehouseByHost resolves a SQL endpoint host to the baseline
+// lakehouse that owns it. The reverse map is built lazily on the first call —
+// one GetLakehouseSqlEndpoint per baseline lakehouse — so deploys whose
+// content carries no hardcoded hosts pay zero extra API calls. Fetch errors
+// skip that lakehouse: resolution is best-effort and the leftover scan will
+// still flag the host as baseline-looking if it matches nothing.
+func (rb *Rebinder) baselineLakehouseByHost(host string) (IndexedItem, bool) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if rb.baselineHostMap == nil {
+		rb.baselineHostMap = map[string]IndexedItem{}
+		for _, it := range rb.baseline.byGUID {
+			if it.Type != "Lakehouse" {
+				continue
+			}
+			h, _, err := rb.client.GetLakehouseSqlEndpoint(rb.token, it.WorkspaceID, it.GUID)
+			if err != nil || h == "" {
+				continue
+			}
+			rb.baselineHostMap[h] = it
+		}
+	}
+	it, ok := rb.baselineHostMap[host]
+	return it, ok
+}
+
 // rebindSQLSources rewrites every Direct Lake on SQL data-source expression in
 // s: it resolves the baked endpoint id (the baked GUID equals its parent
 // lakehouse's sqlEndpointProperties.id, so it is indexed alongside every other

@@ -196,8 +196,11 @@ func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 	if strings.Contains(string(out), "devhost") || len(outcome.Changes) != 2 {
 		t.Errorf("RebindPart did not rebind a SemanticModel part:\n%s\n%#v", out, outcome.Changes)
 	}
-	// A non-semmod, non-notebook part is untouched.
-	plain := []byte(`Sql.Database("devhost.datawarehouse.fabric.microsoft.com", "` + devConfigEP + `")`)
+	// A DataPipeline part with no baseline reference is dispatched to its own
+	// pass (not the semmod one) and stays untouched — unlike devhost/devConfigEP
+	// above, this host and GUID are unknown to the baseline index, so the
+	// pipeline pass's own GUID and SQL-endpoint-host lookups both miss.
+	plain := []byte(`Sql.Database("unknown-host.datawarehouse.fabric.microsoft.com", "11111111-2222-3333-4444-555555555555")`)
 	out2, outcome2 := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "P"}, "pipeline-content.json", plain)
 	if string(out2) != string(plain) || len(outcome2.Changes) != 0 {
 		t.Error("non-semmod/non-notebook part should be untouched")

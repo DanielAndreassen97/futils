@@ -6,6 +6,12 @@ import "regexp"
 // is the shared pattern from the semantic-model pass.
 var pipelineGUID = regexp.MustCompile(guidPat)
 
+// endpointHostRe matches a Fabric SQL analytics endpoint hostname, baked
+// verbatim into a pipeline's Copy Activity / linked-service payload (unlike
+// the semantic model's Sql.Database(...) form, pipelines carry the bare host
+// string with no accompanying endpoint GUID to resolve by).
+var endpointHostRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*\.datawarehouse\.fabric\.microsoft\.com`)
+
 // RebindPipeline rewrites baseline references in a DataPipeline part.
 // Pipelines had no rebind pass at all before this: parameters and activity
 // payloads carry baked workspace GUIDs, item GUIDs, and SQL endpoint hosts,
@@ -29,5 +35,28 @@ func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 			recordChangePair(&out, pairSeen, it.Type, it.Name, guid, it.GUID)
 		}
 	}
+
+	hostSeen := map[string]bool{} // avoids redundant lookups for a host repeated in this part
+	for _, host := range endpointHostRe.FindAllString(string(content), -1) {
+		if hostSeen[host] {
+			continue
+		}
+		hostSeen[host] = true
+		owner, ok := rb.baselineLakehouseByHost(host)
+		if !ok {
+			continue // not a baseline endpoint host — leftover scan owns it
+		}
+		tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
+		if !ok {
+			out.AddUnresolved(UnresolvedRef{GUID: host, ItemType: "Lakehouse", Location: "pipeline sql endpoint", Reason: ReasonNotInTarget})
+			continue
+		}
+		tgtHost, _, ok := rb.targetEndpointFor(tgtLake)
+		if !ok || tgtHost == host {
+			continue
+		}
+		recordChangePair(&out, pairSeen, "SQL endpoint", owner.Name, host, tgtHost)
+	}
+
 	return []byte(applyChanges(string(content), out.Changes)), out
 }
