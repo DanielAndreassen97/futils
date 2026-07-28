@@ -555,6 +555,35 @@ func TestSubstitutionsAbsentLegacy(t *testing.T) {
 	}
 }
 
+func TestSubstitutionLiteralsRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	in := Config{Customers: map[string]Customer{
+		"acme": {
+			Substitutions: []Substitution{
+				{FindValue: "dev", Literals: map[string]string{"TEST": "test", "PROD": "prod"}},
+				{FindValue: "x", Literal: "y"}, // legacy single literal must survive alongside
+			},
+		},
+	}}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subs := out.Customers["acme"].Substitutions
+	if len(subs) != 2 {
+		t.Fatalf("substitutions = %#v", subs)
+	}
+	if subs[0].Literals["TEST"] != "test" || subs[0].Literals["PROD"] != "prod" {
+		t.Errorf("literals map lost: %#v", subs[0].Literals)
+	}
+	if subs[1].Literal != "y" || subs[1].Literals != nil {
+		t.Errorf("legacy literal changed: %#v", subs[1])
+	}
+}
+
 func TestDeployHistoryPathRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	in := Config{Customers: map[string]Customer{

@@ -56,6 +56,10 @@ type Substitution struct {
 	TargetName string `json:"target_name,omitempty"`
 	Attr       string `json:"attr,omitempty"`
 	Literal    string `json:"literal,omitempty"`
+	// Literals maps an environment alias to the replacement used when
+	// deploying to that environment. Non-empty Literals wins over Literal.
+	// An alias with no entry means the rule is inactive for that deploy.
+	Literals map[string]string `json:"literals,omitempty"`
 }
 
 // Environment pairs a user-chosen alias (menu label) with one or more
