@@ -310,6 +310,9 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 	if item.Type == "Lakehouse" && path.Base(partPath) == "shortcuts.metadata.json" {
 		return rb.RebindShortcuts(content)
 	}
+	if item.Type == "DataPipeline" {
+		return rb.RebindPipeline(content)
+	}
 	return content, RebindOutcome{}
 }
 
