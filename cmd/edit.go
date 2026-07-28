@@ -1118,9 +1118,9 @@ func removeSubstitution(c config.Customer, i int) config.Customer {
 }
 
 // manageSubstitutions lists the customer's custom find→replace rules and lets
-// the user add or remove them. Adding: type the find string, then choose a
-// literal replacement or a target item resolved by name (pick workspace → item
-// → attribute). Follows the same loop conventions as manageReferenceOverrides.
+// the user add or remove them. Adding: type the find string, then a literal
+// value — either the same for every environment or one per environment.
+// Follows the same loop conventions as manageReferenceOverrides.
 func manageSubstitutions(configPath string, client APIClient, customerName string) error {
 	for {
 		cfg, err := config.Load(configPath)
@@ -1137,12 +1137,8 @@ func manageSubstitutions(configPath string, client APIClient, customerName strin
 		}
 		var options []ui.MenuOption
 		for i, s := range customer.Substitutions {
-			repl := s.Literal
-			if s.TargetType != "" {
-				repl = fmt.Sprintf("%s %q.%s", s.TargetType, s.TargetName, attrOrID(s.Attr))
-			}
 			options = append(options, ui.MenuOption{
-				Label: fmt.Sprintf("Remove: %q → %s", s.FindValue, repl),
+				Label: fmt.Sprintf("Remove: %s", substitutionLabel(s)),
 				Value: fmt.Sprintf("rm:%d", i),
 			})
 		}
@@ -1161,7 +1157,7 @@ func manageSubstitutions(configPath string, client APIClient, customerName strin
 		case choice == editActionBack:
 			return nil
 		case choice == "add":
-			sub, aerr := promptSubstitution(client, customerName)
+			sub, aerr := promptSubstitution(customer)
 			if aerr != nil {
 				if errors.Is(aerr, ui.ErrGoBack) {
 					continue
@@ -1187,9 +1183,34 @@ func attrOrID(attr string) string {
 	return attr
 }
 
-// promptSubstitution gathers one substitution: a find string, then either a
-// literal replacement or a target item (pick workspace → item) + attribute.
-func promptSubstitution(client APIClient, customerName string) (config.Substitution, error) {
+// substitutionLabel renders one rule for the manage list: literal, per-env
+// literals (aliases sorted), or the legacy target form.
+func substitutionLabel(s config.Substitution) string {
+	switch {
+	case len(s.Literals) > 0:
+		aliases := make([]string, 0, len(s.Literals))
+		for a := range s.Literals {
+			aliases = append(aliases, a)
+		}
+		sort.Strings(aliases)
+		parts := make([]string, len(aliases))
+		for i, a := range aliases {
+			parts[i] = fmt.Sprintf("%s: %q", a, s.Literals[a])
+		}
+		return fmt.Sprintf("%q → %s", s.FindValue, strings.Join(parts, ", "))
+	case s.TargetType != "":
+		return fmt.Sprintf("%q → %s %q.%s", s.FindValue, s.TargetType, s.TargetName, attrOrID(s.Attr))
+	default:
+		return fmt.Sprintf("%q → %q", s.FindValue, s.Literal)
+	}
+}
+
+// promptSubstitution gathers one substitution: a find string, then a literal —
+// one value for every environment, or one value per environment (empty = the
+// rule skips that environment). The target-item form is add-only removed:
+// auto-rebind resolves item GUIDs and endpoint hosts itself; existing
+// target-form rules in config keep working and listing.
+func promptSubstitution(customer config.Customer) (config.Substitution, error) {
 	var find string
 	if err := runFormStep(huh.NewInput().Title("Find value (the string to replace)").Value(&find)); err != nil {
 		return config.Substitution{}, err
@@ -1198,37 +1219,34 @@ func promptSubstitution(client APIClient, customerName string) (config.Substitut
 	if find == "" {
 		return config.Substitution{}, fmt.Errorf("find value required")
 	}
-	kind, err := ui.NumberMenu("Replace with", []ui.MenuOption{
-		{Label: "A target item resolved by name (id / sql endpoint)", Value: "target"},
-		{Label: "A literal value", Value: "literal"},
+	scope, err := ui.NumberMenu("Literal scope", []ui.MenuOption{
+		{Label: "Same value for all environments", Value: "all"},
+		{Label: "A value per environment", Value: "per-env"},
 	})
 	if err != nil {
 		return config.Substitution{}, err
 	}
-	if kind == "literal" {
+	if scope == "all" {
 		var lit string
 		if err := runFormStep(huh.NewInput().Title("Literal replacement value").Value(&lit)); err != nil {
 			return config.Substitution{}, err
 		}
 		return config.Substitution{FindValue: find, Literal: lit}, nil
 	}
-	token, err := client.GetAccessToken(customerName)
-	if err != nil {
-		return config.Substitution{}, fmt.Errorf("authentication failed: %w", err)
+	literals := map[string]string{}
+	for _, env := range customer.Environments {
+		var v string
+		if err := runFormStep(huh.NewInput().Title(fmt.Sprintf("Value for %s (empty = skip)", env.Alias)).Value(&v)); err != nil {
+			return config.Substitution{}, err
+		}
+		if v = strings.TrimSpace(v); v != "" {
+			literals[env.Alias] = v
+		}
 	}
-	itemType, itemName, err := pickTargetItem(client, token, "")
-	if err != nil {
-		return config.Substitution{}, err
+	if len(literals) == 0 {
+		return config.Substitution{}, fmt.Errorf("at least one environment needs a value")
 	}
-	attr, err := ui.NumberMenu("Which attribute of the target item?", []ui.MenuOption{
-		{Label: "Item GUID (id)", Value: "id"},
-		{Label: "SQL endpoint host", Value: "sqlendpoint"},
-		{Label: "SQL endpoint database id", Value: "sqlendpointid"},
-	})
-	if err != nil {
-		return config.Substitution{}, err
-	}
-	return config.Substitution{FindValue: find, TargetType: itemType, TargetName: itemName, Attr: attr}, nil
+	return config.Substitution{FindValue: find, Literals: literals}, nil
 }
 
 // environment.

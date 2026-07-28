@@ -101,6 +101,24 @@ func TestMergePostDeploySelection(t *testing.T) {
 	}
 }
 
+func TestSubstitutionLabel(t *testing.T) {
+	cases := []struct {
+		in   config.Substitution
+		want string
+	}{
+		{config.Substitution{FindValue: "dev", Literals: map[string]string{"TEST": "test", "PROD": "prod"}},
+			`"dev" → PROD: "prod", TEST: "test"`},
+		{config.Substitution{FindValue: "x", Literal: "y"}, `"x" → "y"`},
+		{config.Substitution{FindValue: "g", TargetType: "Lakehouse", TargetName: "LH_Gold", Attr: "sqlendpoint"},
+			`"g" → Lakehouse "LH_Gold".sqlendpoint`},
+	}
+	for _, c := range cases {
+		if got := substitutionLabel(c.in); got != c.want {
+			t.Errorf("substitutionLabel(%#v) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestMappingLabel(t *testing.T) {
 	cases := []struct{ folder, repo, want string }{
 		{"Backend", "", "Backend/"},
