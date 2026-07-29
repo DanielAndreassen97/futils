@@ -74,7 +74,11 @@ func (rb *Rebinder) ScanLeftovers(partPath string, content []byte) []UnresolvedR
 					continue // shared endpoint, correct on both sides
 				}
 				hint += fmt.Sprintf("; in the target this is %s", tgtHost)
+			} else {
+				hint += "; couldn't resolve the target lakehouse's SQL endpoint"
 			}
+		} else {
+			hint += "; no same-named lakehouse in the target"
 		}
 		refs = append(refs, UnresolvedRef{GUID: host, ItemType: "SQL endpoint", Location: partPath, Reason: ReasonLeftover, Hint: hint})
 	}

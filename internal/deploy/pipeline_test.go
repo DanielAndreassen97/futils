@@ -95,3 +95,27 @@ func TestRebindPipelineUnknownHostUntouched(t *testing.T) {
 		t.Fatalf("unknown host must be untouched: %s %#v", out, outcome.Changes)
 	}
 }
+
+// TestRebindPipelineHostNotInTargetLeavesUntouchedNoUnresolved proves the
+// host loop never reports its own UnresolvedRef, mirroring the GUID branch:
+// the leftover scan is the single reporting channel for every unresolved
+// reference, host or GUID, so this pass must stay silent even when it
+// recognizes the baseline owner but finds no same-named lakehouse in the
+// target.
+func TestRebindPipelineHostNotInTargetLeavesUntouchedNoUnresolved(t *testing.T) {
+	base := idx(IndexedItem{Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev, WorkspaceID: gWSDev})
+	tgt := idx() // nothing in target — no same-named lakehouse
+	rb := &Rebinder{
+		baseline: base, target: tgt, overrides: map[string]Override{},
+		wsMap: map[string]string{}, wsAmbiguous: map[string]bool{}, baselineWSNames: map[string]string{},
+		client: &fakeFabric{sqlByLH: map[string][2]string{gLHDev: {"aaa111-dev.datawarehouse.fabric.microsoft.com", "ep-dev"}}},
+	}
+	in := []byte(`{"server":"aaa111-dev.datawarehouse.fabric.microsoft.com"}`)
+	out, outcome := rb.RebindPipeline(in)
+	if string(out) != string(in) {
+		t.Fatalf("host with no target match must be left untouched: %s", out)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("RebindPipeline must not report unresolved hosts — the leftover scan owns that: %#v", outcome.Unresolved)
+	}
+}

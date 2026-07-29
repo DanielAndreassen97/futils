@@ -20,9 +20,11 @@ var endpointHostRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*\.datawarehouse
 //     (workspaces are named per-env, so items vote — see buildWorkspaceMap)
 //   - baseline item GUIDs, by name like every other pass
 //
-// SQL endpoint hosts are a later task's addition. Anything unrecognized
-// (unknown GUID, ambiguous workspace) is left untouched: the leftover scan —
-// not this pass — owns warnings, so nothing is double-reported here.
+// SQL endpoint hosts are a later task's addition. Anything unrecognized in
+// either loop (unknown GUID, ambiguous workspace, a resolved endpoint owner
+// with no same-named lakehouse in the target) is left untouched: the
+// leftover scan — not this pass — owns every unresolved-reference warning,
+// so nothing is double-reported here.
 func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 	var out RebindOutcome
 	pairSeen := map[string]bool{}
@@ -48,8 +50,7 @@ func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 		}
 		tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
 		if !ok {
-			out.AddUnresolved(UnresolvedRef{GUID: host, ItemType: "Lakehouse", Location: "pipeline sql endpoint", Reason: ReasonNotInTarget})
-			continue
+			continue // no same-named lakehouse in the target — leftover scan owns it
 		}
 		tgtHost, _, ok := rb.targetEndpointFor(tgtLake)
 		if !ok || tgtHost == host {
