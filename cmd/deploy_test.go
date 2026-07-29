@@ -1053,6 +1053,57 @@ func TestPrintRebindSummarySilentWhenNoChanges(t *testing.T) {
 	}
 }
 
+func TestSplitRebindChanges(t *testing.T) {
+	in := []deploy.RebindChange{
+		{Kind: "Workspace", Name: "DW - TEST - Data", Old: "a", New: "b"},
+		{Kind: "Substitution", Old: "dev", New: "test", Form: "per-env"},
+		{Kind: "Lakehouse", Name: "LH_Bronze", Old: "c", New: "d"},
+	}
+	auto, subs := splitRebindChanges(in)
+	if len(auto) != 2 || len(subs) != 1 || subs[0].Form != "per-env" {
+		t.Fatalf("auto=%#v subs=%#v", auto, subs)
+	}
+}
+
+func TestPrintRebindSummaryCategorizesAndFlagsRedundant(t *testing.T) {
+	// Baseline == target workspace list, and both share one item, so the
+	// workspace GUID "ws-1" is auto-resolvable (it maps to itself by name-vote
+	// consensus) — used below to simulate a stale custom-substitution rule
+	// that duplicates what auto-rebind already does.
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{{ID: "ws-1", DisplayName: "Config"}},
+		items:      map[string][]fabric.Item{"ws-1": {{ID: "lh-1", DisplayName: "LH_Bronze", Type: "Lakehouse", WorkspaceID: "ws-1"}}},
+	}
+	ws := []fabric.Workspace{{ID: "ws-1", DisplayName: "Config"}}
+	rb, err := deploy.NewRebinder(fake, "tok", ws, ws, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	groups := []deployGroup{
+		{
+			rb: rb,
+			Changes: []deploy.RebindChange{
+				{Kind: "Lakehouse", Name: "LH_Bronze", Old: "dev-lh", New: "test-lh"},
+				{Kind: "Substitution", Old: "ws-1", New: "replacement", Form: "all"},
+				{Kind: "Substitution", Old: "genuinely-custom", New: "custom-target", Form: "per-env"},
+			},
+		},
+	}
+	out := captureStdout(t, func() { printRebindSummary(groups) })
+	if !strings.Contains(out, "Recognized Fabric references (auto)") {
+		t.Errorf("missing auto section header:\n%s", out)
+	}
+	if !strings.Contains(out, "Hardcoded values (custom substitutions)") {
+		t.Errorf("missing substitution section header:\n%s", out)
+	}
+	if !strings.Contains(out, "the rule can be deleted") {
+		t.Errorf("expected redundancy hint with deletion phrasing:\n%s", out)
+	}
+	if strings.Count(out, "the rule can be deleted") != 1 {
+		t.Errorf("expected exactly one redundancy hint, got:\n%s", out)
+	}
+}
+
 func TestFilterIgnoredUnresolvedDropsIgnored(t *testing.T) {
 	groups := []deployGroup{{
 		Unresolved: []deploy.UnresolvedRef{

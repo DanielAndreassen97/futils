@@ -1620,22 +1620,73 @@ func collectReportBindings(groups []deployGroup) []deploy.ReportBinding {
 	return all
 }
 
+// splitRebindChanges partitions the flat change list for the categorized
+// summary: auto-recognized Fabric references vs custom-substitution rewrites.
+func splitRebindChanges(changes []deploy.RebindChange) (auto, subs []deploy.RebindChange) {
+	for _, c := range changes {
+		if c.Kind == "Substitution" {
+			subs = append(subs, c)
+		} else {
+			auto = append(auto, c)
+		}
+	}
+	return auto, subs
+}
+
+// describeAcrossGroups asks each group's rebinder whether the auto tier could
+// resolve value itself; the first positive answer wins.
+func describeAcrossGroups(groups []deployGroup, value string) (string, bool) {
+	for _, g := range groups {
+		if g.rb == nil {
+			continue
+		}
+		if desc, ok := g.rb.DescribeAutoResolvable(value); ok {
+			return desc, ok
+		}
+	}
+	return "", false
+}
+
 // printRebindSummary lists every reference rewrite the rebinder will apply —
-// one line per unique change, not per item. Silent when nothing changes.
+// one line per unique change, not per item — split into the auto-recognized
+// Fabric references and the customer's hardcoded custom-substitution rules.
+// A custom rule whose Old value the auto tier could ALSO have resolved is
+// flagged redundant: custom subs run first and win, so a stale rule would
+// otherwise silently shadow the auto tier forever with nobody noticing.
+// Silent when nothing changes.
 func printRebindSummary(groups []deployGroup) {
 	ordered := collectRebindChanges(groups)
 	if len(ordered) == 0 {
 		return
 	}
+	auto, subs := splitRebindChanges(ordered)
 	fmt.Println()
 	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
-	lastKind, lastName := "", ""
-	for _, c := range ordered {
-		if c.Kind != lastKind || c.Name != lastName {
-			fmt.Printf("  %-12s %s\n", c.Kind, c.Name)
-			lastKind, lastName = c.Kind, c.Name
+	if len(auto) > 0 {
+		fmt.Println(infoStyle.Render("  Recognized Fabric references (auto):"))
+		lastKind, lastName := "", ""
+		for _, c := range auto {
+			if c.Kind != lastKind || c.Name != lastName {
+				fmt.Printf("    %-12s %s\n", c.Kind, c.Name)
+				lastKind, lastName = c.Kind, c.Name
+			}
+			fmt.Printf("      %s → %s\n", c.Old, c.New)
 		}
-		fmt.Printf("    %s → %s\n", c.Old, c.New)
+	}
+	if len(subs) > 0 {
+		fmt.Println(infoStyle.Render("  Hardcoded values (custom substitutions):"))
+		for _, c := range subs {
+			form := "all environments"
+			if c.Form == "per-env" {
+				form = "per environment"
+			} else if c.Form == "" {
+				form = "target lookup"
+			}
+			fmt.Printf("    %q → %q  (rule: %s)\n", c.Old, c.New, form)
+			if desc, ok := describeAcrossGroups(groups, c.Old); ok {
+				fmt.Printf("      redundant: auto-rebind resolves this (%s) — the rule can be deleted\n", desc)
+			}
+		}
 	}
 	fmt.Println()
 }

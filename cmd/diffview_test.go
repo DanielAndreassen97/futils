@@ -345,6 +345,32 @@ func TestCappedLineDiffNormalInputStillDiffs(t *testing.T) {
 	}
 }
 
+func TestRenderDeployReportCategorizesRebindsAndShowsLeftovers(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
+		Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Name: "LH_Bronze", Old: "dev-lh", New: "test-lh"},
+			{Kind: "Substitution", Old: "dev", New: "test", Form: "per-env"},
+		},
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "11111111-1111-1111-1111-111111111111", ItemType: "Lakehouse", ItemName: "NB_1", Location: "default_lakehouse", Reason: deploy.ReasonLeftover, Hint: "still points at DEV — target value unknown"},
+		},
+	}}
+	out := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
+	if !strings.Contains(out, "Recognized Fabric references (auto)") {
+		t.Errorf("missing auto rebind heading:\n%s", out)
+	}
+	if !strings.Contains(out, "Hardcoded values (custom substitutions)") {
+		t.Errorf("missing substitution heading:\n%s", out)
+	}
+	if !strings.Contains(out, "still points at DEV") {
+		t.Errorf("expected the leftover ref's Hint to render:\n%s", out)
+	}
+	if !strings.Contains(out, "NB_1") {
+		t.Errorf("expected the leftover ref's item name to render:\n%s", out)
+	}
+}
+
 func TestRenderDeployReportIncludesResults(t *testing.T) {
 	groups := []deployGroup{{
 		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},

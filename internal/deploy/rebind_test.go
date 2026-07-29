@@ -675,3 +675,16 @@ func parseShortcutTargets(t *testing.T, content []byte) map[string][2]string {
 	}
 	return got
 }
+
+func TestDescribeAutoResolvable(t *testing.T) {
+	rb := pipelineRebinderGUIDs()
+	if desc, ok := rb.DescribeAutoResolvable(gWSDev); !ok || !strings.Contains(desc, "DW - DEV - Data") {
+		t.Errorf("workspace: %q %v", desc, ok)
+	}
+	if desc, ok := rb.DescribeAutoResolvable(gLHDev); !ok || !strings.Contains(desc, "LH_Bronze") {
+		t.Errorf("item: %q %v", desc, ok)
+	}
+	if _, ok := rb.DescribeAutoResolvable("not-a-fabric-value"); ok {
+		t.Error("plain strings must not be auto-resolvable")
+	}
+}

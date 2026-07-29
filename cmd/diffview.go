@@ -650,20 +650,73 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 
 	// Reference rebinds: every baseline→target rewrite the run applies —
 	// lakehouse GUIDs, workspaces, SQL endpoints, shortcut targets — grouped by
-	// the reference they belong to, exactly like the terminal summary.
+	// the reference they belong to, exactly like the terminal summary. Split
+	// into the auto-recognized Fabric references and the customer's hardcoded
+	// custom-substitution rules, mirroring printRebindSummary's categorized
+	// layout — including the redundancy hint on a custom rule the auto tier
+	// could have resolved by itself.
 	if changes := collectRebindChanges(groups); len(changes) > 0 {
+		auto, subs := splitRebindChanges(changes)
 		fmt.Fprintf(&b, `<h2>Reference rebinds <span class="note">— baseline → target · %d rewrite(s)</span></h2>`, len(changes))
-		b.WriteString(`<div class="panel"><table>`)
-		lastKind, lastName := "", ""
-		for _, c := range changes {
-			nameCell := ""
-			if c.Kind != lastKind || c.Name != lastName {
-				nameCell = html.EscapeString(c.Name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
-				lastKind, lastName = c.Kind, c.Name
+		if len(auto) > 0 {
+			b.WriteString(`<div class="wsgroup">Recognized Fabric references (auto)</div>`)
+			b.WriteString(`<div class="panel"><table>`)
+			lastKind, lastName := "", ""
+			for _, c := range auto {
+				nameCell := ""
+				if c.Kind != lastKind || c.Name != lastName {
+					nameCell = html.EscapeString(c.Name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
+					lastKind, lastName = c.Kind, c.Name
+				}
+				b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
+					`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
+					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
 			}
-			b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
-				`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
-				`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
+			b.WriteString(`</table></div>`)
+		}
+		if len(subs) > 0 {
+			b.WriteString(`<div class="wsgroup">Hardcoded values (custom substitutions)</div>`)
+			b.WriteString(`<div class="panel"><table>`)
+			for _, c := range subs {
+				form := "all environments"
+				if c.Form == "per-env" {
+					form = "per environment"
+				} else if c.Form == "" {
+					form = "target lookup"
+				}
+				b.WriteString(`<tr><td class="name"><span class="type">rule: ` + html.EscapeString(form) + `</span></td>` +
+					`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
+					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
+				if desc, ok := describeAcrossGroups(groups, c.Old); ok {
+					b.WriteString(`<tr><td></td><td class="detail">redundant: auto-rebind resolves this (` +
+						html.EscapeString(desc) + `) — the rule can be deleted</td></tr>`)
+				}
+			}
+			b.WriteString(`</table></div>`)
+		}
+	}
+
+	// Leftover baseline references: content that still points at the baseline
+	// env after every pass (warn-only, nothing was rewritten) — mirrors
+	// printUnresolved's leftover section in the terminal summary.
+	var leftovers []deploy.UnresolvedRef
+	for _, g := range groups {
+		for _, u := range g.Unresolved {
+			if u.Reason == deploy.ReasonLeftover {
+				leftovers = append(leftovers, u)
+			}
+		}
+	}
+	if len(leftovers) > 0 {
+		fmt.Fprintf(&b, `<h2>Leftover baseline references <span class="note">— still point at baseline · %d ref(s)</span></h2>`, len(leftovers))
+		b.WriteString(`<div class="panel"><table>`)
+		for _, u := range leftovers {
+			b.WriteString(`<tr><td class="name">` + html.EscapeString(u.ItemName) + ` <span class="type">` + html.EscapeString(u.Location) + `</span></td>` +
+				`<td class="detail ewarn">` + html.EscapeString(shortGUID(u.GUID)))
+			if u.Hint != "" {
+				b.WriteString(` — ` + html.EscapeString(u.Hint))
+			}
+			b.WriteString(`</td></tr>`)
 		}
 		b.WriteString(`</table></div>`)
 	}

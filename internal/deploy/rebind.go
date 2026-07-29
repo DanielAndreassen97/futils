@@ -3,6 +3,7 @@ package deploy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"path"
 	"regexp"
 	"strings"
@@ -164,6 +165,29 @@ func (rb *Rebinder) workspaceName(guid string) string {
 		return n
 	}
 	return guid
+}
+
+// DescribeAutoResolvable reports whether the auto-rebind tier could resolve
+// value on its own, and what the value is. Used by the summary to flag
+// redundant custom substitution rules (custom subs run first and win, so a
+// stale rule would silently shadow the auto tier forever otherwise). Checks
+// are lookup-only: the endpoint host map is consulted only when already
+// built, so the hint never triggers API calls.
+func (rb *Rebinder) DescribeAutoResolvable(value string) (string, bool) {
+	if name, ok := rb.baselineWSNames[value]; ok {
+		if _, mapped := rb.wsMap[value]; mapped {
+			return fmt.Sprintf("workspace %q", name), true
+		}
+	}
+	if it, ok := rb.baseline.ItemByGUID(value); ok {
+		return fmt.Sprintf("%s %q", it.Type, it.Name), true
+	}
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if it, ok := rb.baselineHostMap[value]; ok {
+		return fmt.Sprintf("SQL endpoint of %q", it.Name), true
+	}
+	return "", false
 }
 
 // NewRebinder builds the baseline and target name indices and returns a
