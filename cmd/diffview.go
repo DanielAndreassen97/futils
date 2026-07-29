@@ -678,18 +678,12 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			b.WriteString(`<div class="wsgroup">Hardcoded values (custom substitutions)</div>`)
 			b.WriteString(`<div class="panel"><table>`)
 			for _, c := range subs {
-				form := "all environments"
-				if c.Form == "per-env" {
-					form = "per environment"
-				} else if c.Form == "" {
-					form = "target lookup"
-				}
-				b.WriteString(`<tr><td class="name"><span class="type">rule: ` + html.EscapeString(form) + `</span></td>` +
+				b.WriteString(`<tr><td class="name"><span class="type">rule: ` + html.EscapeString(formLabel(c.Form)) + `</span></td>` +
 					`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
 					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
 				if desc, ok := describeAcrossGroups(groups, c.Old); ok {
-					b.WriteString(`<tr><td></td><td class="detail">redundant: auto-rebind resolves this (` +
-						html.EscapeString(desc) + `) — the rule can be deleted</td></tr>`)
+					b.WriteString(`<tr><td></td><td class="detail">` +
+						fmt.Sprintf(redundantSubstitutionMsg, html.EscapeString(desc)) + `</td></tr>`)
 				}
 			}
 			b.WriteString(`</table></div>`)
@@ -711,7 +705,14 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		fmt.Fprintf(&b, `<h2>Leftover baseline references <span class="note">— still point at baseline · %d ref(s)</span></h2>`, len(leftovers))
 		b.WriteString(`<div class="panel"><table>`)
 		for _, u := range leftovers {
-			b.WriteString(`<tr><td class="name">` + html.EscapeString(u.ItemName) + ` <span class="type">` + html.EscapeString(u.Location) + `</span></td>` +
+			// Location is the stable LocationLeftover tag, not the part path —
+			// show a ×N badge instead when the ref collapsed from several parts;
+			// the part path (and the rest of the explanation) lives in Hint.
+			nameCell := html.EscapeString(u.ItemName)
+			if u.Count > 1 {
+				nameCell += fmt.Sprintf(` <span class="type">×%d</span>`, u.Count)
+			}
+			b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
 				`<td class="detail ewarn">` + html.EscapeString(shortGUID(u.GUID)))
 			if u.Hint != "" {
 				b.WriteString(` — ` + html.EscapeString(u.Hint))

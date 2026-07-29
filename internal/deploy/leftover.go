@@ -2,6 +2,16 @@ package deploy
 
 import "fmt"
 
+// LocationLeftover is the stable UnresolvedRef.Location every ScanLeftovers
+// ref carries, regardless of which part file it was found in. AddUnresolved
+// dedups on (GUID, ItemType, Location), so a single broken reference repeated
+// across many part files of one item (a semantic model's 40 table
+// expressions, say) collapses into one entry with Count summing the
+// occurrences, instead of one line per part. The part path that would
+// otherwise have gone in Location is prepended to Hint instead, so it still
+// shows up (for the first occurrence) once printed.
+const LocationLeftover = "leftover"
+
 // ScanLeftovers reports every GUID or SQL-endpoint host in a finished part
 // that still matches the baseline environment. It runs AFTER every rewrite
 // pass, so anything it finds either sits where no pass rewrites (arbitrary
@@ -26,27 +36,37 @@ func (rb *Rebinder) ScanLeftovers(partPath string, content []byte) []UnresolvedR
 			if rb.wsMap[guid] == guid {
 				continue // shared workspace, correct on both sides
 			}
-			hint := fmt.Sprintf("workspace %q", name)
+			hint := fmt.Sprintf("%s: workspace %q", partPath, name)
 			if tgt, mapped := rb.wsMap[guid]; mapped {
 				hint += fmt.Sprintf("; in the target this is %s", tgt)
 			} else if rb.wsAmbiguous[guid] {
 				hint += "; ambiguous (its items map to multiple target workspaces)"
 			}
-			refs = append(refs, UnresolvedRef{GUID: guid, ItemType: "Workspace", Location: partPath, Reason: ReasonLeftover, Hint: hint})
+			refs = append(refs, UnresolvedRef{GUID: guid, ItemType: "Workspace", Location: LocationLeftover, Reason: ReasonLeftover, Hint: hint})
 			continue
 		}
 
 		if base, ok := rb.baseline.ItemByGUID(guid); ok {
-			if it, resolved, _ := rb.resolveGUIDReason(guid, ""); resolved {
+			it, resolved, reason := rb.resolveGUIDReason(guid, "")
+			if resolved {
 				if it.GUID == guid {
 					continue // same item registered in both envs — correct on both sides
 				}
-				refs = append(refs, UnresolvedRef{GUID: guid, ItemType: base.Type, Location: partPath, Reason: ReasonLeftover,
-					Hint: fmt.Sprintf("%s %q; in the target this is %s", base.Type, base.Name, it.GUID)})
+				refs = append(refs, UnresolvedRef{GUID: guid, ItemType: base.Type, Location: LocationLeftover, Reason: ReasonLeftover,
+					Hint: fmt.Sprintf("%s: %s %q; in the target this is %s", partPath, base.Type, base.Name, it.GUID)})
 				continue
 			}
-			refs = append(refs, UnresolvedRef{GUID: guid, ItemType: base.Type, Location: partPath, Reason: ReasonLeftover,
-				Hint: fmt.Sprintf("%s %q; no same-named item in the target", base.Type, base.Name)})
+			// The real cause distinguishes an ambiguous name (matches several
+			// target workspaces, so name-matching is unsafe) from a name that's
+			// simply absent from the target — reusing resolveGUIDReason's
+			// discarded reason instead of always blaming absence.
+			hint := fmt.Sprintf("%s: %s %q", partPath, base.Type, base.Name)
+			if reason == ReasonAmbiguous {
+				hint += "; ambiguous (the name matches items in multiple target workspaces)"
+			} else {
+				hint += "; no same-named item in the target"
+			}
+			refs = append(refs, UnresolvedRef{GUID: guid, ItemType: base.Type, Location: LocationLeftover, Reason: ReasonLeftover, Hint: hint})
 			continue
 		}
 		// Unknown GUID: not the baseline's — silently ignored, may belong to
@@ -67,7 +87,7 @@ func (rb *Rebinder) ScanLeftovers(partPath string, content []byte) []UnresolvedR
 		if !ok {
 			continue
 		}
-		hint := fmt.Sprintf("SQL endpoint of %s %q", owner.Type, owner.Name)
+		hint := fmt.Sprintf("%s: SQL endpoint of %s %q", partPath, owner.Type, owner.Name)
 		if tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse"); ok {
 			if tgtHost, _, ok := rb.targetEndpointFor(tgtLake); ok {
 				if tgtHost == host {
@@ -80,7 +100,7 @@ func (rb *Rebinder) ScanLeftovers(partPath string, content []byte) []UnresolvedR
 		} else {
 			hint += "; no same-named lakehouse in the target"
 		}
-		refs = append(refs, UnresolvedRef{GUID: host, ItemType: "SQL endpoint", Location: partPath, Reason: ReasonLeftover, Hint: hint})
+		refs = append(refs, UnresolvedRef{GUID: host, ItemType: "SQL endpoint", Location: LocationLeftover, Reason: ReasonLeftover, Hint: hint})
 	}
 
 	return refs

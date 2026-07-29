@@ -1024,6 +1024,25 @@ func TestPrintUnresolvedCountsExcludeLeftovers(t *testing.T) {
 	}
 }
 
+// TestPrintUnresolvedNoDoubleBlankLineBetweenSections covers finding #3: when
+// both the unresolved and leftover sections print, the boundary between them
+// must carry exactly one blank line, not two (the unresolved section already
+// ends with one).
+func TestPrintUnresolvedNoDoubleBlankLineBetweenSections(t *testing.T) {
+	groups := []deployGroup{{
+		Folder: "Backend",
+		Unresolved: []deploy.UnresolvedRef{
+			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
+			{GUID: "1c1c1c1c-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Workspace", Location: deploy.LocationLeftover, ItemName: "NB_Config",
+				Reason: deploy.ReasonLeftover, Hint: "workspace X"},
+		},
+	}}
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	if strings.Contains(out, "\n\n\n") {
+		t.Errorf("expected exactly one blank line between the unresolved and leftover sections:\n%q", out)
+	}
+}
+
 func TestPrintRebindSummaryDedupesByValue(t *testing.T) {
 	groups := []deployGroup{
 		{Changes: []deploy.RebindChange{

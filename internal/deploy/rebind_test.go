@@ -688,3 +688,30 @@ func TestDescribeAutoResolvable(t *testing.T) {
 		t.Error("plain strings must not be auto-resolvable")
 	}
 }
+
+// TestDescribeAutoResolvableRequiresTargetResolution guards against a false
+// "redundant" flag: a custom substitution rule often exists PRECISELY BECAUSE
+// auto-rebind can't resolve the value (not-in-target / ambiguous), so mere
+// baseline membership must never be enough to call it auto-resolvable.
+func TestDescribeAutoResolvableRequiresTargetResolution(t *testing.T) {
+	// Item branch: the baseline has the item, but the target has no
+	// same-named counterpart at all.
+	base := idx(IndexedItem{Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev, WorkspaceID: gWSDev})
+	tgt := idx()
+	rb := &Rebinder{
+		baseline: base, target: tgt, overrides: map[string]Override{},
+		wsMap: map[string]string{}, wsAmbiguous: map[string]bool{}, baselineWSNames: map[string]string{},
+	}
+	if desc, ok := rb.DescribeAutoResolvable(gLHDev); ok {
+		t.Errorf("item with no same-named target counterpart must not be auto-resolvable: %q %v", desc, ok)
+	}
+
+	// Host branch: the owning lakehouse is known baseline-side, but there's no
+	// same-named lakehouse in the target to resolve its SQL endpoint through.
+	rb.baselineHostMap = map[string]IndexedItem{
+		"aaa111-dev.datawarehouse.fabric.microsoft.com": {Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev},
+	}
+	if desc, ok := rb.DescribeAutoResolvable("aaa111-dev.datawarehouse.fabric.microsoft.com"); ok {
+		t.Errorf("host whose owner has no target counterpart must not be auto-resolvable: %q %v", desc, ok)
+	}
+}

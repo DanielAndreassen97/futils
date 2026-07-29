@@ -26,7 +26,7 @@ type Override struct {
 type UnresolvedRef struct {
 	GUID     string
 	ItemType string
-	Location string // "default_lakehouse" | "known_lakehouses"
+	Location string // "default_lakehouse" | "known_lakehouses" | ... | LocationLeftover (ScanLeftovers, part path lives in Hint instead)
 	ItemName string
 	Reason   string // ReasonNameUnknown | ReasonNotInTarget | ReasonAmbiguous | ReasonLeftover
 	// Count is how many occurrences collapsed into this ref (a model can carry
@@ -173,19 +173,29 @@ func (rb *Rebinder) workspaceName(guid string) string {
 // stale rule would silently shadow the auto tier forever otherwise). Checks
 // are lookup-only: the endpoint host map is consulted only when already
 // built, so the hint never triggers API calls.
+//
+// Every branch requires actual target resolvability, not just baseline
+// membership: a rule can exist PRECISELY BECAUSE auto-rebind can't resolve the
+// value (the item isn't in the target, or the name is ambiguous there) — such
+// a rule is not redundant, so mere presence in the baseline index must never
+// answer true on its own.
 func (rb *Rebinder) DescribeAutoResolvable(value string) (string, bool) {
 	if name, ok := rb.baselineWSNames[value]; ok {
 		if _, mapped := rb.wsMap[value]; mapped {
 			return fmt.Sprintf("workspace %q", name), true
 		}
 	}
-	if it, ok := rb.baseline.ItemByGUID(value); ok {
-		return fmt.Sprintf("%s %q", it.Type, it.Name), true
+	if base, ok := rb.baseline.ItemByGUID(value); ok {
+		if _, resolved, _ := rb.resolveGUIDReason(value, ""); resolved {
+			return fmt.Sprintf("%s %q", base.Type, base.Name), true
+		}
 	}
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	if it, ok := rb.baselineHostMap[value]; ok {
-		return fmt.Sprintf("SQL endpoint of %q", it.Name), true
+		if _, ok := rb.target.ItemByName(it.Name, "Lakehouse"); ok {
+			return fmt.Sprintf("SQL endpoint of %q", it.Name), true
+		}
 	}
 	return "", false
 }

@@ -1647,6 +1647,27 @@ func describeAcrossGroups(groups []deployGroup, value string) (string, bool) {
 	return "", false
 }
 
+// formLabel renders a Substitution rule's Form field ("all" | "per-env" | "",
+// see deploy.Substitution.Form) as the human label shown in the rebind
+// summary — shared by the terminal printout and its HTML mirror so the
+// wording can't drift between the two.
+func formLabel(form string) string {
+	switch form {
+	case "per-env":
+		return "per environment"
+	case "":
+		return "target lookup"
+	default:
+		return "all environments"
+	}
+}
+
+// redundantSubstitutionMsg is the shared wording for a custom substitution
+// rule whose Old value the auto-rebind tier could resolve on its own — one
+// %s hole for the auto-resolved description. Used by both printRebindSummary
+// and its HTML mirror so the phrasing never drifts between the two.
+const redundantSubstitutionMsg = "redundant: auto-rebind resolves this (%s) — the rule can be deleted"
+
 // printRebindSummary lists every reference rewrite the rebinder will apply —
 // one line per unique change, not per item — split into the auto-recognized
 // Fabric references and the customer's hardcoded custom-substitution rules.
@@ -1676,15 +1697,9 @@ func printRebindSummary(groups []deployGroup) {
 	if len(subs) > 0 {
 		fmt.Println(infoStyle.Render("  Hardcoded values (custom substitutions):"))
 		for _, c := range subs {
-			form := "all environments"
-			if c.Form == "per-env" {
-				form = "per environment"
-			} else if c.Form == "" {
-				form = "target lookup"
-			}
-			fmt.Printf("    %q → %q  (rule: %s)\n", c.Old, c.New, form)
+			fmt.Printf("    %q → %q  (rule: %s)\n", c.Old, c.New, formLabel(c.Form))
 			if desc, ok := describeAcrossGroups(groups, c.Old); ok {
-				fmt.Printf("      redundant: auto-rebind resolves this (%s) — the rule can be deleted\n", desc)
+				fmt.Printf("      "+redundantSubstitutionMsg+"\n", desc)
 			}
 		}
 	}
@@ -1763,14 +1778,22 @@ func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
 	}
 
 	if leftoverTotal > 0 {
-		fmt.Println()
+		// total>0 already left a blank line via the section above; only add one
+		// here when this is the first thing printed, or the two sections run
+		// together with a doubled blank line between them.
+		if total == 0 {
+			fmt.Println()
+		}
 		fmt.Println(warningStyle.Render(fmt.Sprintf("%d leftover baseline reference(s) — deployed content still points at the baseline env (warn-only, nothing was rewritten):", leftoverTotal)))
 		for _, g := range groups {
 			for _, u := range g.Unresolved {
 				if u.Reason != deploy.ReasonLeftover {
 					continue
 				}
-				fmt.Printf("  %s in %s (%s)\n", shortGUID(u.GUID), u.ItemName, u.Location)
+				// Location is the stable LocationLeftover tag for every ScanLeftovers
+				// ref, not the part path — the part path (and the rest of the
+				// explanation) lives in Hint instead, so print that.
+				fmt.Printf("  %s in %s%s\n", shortGUID(u.GUID), u.ItemName, countSuffix(u.Count))
 				if u.Hint != "" {
 					fmt.Printf("    %s\n", u.Hint)
 				}
