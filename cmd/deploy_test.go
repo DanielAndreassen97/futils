@@ -992,7 +992,7 @@ func TestPrintUnresolvedLeftoverSection(t *testing.T) {
 		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
 		Unresolved: []deploy.UnresolvedRef{
 			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Workspace", Location: "notebook-content.py", ItemName: "NB_Config",
-				Reason: deploy.ReasonLeftover, Hint: `workspace "DW - DEV - Data"; in the target this is 7c3c0000-1111-4222-8333-444455556666`},
+				Reason: deploy.ReasonLeftover, Hint: `workspace "DW - DEV - Data"; in the target this is e1e10000-1111-4222-8333-444455556666`},
 		},
 	}}
 	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
