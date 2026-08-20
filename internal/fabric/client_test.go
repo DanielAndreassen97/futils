@@ -553,3 +553,51 @@ func TestRunPipelineNoParamsEmptyBody(t *testing.T) {
 		t.Errorf("no-params run must send empty body {}, got %q", b)
 	}
 }
+
+// TestDoGetFailsOnOversizedBody: a body that reaches the read cap must be an
+// error, never a truncated return value. A silently cut definition makes the
+// deployed-vs-git comparison report content as missing, and acting on that
+// comparison deletes live content in the target.
+func TestDoGetFailsOnOversizedBody(t *testing.T) {
+	origMax := maxResponseSize
+	t.Cleanup(func() { maxResponseSize = origMax })
+	maxResponseSize = 64
+
+	transport := &seqTransport{responses: []seqResponse{
+		{status: http.StatusOK, body: strings.Repeat("x", 65)},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	body, err := doGet("tok", "http://example.invalid/api/definition")
+	if err == nil {
+		t.Fatalf("doGet returned a truncated body (%d bytes) instead of an error", len(body))
+	}
+	if !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("error should name the truncation, got: %v", err)
+	}
+}
+
+// TestDoGetAcceptsBodyExactlyAtCap: the cap is inclusive — a body of exactly
+// maxResponseSize bytes is complete, not truncated.
+func TestDoGetAcceptsBodyExactlyAtCap(t *testing.T) {
+	origMax := maxResponseSize
+	t.Cleanup(func() { maxResponseSize = origMax })
+	maxResponseSize = 64
+
+	transport := &seqTransport{responses: []seqResponse{
+		{status: http.StatusOK, body: strings.Repeat("x", 64)},
+	}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	body, err := doGet("tok", "http://example.invalid/api/definition")
+	if err != nil {
+		t.Fatalf("body exactly at the cap must be accepted, got: %v", err)
+	}
+	if len(body) != 64 {
+		t.Errorf("body = %d bytes, want 64", len(body))
+	}
+}

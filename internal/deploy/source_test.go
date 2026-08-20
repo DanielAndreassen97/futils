@@ -15,13 +15,13 @@ func TestDiscoverItems(t *testing.T) {
 		"MyModel.SemanticModel/.platform",
 		"MyModel.SemanticModel/definition/model.tmdl",
 		"README.md",
-	}, "\n") + "\n"
+	}, "\x00") + "\x00"
 
 	fooPlatform := `{"metadata":{"type":"Notebook","displayName":"NB_Foo"},"config":{"logicalId":"aaa"}}`
 	modelPlatform := `{"metadata":{"type":"SemanticModel","displayName":"MyModel"},"config":{"logicalId":"bbb"}}`
 
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main": tree,
+		"ls-tree -r -z --name-only origin/main": tree,
 	}}
 
 	batchBlobs := map[string][]byte{
@@ -81,13 +81,13 @@ func TestDiscoverItemsBatchCalledOnce(t *testing.T) {
 		"ItemB.SemanticModel/.platform",
 		"ItemB.SemanticModel/definition/model.tmdl",
 		"ItemB.SemanticModel/definition/table.tmdl",
-	}, "\n") + "\n"
+	}, "\x00") + "\x00"
 
 	platA := `{"metadata":{"type":"Notebook","displayName":"ItemA"},"config":{"logicalId":"aaa"}}`
 	platB := `{"metadata":{"type":"SemanticModel","displayName":"ItemB"},"config":{"logicalId":"bbb"}}`
 
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main": tree,
+		"ls-tree -r -z --name-only origin/main": tree,
 	}}
 	batchBlobs := map[string][]byte{
 		"origin/main:ItemA.Notebook/.platform":                  []byte(platA),
@@ -132,12 +132,12 @@ func TestDiscoverItemsBinaryContent(t *testing.T) {
 		"Widget.Notebook/.platform",
 		"Widget.Notebook/multiline.py",
 		"Widget.Notebook/binary.bin",
-	}, "\n") + "\n"
+	}, "\x00") + "\x00"
 
 	plat := `{"metadata":{"type":"Notebook","displayName":"Widget"},"config":{"logicalId":"ccc"}}`
 
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main": tree,
+		"ls-tree -r -z --name-only origin/main": tree,
 	}}
 	batchBlobs := map[string][]byte{
 		"origin/main:Widget.Notebook/.platform":    []byte(plat),
@@ -182,14 +182,14 @@ func TestDiscoverItemsBucketing(t *testing.T) {
 		"GroupB/ItemZ.Notebook/.platform",
 		"GroupB/ItemZ.Notebook/z.py",
 		"toplevel.txt", // non-item file, must not appear anywhere
-	}, "\n") + "\n"
+	}, "\x00") + "\x00"
 
 	platX := `{"metadata":{"type":"Notebook","displayName":"ItemX"},"config":{"logicalId":"x1"}}`
 	platY := `{"metadata":{"type":"SemanticModel","displayName":"ItemY"},"config":{"logicalId":"y1"}}`
 	platZ := `{"metadata":{"type":"Notebook","displayName":"ItemZ"},"config":{"logicalId":"z1"}}`
 
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main": tree,
+		"ls-tree -r -z --name-only origin/main": tree,
 	}}
 	batchBlobs := map[string][]byte{
 		"origin/main:GroupA/ItemX.Notebook/.platform":       []byte(platX),
@@ -362,10 +362,10 @@ func TestDiscoverItemsExcludesGitOnlyMetadata(t *testing.T) {
 		"NB_Foo.Notebook/notebook-content.py",
 		"NB_Foo.Notebook/notebook-settings.json",
 		"NB_Foo.Notebook/fs-settings.json",
-	}, "\n") + "\n"
+	}, "\x00") + "\x00"
 	fooPlatform := `{"metadata":{"type":"Notebook","displayName":"NB_Foo"},"config":{"logicalId":"aaa"}}`
 	g := &fakeGit{responses: map[string]string{
-		"ls-tree -r --name-only origin/main": tree,
+		"ls-tree -r -z --name-only origin/main": tree,
 	}}
 	fb := &fakeBatch{blobs: map[string][]byte{
 		"origin/main:NB_Foo.Notebook/.platform":              []byte(fooPlatform),

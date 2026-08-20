@@ -36,9 +36,6 @@ func validateUUID(id, label string) error {
 const (
 	baseURL        = "https://api.fabric.microsoft.com"
 	powerBIBaseURL = "https://api.powerbi.com/v1.0/myorg"
-	// maxResponseSize caps any single response read at 10 MB. Definition
-	// payloads are base64, so this is generous.
-	maxResponseSize = 10 << 20
 
 	// maxThrottleRetries caps 429 retries per request. The throttle backoff is
 	// min(Retry-After-or-60, 10·2^attempt) (front-loaded 10/20/40s) and 8 retries
@@ -901,6 +898,31 @@ func doGet(token, rawURL string) ([]byte, error) {
 	}
 }
 
+// maxResponseSize caps any single response read. Definition payloads arrive
+// base64-encoded, which INFLATES them by a third, and a Direct Lake semantic
+// model's model.bim alone runs into the megabytes — so the cap is 256 MB and
+// readBody fails loudly when a body reaches it. A silently truncated definition
+// is the worst failure mode this client has: it turns the deployed-vs-git
+// comparison into a lie, and a lie there deletes real content in the target.
+// A var so tests can shrink it.
+var maxResponseSize = 256 << 20
+
+// readBody reads a response body with a hard cap, and treats hitting the cap
+// as an error rather than returning a truncated body. It reads one byte past
+// the cap precisely so the overflow is detectable: a body cut mid-JSON either
+// fails to parse with a baffling message or — far worse — parses into a
+// definition that looks complete but is missing parts.
+func readBody(resp *http.Response, rawURL string) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponseSize)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if len(body) > maxResponseSize {
+		return nil, fmt.Errorf("response from %s exceeds the %d MB read cap — refusing to work from a truncated body", rawURL, maxResponseSize>>20)
+	}
+	return body, nil
+}
+
 func doGetOnce(token, rawURL string) ([]byte, int, string, error) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
@@ -914,9 +936,9 @@ func doGetOnce(token, rawURL string) ([]byte, int, string, error) {
 	}
 	defer resp.Body.Close()
 	logHTTP("GET", resp.StatusCode, time.Since(start), rawURL)
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	body, err := readBody(resp, rawURL)
 	if err != nil {
-		return nil, resp.StatusCode, "", fmt.Errorf("read body: %w", err)
+		return nil, resp.StatusCode, "", err
 	}
 	return body, resp.StatusCode, resp.Header.Get("Retry-After"), nil
 }
@@ -1014,9 +1036,9 @@ func doWriteOnce(method, token, rawURL string, bodyBytes []byte) (*http.Response
 	}
 	defer resp.Body.Close()
 	logHTTP(method, resp.StatusCode, time.Since(start), rawURL)
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	body, err := readBody(resp, rawURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read body: %w", err)
+		return nil, nil, err
 	}
 	return resp, body, nil
 }

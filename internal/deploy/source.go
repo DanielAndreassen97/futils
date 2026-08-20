@@ -222,16 +222,32 @@ func (s *Source) ReadFile(p string) ([]byte, error) {
 // Efficiency: files are bucketed into item folders in a single O(files×folders)
 // pass, and all blob content is fetched in one git cat-file --batch subprocess
 // call, eliminating the N+1 git show pattern.
+//
+// Path fidelity: the tree is listed with -z (NUL-separated, quoting disabled).
+// Plain --name-only C-quotes every path holding a byte above 0x7F — a
+// Norwegian TMDL table file Måned.tmdl arrives as
+// "DW.SemanticModel/definition/tables/M\303\245ned.tmdl", quotes and all — so
+// it no longer prefix-matches its item folder, drops out of the bucketing,
+// and vanishes from the item's parts. Publishing that short definition made
+// Fabric DELETE the missing tables in the target even though git had them.
+// -z also covers paths with embedded newlines, quotes or backslashes.
 func (s *Source) DiscoverItems() ([]LocalItem, error) {
-	out, err := s.git("ls-tree", "-r", "--name-only", s.ref)
+	out, err := s.git("ls-tree", "-r", "-z", "--name-only", s.ref)
 	if err != nil {
 		return nil, fmt.Errorf("list tree: %w", err)
 	}
 	var all []string
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line != "" {
-			all = append(all, line)
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p == "" {
+			continue
 		}
+		if strings.HasPrefix(p, `"`) {
+			// -z disables quoting, so this is unreachable in practice. Assert it
+			// anyway: a quoted path silently shrinks an item's definition, and a
+			// short definition is a destructive publish — fail the deploy instead.
+			return nil, fmt.Errorf("list tree: git returned the quoted path %s — refusing to deploy from a file list that may be incomplete", p)
+		}
+		all = append(all, p)
 	}
 
 	// Identify item folders (any directory that contains a .platform file).

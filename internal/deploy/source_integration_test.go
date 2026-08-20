@@ -219,3 +219,104 @@ func TestDiscoverShellOnlyTypeDropsParts(t *testing.T) {
 		t.Errorf("Notebook parts must be untouched, got %+v", byName["NB_A"].Parts)
 	}
 }
+
+// TestDiscoverItemsNonASCIIPaths guards the truncation bug that silently
+// dropped definition parts: `git ls-tree --name-only` C-quotes any path
+// containing non-ASCII bytes ("Måned.tmdl" comes back as
+// "\"M\\303\\245ned.tmdl\""), so prefix-bucketing the quoted line against the
+// item folder failed and the part vanished from the item. Publishing that
+// incomplete definition made Fabric DELETE the missing tables in the target,
+// even though they were right there in git. Norwegian TMDL table and folder
+// names hit this on every deploy.
+func TestDiscoverItemsNonASCIIPaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(repo, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-b", "main")
+
+	// A model whose folder name is pure ASCII but whose table files are not.
+	write("DW - Salg.SemanticModel/.platform",
+		`{"metadata":{"type":"SemanticModel","displayName":"DW - Salg"},"config":{"logicalId":"aaa"}}`)
+	write("DW - Salg.SemanticModel/definition/model.tmdl", "model M\n")
+	write("DW - Salg.SemanticModel/definition/tables/Kunde.tmdl", "table Kunde\n")
+	write("DW - Salg.SemanticModel/definition/tables/Måned.tmdl", "table Måned\n")
+	write("DW - Salg.SemanticModel/definition/tables/Årsak.tmdl", "table Årsak\n")
+
+	// A model whose FOLDER name is non-ASCII: its .platform path is quoted
+	// too, so the whole item used to disappear from discovery.
+	write("DW - Økonomi.SemanticModel/.platform",
+		`{"metadata":{"type":"SemanticModel","displayName":"DW - Økonomi"},"config":{"logicalId":"bbb"}}`)
+	write("DW - Økonomi.SemanticModel/definition/model.tmdl", "model Ø\n")
+
+	run("add", ".")
+	run("commit", "-m", "norwegian item names")
+
+	s := &Source{repo: repo, ref: "main", git: realGitRunner(repo), gitBatch: realGitBatchRunner(repo)}
+	items, err := s.DiscoverItems()
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2 (the non-ASCII item folder was dropped): %+v", len(items), items)
+	}
+	byName := map[string]LocalItem{}
+	for _, it := range items {
+		byName[it.DisplayName] = it
+	}
+	salg, ok := byName["DW - Salg"]
+	if !ok {
+		t.Fatalf("DW - Salg missing; got %v", byName)
+	}
+	if len(salg.Parts) != 4 {
+		var paths []string
+		for _, p := range salg.Parts {
+			paths = append(paths, p.Path)
+		}
+		t.Fatalf("DW - Salg has %d parts, want 4 — non-ASCII table files were dropped: %v", len(salg.Parts), paths)
+	}
+	got := map[string]string{}
+	for _, p := range salg.Parts {
+		got[p.Path] = string(p.Content)
+	}
+	for _, want := range []string{
+		"definition/model.tmdl",
+		"definition/tables/Kunde.tmdl",
+		"definition/tables/Måned.tmdl",
+		"definition/tables/Årsak.tmdl",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("part %q missing from discovery; got %v", want, got)
+		}
+	}
+	if content := got["definition/tables/Måned.tmdl"]; content != "table Måned\n" {
+		t.Errorf("Måned.tmdl content = %q, want %q", content, "table Måned\n")
+	}
+	okonomi, ok := byName["DW - Økonomi"]
+	if !ok {
+		t.Fatalf("DW - Økonomi missing (non-ASCII folder name); got %v", byName)
+	}
+	if len(okonomi.Parts) != 1 || okonomi.Parts[0].Path != "definition/model.tmdl" {
+		t.Errorf("DW - Økonomi parts = %+v", okonomi.Parts)
+	}
+}
