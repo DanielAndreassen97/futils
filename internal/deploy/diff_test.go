@@ -173,3 +173,69 @@ func TestSubstitutePartsTagsUnresolvedWithItemName(t *testing.T) {
 		t.Fatalf("unresolved = %#v (want one tagged with NB_Config)", outcome.Unresolved)
 	}
 }
+
+// TestReorderedOnlyDetectsMovedTMDLBlocks: a table whose columns merely sit in a
+// different order is text that differs and meaning that does not. Fabric's
+// serialiser chooses that order, so treating it as a change made every semantic
+// model report Changed on every deploy, forever.
+func TestReorderedOnlyDetectsMovedTMDLBlocks(t *testing.T) {
+	deployed := strings.Join([]string{
+		"table 'Fakta Fravaer'",
+		"\tcolumn VaktkodeID",
+		"\t\tdataType: int64",
+		"",
+		"\tcolumn StartKlokkeslett",
+		"\t\tdataType: string",
+	}, "\n")
+	// Same six lines, the two column blocks swapped.
+	local := strings.Join([]string{
+		"table 'Fakta Fravaer'",
+		"\tcolumn StartKlokkeslett",
+		"\t\tdataType: string",
+		"",
+		"\tcolumn VaktkodeID",
+		"\t\tdataType: int64",
+	}, "\n")
+
+	if !reorderedOnly("definition/tables/Fakta Fravaer.tmdl", deployed, local) {
+		t.Error("a pure block move in TMDL must be recognised as a reorder")
+	}
+	// An edit inside the moved block is a real change, not a reorder.
+	edited := strings.Replace(local, "dataType: int64", "dataType: string", 1)
+	if reorderedOnly("definition/tables/Fakta Fravaer.tmdl", deployed, edited) {
+		t.Error("an edited line must never read as a reorder")
+	}
+	// A removed line changes the count, so it cannot pass either.
+	shorter := strings.Join(strings.Split(local, "\n")[:5], "\n")
+	if reorderedOnly("definition/tables/Fakta Fravaer.tmdl", deployed, shorter) {
+		t.Error("a removed line must never read as a reorder")
+	}
+	// Order matters outside TMDL: two swapped notebook cells are a real change.
+	if reorderedOnly("notebook-content.py", deployed, local) {
+		t.Error("reorder tolerance must be limited to .tmdl")
+	}
+	// A wholly new or wholly removed part is not a reorder.
+	if reorderedOnly("definition/tables/x.tmdl", "", local) {
+		t.Error("an added part must never read as a reorder")
+	}
+}
+
+// DiffParts must flag the reordered part rather than drop it: the deploy verdict
+// ignores it, but the report still has it to show.
+func TestDiffPartsFlagsReorderedParts(t *testing.T) {
+	oldText := "table T\n\tcolumn A\n\tcolumn B"
+	newText := "table T\n\tcolumn B\n\tcolumn A"
+	deployed := &fabric.Definition{Parts: []fabric.DefinitionPart{
+		{Path: "definition/tables/T.tmdl", Payload: base64.StdEncoding.EncodeToString([]byte(oldText))},
+	}}
+	diffs := DiffParts(map[string][]byte{"definition/tables/T.tmdl": []byte(newText)}, deployed)
+	if len(diffs) != 1 {
+		t.Fatalf("got %d diffs, want 1", len(diffs))
+	}
+	if !diffs[0].Reordered {
+		t.Error("a reorder-only TMDL part must be flagged Reordered")
+	}
+	if diffs[0].Old == "" || diffs[0].New == "" {
+		t.Error("the reordered part must keep both sides so the report can show the move")
+	}
+}

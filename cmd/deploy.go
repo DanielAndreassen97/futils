@@ -623,6 +623,13 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			// ipynb repo's local parts and every notebook would diff as a
 			// phantom full change on every compare.
 			def, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, deploy.DefinitionFormat(rows[idx].Local))
+			if def != nil {
+				// Discovery drops Fabric-owned folders (.pbi, .children) on the git
+				// side, so drop them here too — otherwise every file Power BI
+				// Desktop wrote into the target reads as a part this publish
+				// deletes, on every run.
+				def.Parts = deploy.DropFabricOwnedParts(rows[idx].ItemType(), def.Parts)
+			}
 			if skipSchedules && def != nil {
 				// Local parts were stripped before Compare; strip the deployed
 				// side too, or every scheduled target item would diff as a
@@ -677,11 +684,12 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	// itemDiffs/changes/unresolved sets AND their order) byte-for-byte identical
 	// to the old serial loop; only the wall-clock changes.
 	type compareResult struct {
-		class      deploy.Class
-		itemDiff   *ItemDiff
-		unresolved []deploy.UnresolvedRef
-		changes    []deploy.RebindChange
-		err        error
+		class       deploy.Class
+		itemDiff    *ItemDiff
+		unresolved  []deploy.UnresolvedRef
+		changes     []deploy.RebindChange
+		err         error
+		reorderOnly bool // every difference was TMDL member order — counted Unchanged
 	}
 	compared := make([]compareResult, len(existsIdx))
 	csem := make(chan struct{}, diffConcurrency)
@@ -713,7 +721,18 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			deployedDesc := deploy.DeployedDescription(results[j].def)
 			descChanged := deployedDesc != rows[idx].Local.Description
 			parts := deploy.DiffParts(localParts, results[j].def)
-			if len(parts) > 0 || descChanged {
+			// A part whose two sides hold the same TMDL lines in a different order
+			// is text that differs and meaning that does not — Fabric's serialiser
+			// picks that order, not git. Such a part must not make an item Changed,
+			// or every semantic model reports Changed on every deploy forever.
+			real := 0
+			for _, p := range parts {
+				if !p.Reordered {
+					real++
+				}
+			}
+			switch {
+			case real > 0 || descChanged:
 				res.class = deploy.ClassChanged
 				if descChanged {
 					parts = append(parts, deploy.PartDiff{
@@ -725,7 +744,11 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 					Type:  rows[idx].ItemType(),
 					Parts: parts,
 				}
-			} else {
+			case len(parts) > 0:
+				// Reorder-only: unchanged, but say so rather than swallow it.
+				res.class = deploy.ClassUnchanged
+				res.reorderOnly = true
+			default:
 				res.class = deploy.ClassUnchanged
 			}
 			compared[j] = res
@@ -750,6 +773,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	// (changes/unresolved) even on error, so those are merged regardless — the
 	// old loop appended them before the perr check too.
 	var unverified int
+	var reorderOnly int
 	var firstErr error
 	var unresolved []deploy.UnresolvedRef
 	var changes []deploy.RebindChange
@@ -789,9 +813,17 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 			continue
 		}
 		rows[idx].Class = c.class
+		if c.reorderOnly {
+			reorderOnly++
+		}
 		if c.itemDiff != nil {
 			itemDiffs = append(itemDiffs, *c.itemDiff)
 		}
+	}
+	if reorderOnly > 0 {
+		fmt.Println(infoStyle.Render(fmt.Sprintf(
+			"%d item(s) in %s differ from git only in TMDL member order — Fabric's serialiser owns that order, so they count as Unchanged.",
+			reorderOnly, target.DisplayName)))
 	}
 	if unverified > 0 {
 		fmt.Println(warningStyle.Render(fmt.Sprintf(

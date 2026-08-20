@@ -1863,3 +1863,101 @@ func TestRunDeployNoPartRemovalNoExtraConfirm(t *testing.T) {
 		}
 	}
 }
+
+// A semantic model whose only difference from git is TMDL member order must
+// come out Unchanged — Fabric's serialiser picks that order, so calling it
+// Changed marks the model as pending on every deploy, forever. The run says so
+// out loud rather than swallowing it.
+func TestDiffExistingRows_TMDLReorderIsUnchanged(t *testing.T) {
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	deployedTMDL := "table T\n\tcolumn A\n\t\tdataType: int64\n\n\tcolumn B\n\t\tdataType: string"
+	localTMDL := "table T\n\tcolumn B\n\t\tdataType: string\n\n\tcolumn A\n\t\tdataType: int64"
+
+	local := []deploy.LocalItem{{
+		Type: "SemanticModel", DisplayName: "DW - Salg",
+		Parts: []deploy.Part{{Path: "definition/tables/T.tmdl", Content: []byte(localTMDL)}},
+	}}
+	deployed := []fabric.Item{{ID: "sm-1", DisplayName: "DW - Salg", Type: "SemanticModel", WorkspaceID: "ws-1"}}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		"sm-1": {Parts: []fabric.DefinitionPart{
+			{Path: "definition/tables/T.tmdl", Payload: enc(deployedTMDL), PayloadType: "InlineBase64"},
+		}},
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "WS-Test"}
+
+	var diffs []ItemDiff
+	out := captureStdout(t, func() {
+		_, _, diffs = diffExistingRows(fake, "tok", target, rows, nil, false)
+	})
+
+	if rows[0].Class != deploy.ClassUnchanged {
+		t.Errorf("a pure TMDL reorder must be Unchanged, got %v", rows[0].Class)
+	}
+	if len(diffs) != 0 {
+		t.Errorf("a reorder-only item must not enter the change report, got %+v", diffs)
+	}
+	if !strings.Contains(out, "TMDL member order") {
+		t.Errorf("the run must say the reorder was ignored, got:\n%s", out)
+	}
+}
+
+// The same model with a real edit stays Changed — the reorder tolerance must not
+// swallow an actual content change that happens to sit alongside one.
+func TestDiffExistingRows_TMDLRealEditStillChanged(t *testing.T) {
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	deployedTMDL := "table T\n\tcolumn A\n\t\tdataType: int64"
+	localTMDL := "table T\n\tcolumn A\n\t\tdataType: string" // edited, not moved
+
+	local := []deploy.LocalItem{{
+		Type: "SemanticModel", DisplayName: "DW - Salg",
+		Parts: []deploy.Part{{Path: "definition/tables/T.tmdl", Content: []byte(localTMDL)}},
+	}}
+	deployed := []fabric.Item{{ID: "sm-1", DisplayName: "DW - Salg", Type: "SemanticModel", WorkspaceID: "ws-1"}}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		"sm-1": {Parts: []fabric.DefinitionPart{
+			{Path: "definition/tables/T.tmdl", Payload: enc(deployedTMDL), PayloadType: "InlineBase64"},
+		}},
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "WS-Test"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
+	if rows[0].Class != deploy.ClassChanged {
+		t.Errorf("a real TMDL edit must stay Changed, got %v", rows[0].Class)
+	}
+	if len(diffs) != 1 {
+		t.Fatalf("want 1 item diff, got %d", len(diffs))
+	}
+}
+
+// The Fabric-owned .pbi folder must not read as a part the publish deletes.
+// Power BI Desktop writes it into the target, git never carries it, so before
+// the filter every semantic-model deploy claimed a deletion — a permanent false
+// positive on the part-removal gate.
+func TestDiffExistingRows_FabricOwnedPartIsNotARemoval(t *testing.T) {
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	tmdl := "table T\n\tcolumn A"
+
+	local := []deploy.LocalItem{{
+		Type: "SemanticModel", DisplayName: "DW - Salg",
+		Parts: []deploy.Part{{Path: "definition/tables/T.tmdl", Content: []byte(tmdl)}},
+	}}
+	deployed := []fabric.Item{{ID: "sm-1", DisplayName: "DW - Salg", Type: "SemanticModel", WorkspaceID: "ws-1"}}
+	rows := deploy.Compare(local, deployed, localTypeScope(local))
+	fake := &deployFakeAPI{defByID: map[string]*fabric.Definition{
+		"sm-1": {Parts: []fabric.DefinitionPart{
+			{Path: "definition/tables/T.tmdl", Payload: enc(tmdl), PayloadType: "InlineBase64"},
+			{Path: ".pbi/editorSettings.json", Payload: enc(`{"autodetect":true}`), PayloadType: "InlineBase64"},
+		}},
+	}}
+	target := fabric.Workspace{ID: "ws-1", DisplayName: "WS-Test"}
+
+	_, _, diffs := diffExistingRows(fake, "tok", target, rows, nil, false)
+	if rows[0].Class != deploy.ClassUnchanged {
+		t.Errorf("identical content plus a Fabric-owned file must be Unchanged, got %v", rows[0].Class)
+	}
+	if len(diffs) != 0 {
+		t.Errorf(".pbi must not surface as a diff, got %+v", diffs)
+	}
+}

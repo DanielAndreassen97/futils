@@ -132,10 +132,15 @@ func normalizePartFor(partPath string, content []byte) []byte {
 // PartDiff is the normalized old (deployed) vs new (substituted-local) text of
 // one item part that differs. Old is empty when the part is new locally; New is
 // empty when the part exists only in the deployed definition.
+//
+// Reordered marks a part whose two sides hold exactly the same lines in a
+// different order — see reorderedOnly. Such a part is a difference in text but
+// not in meaning, and the deploy verdict ignores it.
 type PartDiff struct {
-	Path string
-	Old  string
-	New  string
+	Path      string
+	Old       string
+	New       string
+	Reordered bool
 }
 
 // DiffParts returns, for each part whose normalized content differs between the
@@ -161,7 +166,10 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 		newN := string(normalizePartFor(path, lb))
 		oldN := deployedNorm[path]
 		if newN != oldN {
-			diffs = append(diffs, PartDiff{Path: path, Old: oldN, New: newN})
+			diffs = append(diffs, PartDiff{
+				Path: path, Old: oldN, New: newN,
+				Reordered: reorderedOnly(path, oldN, newN),
+			})
 		}
 	}
 	for path, oldN := range deployedNorm {
@@ -170,6 +178,46 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 		}
 	}
 	return diffs
+}
+
+// reorderedOnly reports whether two versions of a part hold exactly the same
+// lines, just in a different order.
+//
+// Restricted to TMDL, because that is where member order carries no meaning:
+// the order of columns in a table, measures in a measure table or role
+// references in a model is chosen by whichever serialiser wrote the file last.
+// Fabric's own writer does not preserve git's order, so a model whose tables
+// merely sit in a different sequence reports as Changed on every deploy,
+// forever, and drowns the real changes.
+//
+// The test is multiset equality over the lines, which cannot hide an edit: any
+// changed, added or removed character puts a line in one multiset and not the
+// other. It CAN hide a deliberate reorder — that is the point, and the cost is
+// that the target keeps its own order, which is what Fabric would do anyway the
+// next time the model is saved.
+//
+// Order is deliberately NOT ignored anywhere else. In a notebook, two swapped
+// cells are a real change; in a report, two swapped pages are too.
+func reorderedOnly(partPath, oldText, newText string) bool {
+	if !strings.HasSuffix(partPath, ".tmdl") || oldText == "" || newText == "" {
+		return false
+	}
+	oldLines := strings.Split(oldText, "\n")
+	newLines := strings.Split(newText, "\n")
+	if len(oldLines) != len(newLines) {
+		return false
+	}
+	counts := make(map[string]int, len(oldLines))
+	for _, l := range oldLines {
+		counts[l]++
+	}
+	for _, l := range newLines {
+		counts[l]--
+		if counts[l] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // DeployedDescription returns the item description stored in the deployed

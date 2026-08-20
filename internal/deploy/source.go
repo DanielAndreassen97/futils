@@ -333,6 +333,13 @@ func (s *Source) DiscoverItems() ([]LocalItem, error) {
 			if rel == ".platform" || rel == "notebook-settings.json" || rel == "fs-settings.json" {
 				continue
 			}
+			// Fabric owns some folders inside a definition (.pbi for a semantic
+			// model or report, .children for an eventhouse) and writes them on its
+			// own schedule; fabric-cicd strips the same paths from every payload.
+			// See IsFabricOwnedPart.
+			if IsFabricOwnedPart(meta.Type, rel) {
+				continue
+			}
 			if shellOnlyPublish[meta.Type] {
 				// Shell-only types publish no definition; count what git carries
 				// so compare/publish can warn instead of silently skipping it.
