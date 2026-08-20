@@ -610,3 +610,100 @@ func TestUnifiedLineDiffLineNumbers(t *testing.T) {
 		}
 	}
 }
+
+// A block that merely slid down the file must render as moved, not as a delete
+// plus an insert. Rendering it red-and-green forces the reader to eyeball 119
+// red lines against 119 green ones to conclude that nothing happened.
+func TestRenderItemPartsMarksMovedLines(t *testing.T) {
+	oldText := "table T\n\tcolumn A\n\t\tdataType: int64\n\n\tcolumn B\n\t\tdataType: string"
+	newText := "table T\n\tcolumn B\n\t\tdataType: string\n\n\tcolumn A\n\t\tdataType: int64"
+
+	html, added, removed, moved := renderItemParts(ItemDiff{
+		Name: "DW - Salg", Type: "SemanticModel",
+		Parts: []deploy.PartDiff{{Path: "definition/tables/T.tmdl", Old: oldText, New: newText, Reordered: true}},
+	})
+
+	if moved == 0 {
+		t.Fatalf("no moved lines detected; added=%d removed=%d", added, removed)
+	}
+	if added != 0 || removed != 0 {
+		t.Errorf("a pure move must not count as added/removed, got +%d −%d", added, removed)
+	}
+	if !strings.Contains(html, `class="ln mov"`) {
+		t.Error("moved lines must render with the moved class")
+	}
+	if strings.Contains(html, `class="ln rem"`) || strings.Contains(html, `class="ln add"`) {
+		t.Errorf("a pure move must render no add/remove lines:\n%s", html)
+	}
+	if !strings.Contains(html, "member order only") {
+		t.Error("a Reordered part must be badged as such")
+	}
+}
+
+// A real edit must keep its red and green. The move detection is per line text,
+// so an edited line appears on one side only and cannot be mistaken for a move.
+func TestRenderItemPartsKeepsRealEditsRed(t *testing.T) {
+	html, added, removed, moved := renderItemParts(ItemDiff{
+		Name: "NB_A", Type: "Notebook",
+		Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "x = 1", New: "x = 2"}},
+	})
+	if moved != 0 {
+		t.Errorf("an edit is not a move, got moved=%d", moved)
+	}
+	if added != 1 || removed != 1 {
+		t.Errorf("want +1 −1, got +%d −%d", added, removed)
+	}
+	if !strings.Contains(html, `class="ln rem"`) || !strings.Contains(html, `class="ln add"`) {
+		t.Error("a real edit must keep add/remove rendering")
+	}
+}
+
+// Blank lines match on both sides of nearly every diff, so they must not be
+// called moved on their own — but a blank separator inside a moved run did
+// travel with the block, and leaving it red is exactly the noise this removes.
+func TestClassifyMovedHandlesBlankLines(t *testing.T) {
+	// A blank whose neighbours are genuine changes stays a change.
+	lines := []DiffLine{
+		{Op: '-', Text: "x = 1"},
+		{Op: '-', Text: ""},
+		{Op: '+', Text: "x = 2"},
+		{Op: '+', Text: ""},
+	}
+	for i, m := range classifyMoved(lines) {
+		if m {
+			t.Errorf("line %d (%q) must not be moved — nothing here moved", i, lines[i].Text)
+		}
+	}
+
+	// A blank between two moved lines moves with them.
+	block := []DiffLine{
+		{Op: '-', Text: "\tcolumn A"},
+		{Op: '-', Text: ""},
+		{Op: '-', Text: "\tcolumn B"},
+		{Op: '+', Text: "\tcolumn A"},
+		{Op: '+', Text: ""},
+		{Op: '+', Text: "\tcolumn B"},
+	}
+	for i, m := range classifyMoved(block) {
+		if !m {
+			t.Errorf("line %d (%q) must be moved — the whole block moved", i, block[i].Text)
+		}
+	}
+}
+
+// Per-index flags, not per-text: an identical line moving elsewhere must not
+// excuse a line that genuinely changed.
+func TestClassifyMovedIsPerIndex(t *testing.T) {
+	lines := []DiffLine{
+		{Op: '-', Text: "\tcolumn A"}, // moved
+		{Op: '-', Text: "\tdeleted for real"},
+		{Op: '+', Text: "\tcolumn A"}, // moved
+	}
+	moved := classifyMoved(lines)
+	if !moved[0] || !moved[2] {
+		t.Error("the line present on both sides must be flagged moved")
+	}
+	if moved[1] {
+		t.Error("a line removed and never re-added must stay a removal")
+	}
+}

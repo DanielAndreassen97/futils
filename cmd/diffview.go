@@ -358,6 +358,7 @@ const deployReportStyle = `<style>
   pre .ctx{color:#8fa096}
   pre .add{color:var(--addfg);background:linear-gradient(90deg,rgba(34,197,94,.16),rgba(34,197,94,.04))}
   pre .rem{color:var(--delfg);background:linear-gradient(90deg,rgba(239,68,68,.15),rgba(239,68,68,.03))}
+  pre .mov{color:#8ab4f8;background:linear-gradient(90deg,rgba(138,180,248,.14),rgba(138,180,248,.03))}
   pre .fold{color:#6b7a70;font-style:italic;background:rgba(255,255,255,.022);border-top:1px solid rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.04)}
   .empty{color:var(--muted);padding:1rem .95rem}
   .foot{color:#5d6b61;font-size:.74rem;margin-top:2.4rem;border-top:1px solid var(--panel-line);padding-top:.8rem}
@@ -367,7 +368,7 @@ const deployReportStyle = `<style>
             border-left:2px solid var(--green-deep);
             background:linear-gradient(90deg,rgba(34,197,94,.07),transparent)}
   .pm{margin-left:auto;display:flex;gap:.45rem;font-family:"SF Mono",Menlo,monospace;font-size:.74rem;font-weight:600}
-  .pm .plus{color:var(--addfg)} .pm .minus{color:var(--delfg)}
+  .pm .plus{color:var(--addfg)} .pm .minus{color:var(--delfg)} .pm .moved{color:#8ab4f8}
   .item summary .pm+.chev{margin-left:.2rem}
 
   /* ── reference rebinds / report bindings ── */
@@ -617,9 +618,9 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 
 				it, hasDiff := diffByKey[r.WorkspaceID+"\x00"+r.Type+"\x00"+r.Name]
 				if hasDiff && r.Action != deploy.ActionDelete && r.Err == nil {
-					partsHTML, added, removed := renderItemParts(it)
+					partsHTML, added, removed, moved := renderItemParts(it)
 					b.WriteString(`<details class="item ` + cardCls + `"><summary>` + row)
-					fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
+					fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, added, removed, movedChip(moved))
 					b.WriteString(`<span class="chev">▾</span></summary>`)
 					b.WriteString(partsHTML)
 					b.WriteString(`</details>`)
@@ -759,12 +760,12 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 				b.WriteString(`<div class="wsgroup">` + html.EscapeString(g.Target.DisplayName) + `</div>`)
 			}
 			for _, it := range g.Diffs {
-				partsHTML, added, removed := renderItemParts(it)
+				partsHTML, added, removed, moved := renderItemParts(it)
 				b.WriteString(`<details class="item changed">`)
 				b.WriteString(`<summary><span class="dot changed"></span>`)
 				b.WriteString(html.EscapeString(it.Name))
 				b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
-				fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span></span>`, added, removed)
+				fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, added, removed, movedChip(moved))
 				b.WriteString(`<span class="chev">▾</span></summary>`)
 				b.WriteString(partsHTML)
 				b.WriteString(`</details>`)
@@ -778,12 +779,71 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 	return b.String()
 }
 
+// movedChip renders the ⇅N summary chip, or nothing when a diff moved no lines —
+// most diffs don't, and an always-present ⇅0 would just add noise to every card.
+func movedChip(moved int) string {
+	if moved == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`<span class="moved">⇅%d</span>`, moved)
+}
+
+// classifyMoved flags, per line, the removals and additions that are a MOVE
+// rather than a change: the same text is removed here and added there. Rendering
+// a moved block red-and-green makes a table that merely slid down the file look
+// like a rewrite, and the reader has to compare 119 red lines against 119 green
+// ones by eye to conclude that nothing happened.
+//
+// Flags are per INDEX, not per text, so a line that genuinely changed in one
+// place is not excused by an identical line moving somewhere else.
+//
+// Blank lines are handled in a second pass. On their own they match on both
+// sides of nearly every diff, so marking them by text would scatter
+// move-coloured lines through real changes; but a blank separator sitting INSIDE
+// a moved run travelled with the block, and leaving it red is exactly the noise
+// this is meant to remove.
+func classifyMoved(lines []DiffLine) []bool {
+	rem, add := map[string]int{}, map[string]int{}
+	for _, ln := range lines {
+		switch ln.Op {
+		case '-':
+			rem[ln.Text]++
+		case '+':
+			add[ln.Text]++
+		}
+	}
+	moved := make([]bool, len(lines))
+	for i, ln := range lines {
+		if ln.Op != '-' && ln.Op != '+' || strings.TrimSpace(ln.Text) == "" {
+			continue
+		}
+		if rem[ln.Text] > 0 && add[ln.Text] > 0 {
+			moved[i] = true
+		}
+	}
+	for i, ln := range lines {
+		if ln.Op != '-' && ln.Op != '+' || strings.TrimSpace(ln.Text) != "" {
+			continue
+		}
+		if i > 0 && lines[i-1].Op == ln.Op && moved[i-1] {
+			moved[i] = true
+			continue
+		}
+		if i+1 < len(lines) && lines[i+1].Op == ln.Op && moved[i+1] {
+			moved[i] = true
+		}
+	}
+	return moved
+}
+
 // renderItemParts renders one changed item's per-part content diffs, counting
-// added/removed lines so the collapsed card summary can show a +N −N chip —
-// enough to gauge a change's size without expanding it.
-func renderItemParts(it ItemDiff) (string, int, int) {
+// added/removed/moved lines so the collapsed card summary can show a +N −N ⇅N
+// chip — enough to gauge a change's size, and its NATURE, without expanding it.
+// Moved lines are counted apart from added/removed on purpose: a part that only
+// shuffled its lines should read as +0 −0, not as a rewrite of the whole file.
+func renderItemParts(it ItemDiff) (string, int, int, int) {
 	var parts strings.Builder
-	added, removed := 0, 0
+	added, removed, moved := 0, 0, 0
 	for _, p := range it.Parts {
 		oldPretty, oldIsJSON := prettyForDiff(p.Old)
 		newPretty, newIsJSON := prettyForDiff(p.New)
@@ -794,16 +854,28 @@ func renderItemParts(it ItemDiff) (string, int, int) {
 		if path.Base(p.Path) == ".schedules" {
 			badge += ` <span class="badge cap">schedule — overwrites target's</span>`
 		}
+		if p.Reordered {
+			badge += ` <span class="badge">member order only — not a content change</span>`
+		}
+		lines := cappedLineDiff(oldPretty, newPretty)
+		mov := classifyMoved(lines)
 		parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
-		for _, ln := range cappedLineDiff(oldPretty, newPretty) {
+		for i, ln := range lines {
 			cls, prefix := "ctx", " "
 			switch ln.Op {
-			case '-':
-				cls, prefix = "rem", "-"
-				removed++
-			case '+':
-				cls, prefix = "add", "+"
-				added++
+			case '-', '+':
+				if mov[i] {
+					cls, prefix = "mov", "⇅"
+					moved++
+					break
+				}
+				if ln.Op == '-' {
+					cls, prefix = "rem", "-"
+					removed++
+				} else {
+					cls, prefix = "add", "+"
+					added++
+				}
 			case '@':
 				cls, prefix = "fold", " "
 			}
@@ -811,7 +883,9 @@ func renderItemParts(it ItemDiff) (string, int, int) {
 		}
 		parts.WriteString(`</pre></div>`)
 	}
-	return parts.String(), added, removed
+	// Both sides of a move were counted, so a block that slid down the file
+	// reports its own length rather than twice it.
+	return parts.String(), added, removed, moved / 2
 }
 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
