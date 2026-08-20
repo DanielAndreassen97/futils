@@ -14,6 +14,12 @@ var AccentColor = lipgloss.Color("#22c55e")
 // both light and dark backgrounds.
 var DimColor = lipgloss.Color("8")
 
+// AlertColor is the amber the two banner notices use to break out of the green
+// palette: the update hint and the demo-mode warning. A fixed hex rather than an
+// ANSI slot, because both render as filled badges — dark text sits on top of it,
+// so the terminal theme must not get a vote on what the fill actually is.
+var AlertColor = lipgloss.Color("#fbbf24")
+
 // WarnColor is the yellow used for "pay attention" tags like inline
 // badges. ANSI 3 stays within the terminal-adaptive 0-7 range, same
 // rationale as DimColor, so it reads as yellow on both light and dark

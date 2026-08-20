@@ -22,10 +22,21 @@ var dimStyle = lipgloss.NewStyle().
 // Version is set by main at startup.
 var Version = "dev"
 
-// UpdateNotice, when non-empty, is a one-line upgrade hint main resolved at
-// startup (e.g. "v0.9.0 available — brew upgrade futils"); the banner shows
-// it centred under the version.
-var UpdateNotice string
+// UpdateVersion, when non-empty, is the newer release tag main resolved at
+// startup (e.g. "v0.10.1"). The banner renders it as a filled badge under the
+// version line. Only the tag lives here: how the upgrade is phrased is the
+// banner's business, not the update check's.
+var UpdateVersion string
+
+// upgradeHint is the command line shown under the update badge. Both package
+// managers are listed because one binary serves macOS and Windows users and the
+// banner cannot tell which installed it.
+const upgradeHint = "brew upgrade futils · scoop update futils"
+
+// chipTextColor is the near-black that sits on an AlertColor fill. Hardcoded
+// dark for the same reason AlertColor is hardcoded amber: the pair has to keep
+// its contrast whatever the terminal theme is.
+var chipTextColor = lipgloss.Color("#1a1c23")
 
 // DemoNotice, when non-empty, banners that every flow runs against the fake
 // tenant — with the way back, which differs by how demo mode was entered
@@ -322,14 +333,27 @@ func Banner() string {
 	if BuildInfo != "" {
 		out += "\n" + centerPad(len([]rune(BuildInfo)), bannerWidth) + dimStyle.Render(BuildInfo)
 	}
-	if UpdateNotice != "" {
-		notice := "⬆ " + UpdateNotice
-		out += "\n" + centerPad(len([]rune(notice)), bannerWidth) +
-			lipgloss.NewStyle().Foreground(AccentColor).Render(notice)
+	if UpdateVersion != "" {
+		// A filled amber badge, because the notice used to render in AccentColor
+		// green inside an all-green banner: no contrast in hue, weight or
+		// position, so nothing marked it as new information. The fill is the only
+		// thing on screen that is neither green nor grey.
+		//
+		// Width comes from lipgloss.Width (terminal CELLS, ANSI excluded) rather
+		// than a rune count — the badge's arrow is an ambiguous-width glyph, and
+		// counting it as one rune would offset the centring.
+		badge := lipgloss.NewStyle().
+			Background(AlertColor).Foreground(chipTextColor).Bold(true).
+			Render(" ⬆ UPDATE ")
+		head := badge + lipgloss.NewStyle().Foreground(AlertColor).Bold(true).
+			Render(" "+UpdateVersion+" available")
+		cmd := dimStyle.Render(upgradeHint)
+		out += "\n" + centerPad(lipgloss.Width(head), bannerWidth) + head
+		out += "\n" + centerPad(lipgloss.Width(cmd), bannerWidth) + cmd
 	}
 	if DemoNotice != "" {
 		out += "\n" + centerPad(len([]rune(DemoNotice)), bannerWidth) +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24")).Bold(true).Render(DemoNotice)
+			lipgloss.NewStyle().Foreground(AlertColor).Bold(true).Render(DemoNotice)
 	}
 	out += "\n" + centerPad(len([]rune(hintText)), bannerWidth) + hint
 	return out

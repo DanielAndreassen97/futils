@@ -20,7 +20,11 @@ import (
 var releaseURL = "https://api.github.com/repos/DanielAndreassen97/futils/releases/latest"
 
 // cacheTTL is how long a check result is trusted before asking GitHub again.
-const cacheTTL = 24 * time.Hour
+// Six hours, not a day: a release that fixes a destructive bug should not wait
+// out a cache written minutes before it shipped. At a handful of launches a day
+// that is a handful of requests, against an unauthenticated budget of 60 per
+// hour.
+const cacheTTL = 6 * time.Hour
 
 // fetchTimeout bounds the live HTTP check itself — generous, because a fetch
 // that loses the caller's deadline still completes in the background and
@@ -32,17 +36,17 @@ type cacheFile struct {
 	Latest    string    `json:"latest"`
 }
 
-// Notice returns a one-line upgrade hint ("v0.9.0 available — …") when a
-// release newer than current exists, or "" — also on dev builds, unparseable
-// versions, network failure, or when the deadline passes first. Safe to call
-// on every interactive startup.
-func Notice(current string, deadline time.Duration) string {
+// Available returns the release tag ("v0.10.1") when GitHub has one newer than
+// current, or "" — also on dev builds, unparseable versions, network failure,
+// or when the deadline passes first. Only the tag: how the upgrade is presented
+// belongs to whoever draws it. Safe to call on every interactive startup.
+func Available(current string, deadline time.Duration) string {
 	if _, ok := parseSemver(current); !ok {
 		return "" // dev build or unrecognizable version — nothing to compare
 	}
 
 	if latest, fresh := readCache(); fresh {
-		return noticeText(current, latest)
+		return newerTag(current, latest)
 	}
 
 	result := make(chan string, 1)
@@ -55,19 +59,19 @@ func Notice(current string, deadline time.Duration) string {
 	}()
 	select {
 	case latest := <-result:
-		return noticeText(current, latest)
+		return newerTag(current, latest)
 	case <-time.After(deadline):
 		return "" // too slow for this launch; the goroutine caches for the next
 	}
 }
 
-// noticeText formats the upgrade hint, or "" when latest isn't newer.
-func noticeText(current, latest string) string {
+// newerTag returns latest normalised to a "v"-prefixed tag when it beats
+// current, else "".
+func newerTag(current, latest string) string {
 	if latest == "" || !newerVersion(current, latest) {
 		return ""
 	}
-	return "v" + strings.TrimPrefix(latest, "v") +
-		" available — brew upgrade futils · scoop update futils"
+	return "v" + strings.TrimPrefix(latest, "v")
 }
 
 // newerVersion reports whether latest is a strictly newer semver than

@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -32,28 +31,32 @@ func TestNewerVersion(t *testing.T) {
 	}
 }
 
-func TestNoticeText(t *testing.T) {
-	if got := noticeText("0.8.0", "v0.9.0"); !strings.Contains(got, "v0.9.0 available") || !strings.Contains(got, "brew upgrade futils") {
-		t.Errorf("notice must name the version and the upgrade command, got %q", got)
+func TestNewerTag(t *testing.T) {
+	if got := newerTag("0.8.0", "v0.9.0"); got != "v0.9.0" {
+		t.Errorf("newerTag = %q, want v0.9.0", got)
 	}
-	if got := noticeText("0.9.0", "v0.9.0"); got != "" {
-		t.Errorf("up-to-date must yield no notice, got %q", got)
+	// A bare tag from the API is normalised to the v-prefixed form the banner draws.
+	if got := newerTag("0.8.0", "0.9.0"); got != "v0.9.0" {
+		t.Errorf("newerTag must normalise a bare tag, got %q", got)
 	}
-	if got := noticeText("0.9.0", ""); got != "" {
-		t.Errorf("failed fetch must yield no notice, got %q", got)
+	if got := newerTag("0.9.0", "v0.9.0"); got != "" {
+		t.Errorf("up-to-date must yield no tag, got %q", got)
+	}
+	if got := newerTag("0.9.0", ""); got != "" {
+		t.Errorf("failed fetch must yield no tag, got %q", got)
 	}
 }
 
 // A dev build never checks anything — Notice returns "" without touching the
 // network or cache.
-func TestNoticeSkipsDevBuilds(t *testing.T) {
-	if got := Notice("dev", time.Second); got != "" {
+func TestAvailableSkipsDevBuilds(t *testing.T) {
+	if got := Available("dev", time.Second); got != "" {
 		t.Errorf("dev build must never produce a notice, got %q", got)
 	}
 }
 
 // A fresh cache answers without any network; a stale one is ignored.
-func TestNoticeUsesFreshCache(t *testing.T) {
+func TestAvailableUsesFreshCache(t *testing.T) {
 	dir := t.TempDir()
 	orig := cachePath
 	cachePath = func() string { return filepath.Join(dir, "update-check.json") }
@@ -63,16 +66,26 @@ func TestNoticeUsesFreshCache(t *testing.T) {
 	if err := os.WriteFile(cachePath(), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := Notice("0.8.0", time.Second); !strings.Contains(got, "v9.9.9") {
+	if got := Available("0.8.0", time.Second); got != "v9.9.9" {
 		t.Errorf("fresh cache must answer the check, got %q", got)
 	}
 
-	stale, _ := json.Marshal(cacheFile{CheckedAt: time.Now().Add(-25 * time.Hour), Latest: "v9.9.9"})
+	// The TTL is what decides how fast a release reaches users, so pin both
+	// sides of it: an hour old still answers, seven hours old does not.
+	hourOld, _ := json.Marshal(cacheFile{CheckedAt: time.Now().Add(-1 * time.Hour), Latest: "v9.9.9"})
+	if err := os.WriteFile(cachePath(), hourOld, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, fresh := readCache(); !fresh {
+		t.Error("a 1h cache must still count as fresh")
+	}
+
+	stale, _ := json.Marshal(cacheFile{CheckedAt: time.Now().Add(-7 * time.Hour), Latest: "v9.9.9"})
 	if err := os.WriteFile(cachePath(), stale, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, fresh := readCache(); fresh {
-		t.Error("a >24h cache must not count as fresh")
+		t.Error("a 7h cache must not count as fresh — the TTL is 6h")
 	}
 }
 
@@ -95,7 +108,7 @@ func TestFetchLatestParsesTag(t *testing.T) {
 
 // Notice end-to-end against a fake GitHub: live fetch inside the deadline
 // produces the hint and writes the cache.
-func TestNoticeLiveFetchAndCache(t *testing.T) {
+func TestAvailableLiveFetchAndCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"tag_name":"v0.9.0"}`))
 	}))
@@ -106,8 +119,8 @@ func TestNoticeLiveFetchAndCache(t *testing.T) {
 	cachePath = func() string { return filepath.Join(dir, "update-check.json") }
 	t.Cleanup(func() { releaseURL, cachePath = origURL, origPath })
 
-	if got := Notice("0.8.0", 2*time.Second); !strings.Contains(got, "v0.9.0 available") {
-		t.Fatalf("live check must produce the hint, got %q", got)
+	if got := Available("0.8.0", 2*time.Second); got != "v0.9.0" {
+		t.Fatalf("live check must produce the tag, got %q", got)
 	}
 	if latest, fresh := readCache(); !fresh || latest != "v0.9.0" {
 		t.Errorf("live check must cache its result, got %q fresh=%v", latest, fresh)
