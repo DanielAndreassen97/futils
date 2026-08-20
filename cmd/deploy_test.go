@@ -1748,3 +1748,118 @@ func (f *deployFakeAPI) RenameItem(string, string, string, string) (fabric.Item,
 func (f *deployFakeAPI) SetItemDescription(string, string, string, string) (fabric.Item, error) {
 	return fabric.Item{}, fmt.Errorf("SetItemDescription not used by deploy tests")
 }
+
+// TestPartRemovalsOnlySelectedRealParts: the part-removal gate must count only
+// (a) items actually selected for publish and (b) real definition parts —
+// never the description pseudo-row, never an added or edited part.
+func TestPartRemovalsOnlySelectedRealParts(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{ID: "ws1", DisplayName: "WS-Test"},
+		Diffs: []ItemDiff{
+			{Name: "DW - Salg", Type: "SemanticModel", Parts: []deploy.PartDiff{
+				{Path: "definition/tables/≡ Måltall.tmdl", Old: "table ≡ Måltall", New: ""}, // removal
+				{Path: "definition/tables/Kunde.tmdl", Old: "old", New: "new"},              // edit
+				{Path: "definition/tables/Nytt.tmdl", Old: "", New: "table Nytt"},           // addition
+				{Path: descriptionPartLabel, Old: "old description", New: ""},               // pseudo-part
+			}},
+			{Name: "NB_Unselected", Type: "Notebook", Parts: []deploy.PartDiff{
+				{Path: "notebook-content.py", Old: "print(1)", New: ""}, // not selected
+			}},
+		},
+	}}
+	selected := map[int][]deploy.LocalItem{0: {
+		{Type: "SemanticModel", DisplayName: "DW - Salg"},
+	}}
+
+	got := partRemovals(groups, selected)
+	if len(got) != 1 {
+		t.Fatalf("got %d removals, want 1: %v", len(got), got)
+	}
+	if got[0].Part != "definition/tables/≡ Måltall.tmdl" || got[0].ItemName != "DW - Salg" {
+		t.Errorf("removal = %+v", got[0])
+	}
+	if !strings.Contains(got[0].String(), "WS-Test") {
+		t.Errorf("removal text must name the target workspace, got %q", got[0].String())
+	}
+}
+
+// TestRunDeployPartRemovalSecondConfirm: a publish that deletes definition
+// parts takes its OWN confirm after the deploy "yes". Declining it must publish
+// nothing — the same shape as the data-bearing delete gate. Before this gate a
+// part removal rode along inside an ordinary Changed row with no prompt at all.
+func TestRunDeployPartRemovalSecondConfirm(t *testing.T) {
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS-Prod"}}}
+	local := []deploy.LocalItem{{
+		Type: "SemanticModel", DisplayName: "DW - Salg", FolderPath: "F/DW - Salg.SemanticModel",
+		Parts: []deploy.Part{{Path: "definition/model.tmdl", Content: []byte("model M\n")}},
+	}}
+	deployed := []fabric.Item{{ID: "m1", DisplayName: "DW - Salg", Type: "SemanticModel"}}
+	g := makeGroup("F", "ws1", "WS-Prod", local, deployed)
+	g.Diffs = []ItemDiff{{Name: "DW - Salg", Type: "SemanticModel", Parts: []deploy.PartDiff{
+		{Path: "definition/tables/Σ Nøkkeltall.tmdl", Old: "table Σ Nøkkeltall", New: ""},
+	}}}
+	groups := []deployGroup{g}
+
+	var prompts []string
+	out := captureStdout(t, func() {
+		res, err := runDeploy(fake, "tok", groups, selectAll, func(p string) (bool, error) {
+			prompts = append(prompts, p)
+			if strings.Contains(p, "removing those") {
+				return false, nil // decline the removal gate
+			}
+			return true, nil
+		}, false)
+		if err != nil {
+			t.Fatalf("runDeploy: %v", err)
+		}
+		if len(res) != 0 {
+			t.Errorf("declining the removal gate must publish nothing, got %d results", len(res))
+		}
+	})
+
+	var sawGate bool
+	for _, p := range prompts {
+		if strings.Contains(p, "removing those 1 part(s)") {
+			sawGate = true
+		}
+	}
+	if !sawGate {
+		t.Fatalf("no part-removal confirm was asked; prompts = %v", prompts)
+	}
+	if !strings.Contains(out, "Σ Nøkkeltall.tmdl") {
+		t.Errorf("the gate must name the part being deleted:\n%s", out)
+	}
+	if !strings.Contains(out, "DELETES 1 definition part(s)") {
+		t.Errorf("the gate must state what it is about to delete:\n%s", out)
+	}
+}
+
+// TestRunDeployNoPartRemovalNoExtraConfirm: an ordinary publish (nothing
+// removed) must not grow a second prompt.
+func TestRunDeployNoPartRemovalNoExtraConfirm(t *testing.T) {
+	fake := &deployFakeAPI{workspaces: []fabric.Workspace{{ID: "ws1", DisplayName: "WS-Prod"}}}
+	local := []deploy.LocalItem{{
+		Type: "Notebook", DisplayName: "NB_Foo", FolderPath: "F/NB_Foo.Notebook",
+		Parts: []deploy.Part{{Path: "notebook-content.py", Content: []byte("print(1)\n")}},
+	}}
+	g := makeGroup("F", "ws1", "WS-Prod", local, nil)
+	g.Diffs = []ItemDiff{{Name: "NB_Foo", Type: "Notebook", Parts: []deploy.PartDiff{
+		{Path: "notebook-content.py", Old: "print(0)", New: "print(1)"},
+	}}}
+	groups := []deployGroup{g}
+
+	var prompts []string
+	captureStdout(t, func() {
+		if _, err := runDeploy(fake, "tok", groups, selectAll, func(p string) (bool, error) {
+			prompts = append(prompts, p)
+			return true, nil
+		}, false); err != nil {
+			t.Fatalf("runDeploy: %v", err)
+		}
+	})
+	for _, p := range prompts {
+		if strings.Contains(p, "removing those") {
+			t.Errorf("unexpected part-removal confirm on a publish that removes nothing: %q", p)
+		}
+	}
+}

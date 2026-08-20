@@ -523,6 +523,12 @@ func filterIgnoredUnresolved(groups []deployGroup, customer config.Customer) {
 	}
 }
 
+// descriptionPartLabel is the pseudo-part path the diff uses for the item
+// description. The description lives in .platform, which is never published as
+// a definition part, so it is diffed as its own row — and must be excluded
+// wherever real definition parts are counted.
+const descriptionPartLabel = "(item description)"
+
 // newItemSentinel returns a deterministic placeholder for a ClassNew item's
 // logicalId during compare. It can never equal a real Fabric GUID or any
 // deployed content, so DiffParts will always report the referencing row as
@@ -563,7 +569,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 					Name: rows[i].Name(),
 					Type: rows[i].ItemType(),
 					Parts: []deploy.PartDiff{{
-						Path: "(item description)",
+						Path: descriptionPartLabel,
 						Old:  rows[i].Deployed.Description,
 						New:  rows[i].Local.Description,
 					}},
@@ -711,7 +717,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 				res.class = deploy.ClassChanged
 				if descChanged {
 					parts = append(parts, deploy.PartDiff{
-						Path: "(item description)", Old: deployedDesc, New: rows[idx].Local.Description,
+						Path: descriptionPartLabel, Old: deployedDesc, New: rows[idx].Local.Description,
 					})
 				}
 				res.itemDiff = &ItemDiff{
@@ -918,6 +924,87 @@ func printSelectedItems(groups []deployGroup, selected map[int][]deploy.LocalIte
 	}
 }
 
+// partRemoval is one definition part a publish would DELETE from the target:
+// git no longer carries it, and updateDefinition replaces a definition
+// wholesale — anything absent from the payload is removed. For a semantic
+// model that is a real table, RLS role or measure group; for a report, a page.
+type partRemoval struct {
+	Workspace string
+	ItemType  string
+	ItemName  string
+	Part      string
+}
+
+func (r partRemoval) String() string {
+	return fmt.Sprintf("%s %q in %s → %s", r.ItemType, r.ItemName, r.Workspace, r.Part)
+}
+
+// partRemovals lists the definition parts the SELECTED items would delete in
+// their target workspace. Only selected items count — an unselected Changed
+// item is never published, so its diff is irrelevant. The item description is a
+// pseudo-part (never published as a definition part) and is excluded.
+//
+// Why this exists: item deletes take two confirms, but a part delete used to
+// take none — it rode along inside an ordinary "Changed" row, visible only to
+// whoever opened the HTML diff. That asymmetry is backwards. Losing every
+// measure table out of a semantic model is not a smaller event than deleting a
+// notebook.
+func partRemovals(groups []deployGroup, selected map[int][]deploy.LocalItem) []partRemoval {
+	var out []partRemoval
+	for gi, items := range selected {
+		if gi < 0 || gi >= len(groups) {
+			continue
+		}
+		sel := make(map[string]bool, len(items))
+		for _, it := range items {
+			sel[it.Type+"\x00"+it.DisplayName] = true
+		}
+		for _, d := range groups[gi].Diffs {
+			if !sel[d.Type+"\x00"+d.Name] {
+				continue
+			}
+			for _, p := range d.Parts {
+				// Old non-empty + New empty == the part exists in the target and
+				// not in git. A part that is merely EMPTY in git normalizes to ""
+				// on both sides and never reaches the diff at all.
+				if p.Path == descriptionPartLabel || p.New != "" || p.Old == "" {
+					continue
+				}
+				out = append(out, partRemoval{
+					Workspace: groups[gi].Target.DisplayName,
+					ItemType:  d.Type,
+					ItemName:  d.Name,
+					Part:      p.Path,
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
+}
+
+// confirmPartRemovals gates a publish that would delete definition parts. It
+// prints every removal (capped for readability) and takes its own confirm, in
+// the spirit of the data-bearing delete gate. Returns true when there is
+// nothing to gate or the user accepted.
+func confirmPartRemovals(removals []partRemoval, confirm func(string) (bool, error)) (bool, error) {
+	if len(removals) == 0 {
+		return true, nil
+	}
+	fmt.Println(warningStyle.Render(fmt.Sprintf(
+		"⚠ This publish DELETES %d definition part(s) from the target — git no longer has them, and a definition update replaces the whole item:", len(removals))))
+	const maxShown = 15
+	for i, r := range removals {
+		if i == maxShown {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("    … and %d more", len(removals)-maxShown)))
+			break
+		}
+		fmt.Println(warningStyle.Render("    " + r.String()))
+	}
+	fmt.Println(warningStyle.Render("  For a semantic model these are tables, roles or measures — they are gone from the target after this."))
+	return confirm(fmt.Sprintf("Publish anyway, removing those %d part(s)?", len(removals)))
+}
+
 // runDeploy lets the user cherry-pick across groups, confirms, and executes each
 // group against its own workspace. Returns the aggregated per-item results. On a
 // mid-run Execute failure it returns the results accumulated so far alongside the
@@ -962,6 +1049,14 @@ func runDeploy(
 		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s) using the %s backend?", total, wsCount, modeLabel))
 		if err != nil {
 			return nil, err
+		}
+		if ok {
+			// A publish that removes definition parts is destructive in the same
+			// way a delete is, so it gets its own gate after the deploy "yes".
+			ok, err = confirmPartRemovals(partRemovals(groups, selected), confirm)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if !ok {
 			// Cancelling the deploy aborts the whole run, including any selected
