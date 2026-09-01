@@ -2,7 +2,9 @@ package deploy
 
 import "strings"
 
-// placeholderGUID is fabric's reserved "unset logicalId" value; never replaced.
+// placeholderGUID is Fabric's all-zeros GUID. As a logicalId it means "unset"
+// and is never replaced (below); as a pipeline workspaceId it means "the
+// workspace this item lives in" and IS resolved, by the pipeline pass.
 const placeholderGUID = "00000000-0000-0000-0000-000000000000"
 
 // ReplaceLogicalIds rewrites every known source logicalId in content with its

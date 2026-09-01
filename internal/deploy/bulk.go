@@ -31,7 +31,7 @@ const allowPairingByName = true
 func BulkImport(client FabricClient, token string, target fabric.Workspace, items []LocalItem, rb *Rebinder) ([]Result, error) {
 	var parts []fabric.DefinitionPart
 	for _, item := range items {
-		subbed, _, err := SubstituteParts(item, map[string]string{}, nil, rb)
+		subbed, _, err := SubstituteParts(item, map[string]string{}, nil, rb, target.ID)
 		if err != nil {
 			return nil, fmt.Errorf("prepare %s %q: %w", item.Type, item.DisplayName, err)
 		}

@@ -456,7 +456,7 @@ func TestRebindReportConnectionByPathUnresolved(t *testing.T) {
 func TestRebindPartDispatchesReport(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "Daniel - Testing"}
-	out, outcome := rb.RebindPart(item, "definition.pbir", flatPBIR("DW - DEV - SemMod", "HR", devHRModel))
+	out, outcome := rb.RebindPart(item, "definition.pbir", flatPBIR("DW - DEV - SemMod", "HR", devHRModel), "")
 	if got := pbirModelID(t, out); got != "test-hr-model" {
 		t.Errorf("RebindPart did not rebind report binding, model GUID = %q", got)
 	}
@@ -469,7 +469,7 @@ func TestRebindPartIgnoresNonPbirReportPart(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	item := LocalItem{Type: "Report", DisplayName: "R"}
 	in := []byte(`{"some":"report.json content"}`)
-	out, outcome := rb.RebindPart(item, "report.json", in)
+	out, outcome := rb.RebindPart(item, "report.json", in, "")
 	if string(out) != string(in) || len(outcome.ReportBindings) != 0 {
 		t.Errorf("non-pbir report part must pass through unchanged")
 	}
@@ -540,7 +540,7 @@ func TestRebindShortcutsOneLakeTargets(t *testing.T) {
 	     "location": "https://bucket.s3.amazonaws.com", "subpath": "/data"}}}
 	]`)
 	item := LocalItem{Type: "Lakehouse", DisplayName: "LH_Bronze"}
-	out, outcome := rb.RebindPart(item, "shortcuts.metadata.json", shortcuts)
+	out, outcome := rb.RebindPart(item, "shortcuts.metadata.json", shortcuts, "")
 	s := string(out)
 
 	if !strings.Contains(s, "test-silver-lh") || strings.Contains(s, devSilverLH) {
@@ -568,7 +568,7 @@ func TestRebindShortcutsUnresolved(t *testing.T) {
 	shortcuts := []byte(`[{"name": "x", "path": "Tables",
 	  "target": {"type": "OneLake", "oneLake": {
 	    "workspaceId": "` + devConfigWS + `", "itemId": "` + unknown + `", "path": "Tables/x"}}}]`)
-	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts, "")
 	if !strings.Contains(string(out), unknown) {
 		t.Error("unresolved shortcut target should be left unchanged")
 	}
@@ -592,7 +592,7 @@ func TestRebindShortcutsZeroWorkspaceScopedRewrite(t *testing.T) {
 	   "target": {"type": "OneLake", "oneLake": {
 	     "workspaceId": "` + zero + `", "itemId": "` + zero + `", "path": "Files/f"}}}
 	]`)
-	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts, "")
 	if len(outcome.Unresolved) != 0 {
 		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
 	}
@@ -620,7 +620,7 @@ func TestRebindShortcutsSharedBaselineWorkspaceDistinctTargets(t *testing.T) {
 	   "target": {"type": "OneLake", "oneLake": {
 	     "workspaceId": "` + sharedWS + `", "itemId": "` + devSilverLH + `", "path": "Tables/s"}}}
 	]`)
-	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts, "")
 	if len(outcome.Unresolved) != 0 {
 		t.Fatalf("unexpected unresolved: %#v", outcome.Unresolved)
 	}
@@ -645,7 +645,7 @@ func TestRebindShortcutsUntouchedFileKeepsBytes(t *testing.T) {
 	  {"name": "ext", "path": "Files",
 	   "target": {"type": "AmazonS3", "amazonS3": {"location": "https://b.s3.amazonaws.com", "subpath": "/d"}}}
 	]`)
-	out, _ := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", in)
+	out, _ := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", in, "")
 	if string(out) != string(in) {
 		t.Errorf("no-change file must stay byte-identical:\n%s", out)
 	}

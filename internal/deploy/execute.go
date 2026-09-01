@@ -125,7 +125,7 @@ func Execute(client FabricClient, token string, target fabric.Workspace, plan []
 			defer markDone()
 			res := Result{Name: p.Item.DisplayName, Type: p.Item.Type, Action: p.Action, WorkspaceID: target.ID}
 
-			def, parts, err := buildDefinition(p.Item, idMap, resolver, rb)
+			def, parts, err := buildDefinition(p.Item, idMap, resolver, rb, target.ID)
 			if err != nil {
 				res.Err = err
 				results = append(results, res)
@@ -309,8 +309,8 @@ func RebindReports(client FabricClient, token string, modelsByWS map[string]map[
 // A zero-part item yields a NIL definition: the items API rejects an empty
 // parts collection ("Parts: Must be a non-empty collection"), so such items
 // are created as shells (no definition field) and never definition-updated.
-func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (*fabric.Definition, map[string][]byte, error) {
-	parts, _, err := SubstituteParts(item, idMap, resolver, rb)
+func buildDefinition(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder, targetWorkspaceID string) (*fabric.Definition, map[string][]byte, error) {
+	parts, _, err := SubstituteParts(item, idMap, resolver, rb, targetWorkspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
