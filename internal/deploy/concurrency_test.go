@@ -100,7 +100,7 @@ func TestSubstitutePartsConcurrentSharedCaches(t *testing.T) {
 					{Path: "definition.pbism", Content: []byte("endpoint=__ENDPOINT__")},
 				},
 			}
-			parts, _, err := SubstituteParts(item, map[string]string{}, resolver, rb)
+			parts, _, err := SubstituteParts(item, map[string]string{}, resolver, rb, "")
 			errs[w] = err
 			if err == nil {
 				hosts[w] = string(parts["definition.pbism"])

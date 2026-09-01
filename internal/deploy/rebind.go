@@ -336,7 +336,11 @@ func applyChanges(s string, changes []RebindChange) string {
 // RebindPart dispatches a single item part to the right rebind pass by item
 // type and part name, returning the rewritten bytes and the outcome. Parts with
 // no recognized reference location are returned unchanged.
-func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) ([]byte, RebindOutcome) {
+//
+// targetWorkspaceID is the workspace the item is being deployed into. Only the
+// pipeline pass needs it (to resolve Fabric's same-workspace placeholder); every
+// other pass resolves references by name and ignores it.
+func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte, targetWorkspaceID string) ([]byte, RebindOutcome) {
 	if strings.HasPrefix(path.Base(partPath), "notebook-content.") {
 		return rb.RebindNotebookLakehouses(content)
 	}
@@ -350,7 +354,7 @@ func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) 
 		return rb.RebindShortcuts(content)
 	}
 	if item.Type == "DataPipeline" {
-		return rb.RebindPipeline(content)
+		return rb.RebindPipeline(content, targetWorkspaceID)
 	}
 	return content, RebindOutcome{}
 }

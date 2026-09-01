@@ -12,6 +12,14 @@ var pipelineGUID = regexp.MustCompile(guidPat)
 // string with no accompanying endpoint GUID to resolve by).
 var endpointHostRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*\.datawarehouse\.fabric\.microsoft\.com`)
 
+// sameWorkspaceRef matches a pipeline reference whose workspaceId is the
+// all-zeros GUID. The key match is case-insensitive (Fabric writes
+// "workspaceId"; hand-edited payloads vary), and the pattern is anchored on the
+// FIELD rather than on a bare GUID so the rewrite can never touch some other
+// zero-GUID value in the payload — a self-referencing itemId, an unset
+// connection id.
+var sameWorkspaceRef = regexp.MustCompile(`(?i)("workspaceId"\s*:\s*")` + placeholderGUID + `(")`)
+
 // RebindPipeline rewrites baseline references in a DataPipeline part.
 // Pipelines had no rebind pass at all before this: parameters and activity
 // payloads carry baked workspace GUIDs, item GUIDs, and SQL endpoint hosts,
@@ -25,7 +33,11 @@ var endpointHostRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*\.datawarehouse
 // with no same-named lakehouse in the target) is left untouched: the
 // leftover scan — not this pass — owns every unresolved-reference warning,
 // so nothing is double-reported here.
-func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
+//
+// targetWorkspaceID is the workspace this pipeline is being deployed into; it
+// resolves the same-workspace placeholder (see rebindSameWorkspaceRefs). Pass
+// "" when no target workspace is in scope and that pass is skipped.
+func (rb *Rebinder) RebindPipeline(content []byte, targetWorkspaceID string) ([]byte, RebindOutcome) {
 	var out RebindOutcome
 	pairSeen := map[string]bool{}
 	for _, guid := range pipelineGUID.FindAllString(string(content), -1) {
@@ -59,5 +71,34 @@ func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 		recordChangePair(&out, pairSeen, "SQL endpoint", owner.Name, host, tgtHost)
 	}
 
-	return []byte(applyChanges(string(content), out.Changes)), out
+	s := applyChanges(string(content), out.Changes)
+	s = rb.rebindSameWorkspaceRefs(s, targetWorkspaceID, &out, pairSeen)
+	return []byte(s), out
+}
+
+// rebindSameWorkspaceRefs replaces every all-zeros workspaceId in a pipeline
+// with the workspace the pipeline is being deployed into.
+//
+// Fabric's git serialization writes 00000000-0000-0000-0000-000000000000 for a
+// reference to an item in the SAME workspace as the pipeline, and git-sync
+// substitutes the syncing workspace's own GUID on the way in. The items REST
+// API does no such substitution — it stores the placeholder verbatim — so a
+// pipeline published this way points at a workspace that does not exist, and
+// overwrites the correct workspaceId a previous git-sync had put there. This
+// pass does what git-sync would have done.
+//
+// The rewrite is recorded on out for the deploy summary but applied HERE rather
+// than through applyChanges: the placeholder is not a baseline value, and a
+// global string replace of it would also rewrite any other zero-GUID field in
+// the payload.
+func (rb *Rebinder) rebindSameWorkspaceRefs(s, targetWorkspaceID string, out *RebindOutcome, pairSeen map[string]bool) string {
+	if targetWorkspaceID == "" || targetWorkspaceID == placeholderGUID {
+		return s // no target workspace in scope (e.g. a rebind preview) — leave it
+	}
+	rewritten := sameWorkspaceRef.ReplaceAllString(s, "${1}"+targetWorkspaceID+"${2}")
+	if rewritten == s {
+		return s
+	}
+	recordChangePair(out, pairSeen, "Workspace", rb.workspaceName(targetWorkspaceID), placeholderGUID, targetWorkspaceID)
+	return rewritten
 }

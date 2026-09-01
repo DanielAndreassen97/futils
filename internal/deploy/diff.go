@@ -17,7 +17,12 @@ import (
 // any changes applied and references the rebinder could not resolve (tagged with
 // the item name). Shared by the publish path (which base64-encodes the result)
 // and the content-diff. A nil rb skips rebinding entirely.
-func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (map[string][]byte, RebindOutcome, error) {
+//
+// targetWorkspaceID is the workspace the item is being deployed into — passed
+// through to the rebind passes that need it (see RebindPart). Compare and
+// publish must pass the SAME value, or a pipeline would diff against content
+// the publish never writes.
+func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder, targetWorkspaceID string) (map[string][]byte, RebindOutcome, error) {
 	out := make(map[string][]byte, len(item.Parts))
 	var outcome RebindOutcome
 	for _, part := range item.Parts {
@@ -33,7 +38,7 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 				outcome.AddUnresolved(u)
 			}
 
-			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted)
+			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted, targetWorkspaceID)
 			substituted = rebound
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
 			for _, u := range partOutcome.Unresolved {

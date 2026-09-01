@@ -192,7 +192,7 @@ func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Config"}
 	content := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", devConfigEP))
-	out, outcome := rb.RebindPart(item, "definition/expressions.tmdl", content)
+	out, outcome := rb.RebindPart(item, "definition/expressions.tmdl", content, "")
 	if strings.Contains(string(out), "devhost") || len(outcome.Changes) != 2 {
 		t.Errorf("RebindPart did not rebind a SemanticModel part:\n%s\n%#v", out, outcome.Changes)
 	}
@@ -201,7 +201,7 @@ func TestRebindPartDispatchesSemanticModel(t *testing.T) {
 	// above, this host and GUID are unknown to the baseline index, so the
 	// pipeline pass's own GUID and SQL-endpoint-host lookups both miss.
 	plain := []byte(`Sql.Database("unknown-host.datawarehouse.fabric.microsoft.com", "11111111-2222-3333-4444-555555555555")`)
-	out2, outcome2 := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "P"}, "pipeline-content.json", plain)
+	out2, outcome2 := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "P"}, "pipeline-content.json", plain, "")
 	if string(out2) != string(plain) || len(outcome2.Changes) != 0 {
 		t.Error("non-semmod/non-notebook part should be untouched")
 	}
