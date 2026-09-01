@@ -1109,8 +1109,8 @@ func TestPrintRebindSummaryCategorizesAndFlagsRedundant(t *testing.T) {
 		},
 	}
 	out := captureStdout(t, func() { printRebindSummary(groups) })
-	if !strings.Contains(out, "Recognized Fabric references (auto)") {
-		t.Errorf("missing auto section header:\n%s", out)
+	if !strings.Contains(out, "Lakehouse (1)") || !strings.Contains(out, "LH_Bronze") {
+		t.Errorf("missing auto type group:\n%s", out)
 	}
 	if !strings.Contains(out, "Hardcoded values (custom substitutions)") {
 		t.Errorf("missing substitution section header:\n%s", out)

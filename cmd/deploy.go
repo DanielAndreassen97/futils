@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -1809,22 +1810,16 @@ func printRebindSummary(groups []deployGroup) {
 	}
 	auto, subs := splitRebindChanges(ordered)
 	fmt.Println()
-	fmt.Println(infoStyle.Render(fmt.Sprintf("%d reference(s) will be rebound baseline → target:", len(ordered))))
+	fmt.Println(infoStyle.Render(countNoun(len(ordered), "reference", "references")+" will be rebound") +
+		" " + summaryDimStyle.Render("baseline → target · full values in the diff report"))
 	if len(auto) > 0 {
-		fmt.Println(infoStyle.Render("  Recognized Fabric references (auto):"))
-		lastKind, lastName := "", ""
-		for _, c := range auto {
-			if c.Kind != lastKind || c.Name != lastName {
-				fmt.Printf("    %-12s %s\n", c.Kind, c.Name)
-				lastKind, lastName = c.Kind, c.Name
-			}
-			fmt.Printf("      %s → %s\n", c.Old, c.New)
-		}
+		printAutoRebinds(auto)
 	}
 	if len(subs) > 0 {
+		fmt.Println()
 		fmt.Println(infoStyle.Render("  Hardcoded values (custom substitutions):"))
 		for _, c := range subs {
-			fmt.Printf("    %q → %q  (rule: %s)\n", c.Old, c.New, formLabel(c.Form))
+			fmt.Printf("    %q %s %q  %s\n", c.Old, summaryArrowStyle.Render("→"), c.New, summaryDimStyle.Render("(rule: "+formLabel(c.Form)+")"))
 			if desc, ok := describeAcrossGroups(groups, c.Old); ok {
 				fmt.Printf("      "+redundantSubstitutionMsg+"\n", desc)
 			}
@@ -1843,8 +1838,12 @@ func printReportBindings(groups []deployGroup) {
 	}
 	fmt.Println()
 	fmt.Println(infoStyle.Render("Report bindings:"))
+	nameW := 0
 	for _, b := range all {
-		fmt.Printf("  %-24s →  %s  (%s)\n", b.Report, b.Model, b.Workspace)
+		nameW = max(nameW, utf8.RuneCountInString(b.Report))
+	}
+	for _, b := range all {
+		fmt.Printf("  %s  %s  %s  %s\n", summaryNameStyle.Render(padRight(b.Report, nameW)), summaryArrowStyle.Render("→"), b.Model, summaryDimStyle.Render("("+b.Workspace+")"))
 	}
 	fmt.Println()
 }
