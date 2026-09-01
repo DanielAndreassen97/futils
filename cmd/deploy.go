@@ -704,7 +704,7 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 		go func(j, idx int) {
 			defer cwg.Done()
 			defer func() { <-csem }()
-			localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, compareIDs, resolver, rb)
+			localParts, outcome, perr := deploy.SubstituteParts(rows[idx].Local, compareIDs, resolver, rb, target.ID)
 			res := compareResult{
 				unresolved: outcome.Unresolved,
 				changes:    outcome.Changes,

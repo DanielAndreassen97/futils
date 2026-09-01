@@ -64,7 +64,7 @@ func TestRebindPipelineUnknownGUIDUntouched(t *testing.T) {
 func TestRebindPartDispatchesPipeline(t *testing.T) {
 	rb := pipelineRebinderGUIDs()
 	in := []byte(`{"WorkspaceID":"` + gWSDev + `"}`)
-	out, _ := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "PL_Copy"}, "pipeline-content.json", in)
+	out, _ := rb.RebindPart(LocalItem{Type: "DataPipeline", DisplayName: "PL_Copy"}, "pipeline-content.json", in, "")
 	if !strings.Contains(string(out), gWSTst) {
 		t.Fatalf("RebindPart must dispatch DataPipeline parts: %s", out)
 	}
@@ -117,5 +117,22 @@ func TestRebindPipelineHostNotInTargetLeavesUntouchedNoUnresolved(t *testing.T) 
 	}
 	if len(outcome.Unresolved) != 0 {
 		t.Fatalf("RebindPipeline must not report unresolved hosts — the leftover scan owns that: %#v", outcome.Unresolved)
+	}
+}
+
+func TestSubstitutePartsThreadsTargetWorkspaceToPipeline(t *testing.T) {
+	rb := pipelineRebinderGUIDs()
+	item := LocalItem{Type: "DataPipeline", DisplayName: "PL_Main", Parts: []Part{
+		{Path: "pipeline-content.json", Content: []byte(`{"workspaceId":"` + placeholderGUID + `"}`)},
+	}}
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(parts["pipeline-content.json"]), gWSTst) {
+		t.Fatalf("target workspace not applied through SubstituteParts: %s", parts["pipeline-content.json"])
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("zero GUID must not be reported as unresolved: %#v", outcome.Unresolved)
 	}
 }

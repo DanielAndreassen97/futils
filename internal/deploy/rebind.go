@@ -333,10 +333,24 @@ func applyChanges(s string, changes []RebindChange) string {
 	return s
 }
 
-// RebindPart dispatches a single item part to the right rebind pass by item
-// type and part name, returning the rewritten bytes and the outcome. Parts with
-// no recognized reference location are returned unchanged.
-func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte) ([]byte, RebindOutcome) {
+// RebindPart rewrites one item part for the target environment: first the
+// all-zeros "this workspace" GUID (rebindZeroWorkspace, every part except a
+// lakehouse's shortcuts.metadata.json — see there), then the per-type pass
+// picked by item type and part name. Parts with no recognized reference
+// location are returned unchanged. targetWS is the workspace the item deploys
+// into; empty disables the zero-GUID pass.
+func (rb *Rebinder) RebindPart(item LocalItem, partPath string, content []byte, targetWS string) ([]byte, RebindOutcome) {
+	var pre RebindOutcome
+	if path.Base(partPath) != "shortcuts.metadata.json" {
+		content, pre = rb.rebindZeroWorkspace(content, targetWS)
+	}
+	rewritten, out := rb.rebindPartByType(item, partPath, content)
+	out.Changes = append(pre.Changes, out.Changes...)
+	return rewritten, out
+}
+
+// rebindPartByType dispatches to the per-type rebind pass.
+func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []byte) ([]byte, RebindOutcome) {
 	if strings.HasPrefix(path.Base(partPath), "notebook-content.") {
 		return rb.RebindNotebookLakehouses(content)
 	}
@@ -429,7 +443,7 @@ func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
 // isZeroOrEmptyGUID reports whether a shortcut GUID is a self-reference: empty,
 // or the all-zeros GUID Fabric maps to the current lakehouse/workspace.
 func isZeroOrEmptyGUID(guid string) bool {
-	return guid == "" || guid == "00000000-0000-0000-0000-000000000000"
+	return guid == "" || guid == placeholderGUID
 }
 
 // decodeShortcuts parses a shortcuts.metadata.json into the generic array
@@ -485,7 +499,9 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		}
 		if resolved {
 			addChange(&out, seen, "Lakehouse", it.Name, lh.DefaultLakehouse, it.GUID)
-			if lh.DefaultLakehouseWorkspaceID != "" && it.WorkspaceID != "" {
+			// The zero GUID never goes through applyChanges (a global replace
+			// would hit code cells too) — rebindZeroWorkspace owns it, key-scoped.
+			if lh.DefaultLakehouseWorkspaceID != "" && lh.DefaultLakehouseWorkspaceID != placeholderGUID && it.WorkspaceID != "" {
 				addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {

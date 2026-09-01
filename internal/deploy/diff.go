@@ -16,8 +16,9 @@ import (
 // Returns path -> substituted raw bytes (not base64), plus a RebindOutcome with
 // any changes applied and references the rebinder could not resolve (tagged with
 // the item name). Shared by the publish path (which base64-encodes the result)
-// and the content-diff. A nil rb skips rebinding entirely.
-func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder) (map[string][]byte, RebindOutcome, error) {
+// and the content-diff. A nil rb skips rebinding entirely. targetWS is the
+// workspace the item deploys into (see RebindPart).
+func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder, targetWS string) (map[string][]byte, RebindOutcome, error) {
 	out := make(map[string][]byte, len(item.Parts))
 	var outcome RebindOutcome
 	for _, part := range item.Parts {
@@ -33,7 +34,7 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 				outcome.AddUnresolved(u)
 			}
 
-			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted)
+			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted, targetWS)
 			substituted = rebound
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
 			for _, u := range partOutcome.Unresolved {
