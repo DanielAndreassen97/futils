@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
@@ -112,4 +113,39 @@ func (i *NameIndex) LookupName(name, typ string) (IndexedItem, LookupStatus) {
 func (i *NameIndex) ItemByName(name, typ string) (IndexedItem, bool) {
 	it, st := i.LookupName(name, typ)
 	return it, st == LookupFound
+}
+
+// LookupNameFold is LookupName with a case-insensitive fallback. An exact
+// match wins outright (ambiguity included); otherwise every indexed name of
+// the same type that equals name under Unicode case folding is a candidate.
+// Exactly one distinct item → found; two or more (or a candidate that is
+// itself ambiguous) → ambiguous; none → absent. Used only where the looked-up
+// value is a SQL database name: SQL resolves those case-insensitively, so
+// "lh_gold" in a model must find the lakehouse displayed as "LH_Gold".
+// Item names elsewhere keep exact matching — Fabric does not treat display
+// names as case-insensitive identifiers, and rebind must not guess.
+func (i *NameIndex) LookupNameFold(name, typ string) (IndexedItem, LookupStatus) {
+	if it, st := i.LookupName(name, typ); st != LookupAbsent {
+		return it, st
+	}
+	var found IndexedItem
+	n := 0
+	for k, it := range i.byName {
+		if k.typ != typ || !strings.EqualFold(k.name, name) {
+			continue
+		}
+		if i.ambiguous[k] {
+			return IndexedItem{}, LookupAmbiguous
+		}
+		found = it
+		n++
+	}
+	switch n {
+	case 0:
+		return IndexedItem{}, LookupAbsent
+	case 1:
+		return found, LookupFound
+	default:
+		return IndexedItem{}, LookupAmbiguous
+	}
 }

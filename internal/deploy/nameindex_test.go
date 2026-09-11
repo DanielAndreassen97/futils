@@ -94,3 +94,33 @@ func TestNameIndexAmbiguousNameDoesNotResolveForward(t *testing.T) {
 		t.Error("reverse lookup should still resolve g2")
 	}
 }
+
+// TestLookupNameFold covers the case-insensitive forward lookup used for SQL
+// database names: an exact miss falls back to a case-folded match, and two
+// distinct items that collide under folding are reported ambiguous rather
+// than resolved to whichever the map yields first.
+func TestLookupNameFold(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "w1", DisplayName: "W1"}, {ID: "w2", DisplayName: "W2"}},
+		itemsByWS: map[string][]fabric.Item{
+			"w1": {{ID: "g1", DisplayName: "LH_Gold", Type: "Lakehouse"}, {ID: "c1", DisplayName: "LH_Case", Type: "Lakehouse"}},
+			"w2": {{ID: "c2", DisplayName: "lh_case", Type: "Lakehouse"}},
+		},
+	}
+	idx, err := BuildNameIndex(f, "tok", f.workspaces)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if it, st := idx.LookupNameFold("lh_gold", "Lakehouse"); st != LookupFound || it.GUID != "g1" {
+		t.Errorf("lh_gold: got %#v status=%v, want g1 found", it, st)
+	}
+	if it, st := idx.LookupNameFold("LH_Gold", "Lakehouse"); st != LookupFound || it.GUID != "g1" {
+		t.Errorf("exact name must still resolve: got %#v status=%v", it, st)
+	}
+	if _, st := idx.LookupNameFold("lh_gold", "Notebook"); st != LookupAbsent {
+		t.Errorf("wrong type must miss, got status=%v", st)
+	}
+	if _, st := idx.LookupNameFold("LH_CASE", "Lakehouse"); st != LookupAmbiguous {
+		t.Errorf("two items differing only by case must be ambiguous, got status=%v", st)
+	}
+}

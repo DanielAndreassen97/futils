@@ -560,3 +560,42 @@ in
 		t.Fatalf("unresolved = %#v (want exactly one ref with Count=3)", out.Unresolved)
 	}
 }
+
+// TestRebindSQLNameFormMatchesLakehouseCaseInsensitively pins the case rule
+// for the NAME form. SQL resolves database names case-insensitively (a model
+// with "lh_gold" connects fine to the endpoint of a lakehouse named LH_Gold),
+// and Fabric binds a model's data source to a cloud connection by EXACT string
+// match — so the literal in git must be preserved byte-for-byte, while the
+// lakehouse lookup that finds the target host must ignore case. Before this
+// test, "lh_gold" missed the exact-match name index, the source went
+// unresolved, and the deployed model kept pointing at the baseline host.
+func TestRebindSQLNameFormMatchesLakehouseCaseInsensitively(t *testing.T) {
+	f := &fakeFabric{
+		workspaces: []fabric.Workspace{
+			{ID: "dev-data", DisplayName: "DEV Data"},
+			{ID: "tgt-data", DisplayName: "TGT Data"},
+		},
+		itemsByWS: map[string][]fabric.Item{
+			"tgt-data": {{ID: "tgt-gold-lh", DisplayName: "LH_Gold", Type: "Lakehouse"}},
+		},
+		sqlByLH: map[string][2]string{
+			"tgt-gold-lh": {"tgt-host.datawarehouse.fabric.microsoft.com", "eeeeeeee-dddd-dddd-dddd-dddddddddddd"},
+		},
+	}
+	rb, err := NewRebinder(f, "tok", []fabric.Workspace{f.workspaces[0]}, []fabric.Workspace{f.workspaces[1]}, nil)
+	if err != nil {
+		t.Fatalf("NewRebinder: %v", err)
+	}
+	in := `let Source = Sql.Database("dev-host.datawarehouse.fabric.microsoft.com", "lh_gold") in Source`
+	var out RebindOutcome
+	got := rb.rebindSQLSources(in, &out)
+	if len(out.Unresolved) != 0 {
+		t.Fatalf("lowercase database name must resolve the LH_Gold lakehouse, got unresolved %+v", out.Unresolved)
+	}
+	if !strings.Contains(got, `Sql.Database("tgt-host.datawarehouse.fabric.microsoft.com", "lh_gold")`) {
+		t.Errorf("host not rebound, or database name not preserved byte-identical:\n%s", got)
+	}
+	if strings.Contains(got, "LH_Gold") {
+		t.Errorf("database literal must keep the casing from git, never adopt the lakehouse display name:\n%s", got)
+	}
+}

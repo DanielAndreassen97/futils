@@ -71,6 +71,21 @@ func (rb *Rebinder) baselineLakehouseByHost(host string) (IndexedItem, bool) {
 	return it, ok
 }
 
+// resolveDBNameReason resolves a SQL database name (the NAME form of
+// Sql.Database's second argument) to the target lakehouse that owns the
+// endpoint. Overrides are consulted first and exactly, like every other rebind
+// pass; the index lookup then falls back to case folding via LookupNameFold,
+// because SQL database names are case-insensitive while Fabric item display
+// names in the index are stored as typed. Returns the lookup reason on a miss.
+func (rb *Rebinder) resolveDBNameReason(name string) (IndexedItem, bool, string) {
+	if ov, ok := rb.overrides[name]; ok {
+		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
+		return it, st == LookupFound, reasonForStatus(st)
+	}
+	it, st := rb.target.LookupNameFold(name, "Lakehouse")
+	return it, st == LookupFound, reasonForStatus(st)
+}
+
 // rebindSQLSources rewrites every Direct Lake on SQL data-source expression in
 // s: it resolves the baked endpoint id (the baked GUID equals its parent
 // lakehouse's sqlEndpointProperties.id, so it is indexed alongside every other
@@ -84,7 +99,8 @@ func (rb *Rebinder) baselineLakehouseByHost(host string) (IndexedItem, bool) {
 // The second argument also appears in NAME form (Sql.Database("host",
 // "LH_Gold")): the database name equals the lakehouse name, is the same in the
 // target, and involves no baseline lookup — the name resolves directly in the
-// target index (override-first) and only the host is rewritten.
+// target index (override-first, then case-insensitively) and only the host is
+// rewritten; the name literal itself is never touched.
 //
 // Like rebindOneLakeSources, each match is rewritten by byte SPAN, not by a
 // global ReplaceAll of the extracted host/id values: two Sql.Database(...)
@@ -110,8 +126,12 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 		if !guidShapeRe.MatchString(id) {
 			// Name form: Sql.Database("host", "LH_Gold") carries the database
 			// NAME, not an endpoint GUID. The name is the same in the target, so
-			// resolve it there directly and rewrite only the host.
-			tgt, ok, reason := rb.resolveNameReason(id, "Lakehouse")
+			// resolve it there directly and rewrite only the host. The lookup
+			// ignores case (SQL does too), but the literal is copied through
+			// byte-for-byte: Fabric binds a model's data source to its cloud
+			// connection by exact string match, so the casing in git is the
+			// casing the customer's connection was made for.
+			tgt, ok, reason := rb.resolveDBNameReason(id)
 			if !ok {
 				out.AddUnresolved(UnresolvedRef{GUID: id, ItemType: "SQL database (by name)", Location: "Sql.Database", Reason: reason})
 				continue
