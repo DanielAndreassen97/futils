@@ -74,6 +74,17 @@ type ReportRebindOutcome struct {
 // it also auto-rebinds notebook lakehouse references by name. It then encodes
 // parts to base64 and creates or updates the item.
 //
+// seed maps logicalId -> GUID for every local item that ALREADY exists in the
+// target (see LogicalIDSeed), whether or not it is in this plan. Fabric's git
+// export writes cross-item references (a pipeline's notebookId, an invoke's
+// pipelineId) as logicalIds; git-sync and deployment pipelines translate them,
+// the items API does not, and rejects an untranslated one with UnknownError.
+// Without the seed only items published in the same run were translated, so a
+// pipeline deployed on its own carried its notebook's logicalId to Fabric while
+// the preview — built from the same table — showed the target GUID. The seed
+// makes payload and preview agree. Items created in this run overwrite their
+// seed entry with the GUID they were just given; a nil seed is allowed.
+//
 // modelsByWS is a caller-owned accumulator (targetWorkspaceID → model
 // displayName → deployed GUID): Execute records every published SemanticModel
 // into it so the SAME map, threaded through every group's Execute call, is
@@ -88,9 +99,14 @@ type ReportRebindOutcome struct {
 // (success or failure) so a spinner can show live "Publishing X/Y" progress.
 // The counter advances even for items that error out, matching the publish
 // loop's "we're done with this item, on to the next" semantics.
-func Execute(client FabricClient, token string, target fabric.Workspace, plan []PlannedItem, rb *Rebinder, modelsByWS map[string]map[string]string, done *int64) ([]Result, []PendingReportRebind, error) {
+func Execute(client FabricClient, token string, target fabric.Workspace, plan []PlannedItem, rb *Rebinder, seed map[string]string, modelsByWS map[string]map[string]string, done *int64) ([]Result, []PendingReportRebind, error) {
 	resolver := NewResolver(client, token, target)
-	idMap := map[string]string{} // logicalId -> deployed GUID
+	// idMap starts from seed and grows as this run publishes: an item created
+	// or updated here overwrites its seed entry with the GUID it now has.
+	idMap := make(map[string]string, len(seed)) // logicalId -> deployed GUID
+	for k, v := range seed {
+		idMap[k] = v
+	}
 	results := make([]Result, 0, len(plan))
 	var pending []PendingReportRebind
 

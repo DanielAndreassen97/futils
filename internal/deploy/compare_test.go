@@ -43,3 +43,28 @@ func TestCompareIgnoresOutOfScopeOrphans(t *testing.T) {
 		}
 	}
 }
+
+// TestLogicalIDSeed pins which rows feed the logicalId -> GUID table shared by
+// the preview and the publish: every local item already present in the target
+// (whatever its content verdict) maps its logicalId to the deployed GUID; new
+// items, orphans and items without a logicalId contribute nothing.
+func TestLogicalIDSeed(t *testing.T) {
+	rows := []CompareRow{
+		{Class: ClassExists, Local: LocalItem{LogicalID: "l-exists"}, DeployedID: "g-exists"},
+		{Class: ClassChanged, Local: LocalItem{LogicalID: "l-changed"}, DeployedID: "g-changed"},
+		{Class: ClassUnchanged, Local: LocalItem{LogicalID: "l-same"}, DeployedID: "g-same"},
+		{Class: ClassNew, Local: LocalItem{LogicalID: "l-new"}},
+		{Class: ClassOrphan, Deployed: fabric.Item{ID: "g-orphan"}, DeployedID: "g-orphan"},
+		{Class: ClassExists, Local: LocalItem{}, DeployedID: "g-nological"},
+	}
+	got := LogicalIDSeed(rows)
+	want := map[string]string{"l-exists": "g-exists", "l-changed": "g-changed", "l-same": "g-same"}
+	if len(got) != len(want) {
+		t.Fatalf("seed = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("seed[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}

@@ -93,7 +93,7 @@ func TestExecuteEncodesPartsAsBase64(t *testing.T) {
 		},
 	}}
 
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestExecuteZeroPartItemOmitsDefinition(t *testing.T) {
 		{Action: ActionUpdate, ExistingID: "wh-existing", Item: LocalItem{Type: "Warehouse", DisplayName: "WH_Other"}},
 	}
 
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestExecutePassesCreationPayload(t *testing.T) {
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}},
 	}
 
-	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestExecuteWaitsForLakehouseSQLEndpoint(t *testing.T) {
 
 	// Provisions on the third poll → success, no warning.
 	rf := &recordingFabric{sqlFailFirst: 2, fakeFabric: fakeFabric{itemsByWS: map[string][]fabric.Item{}}}
-	res, _, err := Execute(rf, "tok", target, []PlannedItem{lakehouse}, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", target, []PlannedItem{lakehouse}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestExecuteWaitsForLakehouseSQLEndpoint(t *testing.T) {
 	update := lakehouse
 	update.Action = ActionUpdate
 	update.ExistingID = "lh-old"
-	res, _, err = Execute(rf, "tok", target, []PlannedItem{lakehouse, update}, nil, nil, nil)
+	res, _, err = Execute(rf, "tok", target, []PlannedItem{lakehouse, update}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestExecuteNotebookPartOrderAndIpynbFormat(t *testing.T) {
 		},
 	}}
 
-	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestExecuteFormatAndOrderLeftAloneForOtherShapes(t *testing.T) {
 		}},
 	}
 
-	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	_, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestExecuteUpdatesExistingItem(t *testing.T) {
 		Item: LocalItem{Type: "Notebook", DisplayName: "NB_A", LogicalID: "lid",
 			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestExecuteSetsDescriptionOnCreate(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 {
@@ -384,7 +384,7 @@ func TestExecuteSetsDescriptionOnUpdate(t *testing.T) {
 			Description: "Updated desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil); err != nil {
+	if _, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if len(rf.metaUpdates) != 1 || rf.metaUpdates[0].id != "existing-id" || rf.metaUpdates[0].description != "Updated desc" {
@@ -407,7 +407,7 @@ func TestExecuteDescriptionFailureIsNonFatal(t *testing.T) {
 			Description: "My desc",
 			Parts:       []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}},
 	}}
-	results, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	results, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestExecuteDoneCounterIncrements(t *testing.T) {
 	}
 
 	var done int64
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, &done)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, &done)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestExecuteDoneCounterAdvancesOnFailure(t *testing.T) {
 	}}
 
 	var done int64
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, &done)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, &done)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestReportDatasetRefFlatByConnection(t *testing.T) {
 // mirroring how runDeploy threads the two phases.
 func runRebindPass(t *testing.T, rf *recordingFabric, target fabric.Workspace, plan []PlannedItem, modelsByWS map[string]map[string]string) ([]Result, []ReportRebindOutcome) {
 	t.Helper()
-	res, pending, err := Execute(rf, "tok", target, plan, nil, modelsByWS, nil)
+	res, pending, err := Execute(rf, "tok", target, plan, nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestRebindReportsCrossGroupSameWorkspace(t *testing.T) {
 		var pending []PendingReportRebind
 		for _, g := range groups {
 			plan := BuildPlan(g, nil, "")
-			_, p, err := Execute(rf, "tok", target, plan, nil, modelsByWS, nil)
+			_, p, err := Execute(rf, "tok", target, plan, nil, nil, modelsByWS, nil)
 			if err != nil {
 				t.Fatalf("execute: %v", err)
 			}
@@ -636,11 +636,11 @@ func TestRebindReportsWorkspaceIsolation(t *testing.T) {
 	modelsByWS := map[string]map[string]string{}
 	var pending []PendingReportRebind
 	// Model deploys to W1; report deploys to W2.
-	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil, ""), nil, modelsByWS, nil)
+	_, _, err := Execute(rf, "tok", w1, BuildPlan([]LocalItem{model}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w1: %v", err)
 	}
-	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
+	_, p, err := Execute(rf, "tok", w2, BuildPlan([]LocalItem{report}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute w2: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestRebindReportsByConnectionNoWarning(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestRebindReportsModelMissingSkipsSilently(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MissingModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{report}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestRebindReportsErrorSetsErr(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byPathPBIR("MyModel")}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -804,7 +804,7 @@ func TestRebindReportsByConnectionCoDeployedBindsEndToEnd(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: byConnectionPBIR()}}} // initial catalog=HR
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), nil, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -853,7 +853,7 @@ func TestRebindReportsStructuredByConnectionCoDeployedBinds(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: structuredByConnectionPBIR(devHRModel)}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -901,7 +901,7 @@ func TestRebindReportsByConnectionStaleCatalogPrefersBaseline(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: stalePBIR}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{hr, hrOld, report}, nil, ""), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{hr, hrOld, report}, nil, ""), rb, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -941,7 +941,7 @@ func TestExecutePendingRebindUsesSubstitutedPBIR(t *testing.T) {
 		Parts: []Part{{Path: "definition.pbir", Content: pbir}}}
 
 	modelsByWS := map[string]map[string]string{}
-	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, modelsByWS, nil)
+	_, pending, err := Execute(rf, "tok", target, BuildPlan([]LocalItem{model, report}, nil, ""), rb, nil, modelsByWS, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1016,7 +1016,7 @@ func TestExecuteCreatesAndUsesWorkspaceFolders(t *testing.T) {
 			Item: LocalItem{Type: "Notebook", DisplayName: "NB_root", Parts: []Part{{Path: "notebook-content.py", Content: []byte("z=1")}}}},
 	}
 
-	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", target, plan, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1095,7 +1095,7 @@ func TestExecuteShortcutIntoSameRunCreatedLakehouse(t *testing.T) {
 			Parts: []Part{{Path: "lakehouse.metadata.json", Content: []byte(`{}`)}}}},
 	}
 
-	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, nil, nil)
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1128,7 +1128,7 @@ func TestExecuteNilDefinitionUpdateWarns(t *testing.T) {
 		Action: ActionUpdate, ExistingID: "lh-1",
 		Item: LocalItem{Type: "Lakehouse", DisplayName: "LH_Bare"},
 	}}
-	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil, nil)
 	if err != nil || len(res) != 1 || res[0].Err != nil {
 		t.Fatalf("execute: %v / %+v", err, res)
 	}
@@ -1151,7 +1151,7 @@ func TestExecuteShellOnlyUpdateStaysSilent(t *testing.T) {
 		Action: ActionUpdate, ExistingID: "wh-1",
 		Item: LocalItem{Type: "Warehouse", DisplayName: "WH"},
 	}}
-	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil, nil)
 	if err != nil || len(res) != 1 {
 		t.Fatalf("execute: %v / %+v", err, res)
 	}
@@ -1172,7 +1172,7 @@ func TestExecuteShellPartsWarning(t *testing.T) {
 		Action: ActionCreate,
 		Item:   LocalItem{Type: "Warehouse", DisplayName: "WH", ShellParts: 3},
 	}}
-	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil)
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test"}, plan, nil, nil, nil, nil)
 	if err != nil || len(res) != 1 || res[0].Err != nil {
 		t.Fatalf("execute: %v / %+v", err, res)
 	}
@@ -1206,7 +1206,7 @@ func TestExecuteByPathReportBindsToSameRunModel(t *testing.T) {
 			Parts: []Part{{Path: "definition.pbir", Content: []byte(`{"datasetReference":{"byPath":{"path":"../HR.SemanticModel"}}}`)}}}},
 	}
 
-	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, map[string]map[string]string{}, nil)
+	res, _, err := Execute(rf, "tok", fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}, plan, rb, nil, map[string]map[string]string{}, nil)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -1221,5 +1221,76 @@ func TestExecuteByPathReportBindsToSameRunModel(t *testing.T) {
 	}
 	if strings.Contains(published, "byPath") {
 		t.Errorf("published pbir must not retain byPath:\n%s", published)
+	}
+}
+
+// TestExecuteSeedsLogicalIDsForItemsOutsideTheRun pins the contract that the
+// publish payload matches the preview. A pipeline in git references its
+// notebook by logicalId (Fabric's git-export form). The notebook already
+// exists in the target but is NOT part of this run, so Execute's run-local
+// idMap never learns its GUID; the seed (logicalId -> existing target GUID,
+// the same table the preview diffs against) must fill that gap. Before this
+// test, the logicalId went to Fabric verbatim and the update failed with
+// UnknownError, while the preview showed the correct GUID.
+func TestExecuteSeedsLogicalIDsForItemsOutsideTheRun(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS: map[string][]fabric.Item{"ws-test": {
+			{ID: "nb-target-guid", DisplayName: "NB_Main", Type: "Notebook"},
+			{ID: "pl-existing", DisplayName: "PL_Main", Type: "DataPipeline"},
+		}},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	content := `{"properties":{"activities":[{"type":"TridentNotebook","typeProperties":{"notebookId":"aaaaaaaa-1111-1111-1111-111111111111","workspaceId":"00000000-0000-0000-0000-000000000000"}}]}}`
+	plan := []PlannedItem{{
+		Action:     ActionUpdate,
+		ExistingID: "pl-existing",
+		Item: LocalItem{Type: "DataPipeline", DisplayName: "PL_Main", LogicalID: "bbbbbbbb-2222-2222-2222-222222222222",
+			Parts: []Part{{Path: "pipeline-content.json", Content: []byte(content)}}},
+	}}
+	seed := map[string]string{"aaaaaaaa-1111-1111-1111-111111111111": "nb-target-guid"}
+	res, _, err := Execute(rf, "tok", target, plan, nil, seed, nil, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(res) != 1 || res[0].Err != nil {
+		t.Fatalf("result: %+v", res)
+	}
+	def, ok := rf.updates["pl-existing"]
+	if !ok {
+		t.Fatalf("definition was not pushed; updates=%v", rf.updates)
+	}
+	got := decodePart(t, &def, "pipeline-content.json")
+	if !strings.Contains(got, `"notebookId":"nb-target-guid"`) {
+		t.Errorf("notebook logicalId must be replaced by the existing target GUID in the payload:\n%s", got)
+	}
+	if strings.Contains(got, "aaaaaaaa-1111-1111-1111-111111111111") {
+		t.Errorf("logicalId leaked into the payload:\n%s", got)
+	}
+}
+
+// TestExecuteRunLocalGUIDWinsOverSeed keeps the existing behavior on top of the
+// seed: an item published earlier in the same run is referenced by the GUID it
+// was just given, even if the seed carried a stale one.
+func TestExecuteRunLocalGUIDWinsOverSeed(t *testing.T) {
+	rf := &recordingFabric{fakeFabric: fakeFabric{
+		workspaces: []fabric.Workspace{{ID: "ws-test", DisplayName: "TEST"}},
+		itemsByWS:  map[string][]fabric.Item{},
+	}}
+	target := fabric.Workspace{ID: "ws-test", DisplayName: "TEST"}
+	plan := []PlannedItem{
+		{Action: ActionCreate, Item: LocalItem{Type: "Notebook", DisplayName: "NB_New", LogicalID: "cccccccc-3333-3333-3333-333333333333",
+			Parts: []Part{{Path: "notebook-content.py", Content: []byte("x=1")}}}},
+		{Action: ActionUpdate, ExistingID: "pl-existing", Item: LocalItem{Type: "DataPipeline", DisplayName: "PL_Main", LogicalID: "dddddddd-4444-4444-4444-444444444444",
+			Parts: []Part{{Path: "pipeline-content.json", Content: []byte(`{"notebookId":"cccccccc-3333-3333-3333-333333333333"}`)}}}},
+	}
+	seed := map[string]string{"cccccccc-3333-3333-3333-333333333333": "stale-guid"}
+	if _, _, err := Execute(rf, "tok", target, plan, nil, seed, nil, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	def := rf.updates["pl-existing"]
+	got := decodePart(t, &def, "pipeline-content.json")
+	if !strings.Contains(got, `"notebookId":"NB_New-newid"`) {
+		t.Errorf("GUID assigned in this run must win over the seed:\n%s", got)
 	}
 }

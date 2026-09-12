@@ -659,11 +659,9 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	// assign a fresh GUID, so any Exists item that references a ClassNew dep's
 	// logicalId WILL change on publish. We substitute a sentinel so DiffParts
 	// reports the ref as Changed instead of falsely Unchanged.
-	compareIDs := map[string]string{}
+	compareIDs := deploy.LogicalIDSeed(rows)
 	for _, r := range rows {
-		if r.Class == deploy.ClassExists && r.Local.LogicalID != "" {
-			compareIDs[r.Local.LogicalID] = r.DeployedID
-		} else if r.Class == deploy.ClassNew && r.Local.LogicalID != "" {
+		if r.Class == deploy.ClassNew && r.Local.LogicalID != "" {
 			compareIDs[r.Local.LogicalID] = newItemSentinel(r.Local.LogicalID)
 		}
 	}
@@ -1135,7 +1133,7 @@ func runDeploy(
 				sp := ui.NewSpinner(renderPublish())
 				sp.SetMessageFunc(renderPublish)
 				sp.Start()
-				results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, g.rb, modelsByWS, &done)
+				results, groupPending, execErr := deploy.Execute(client, token, g.Target, plan, g.rb, deploy.LogicalIDSeed(g.Rows), modelsByWS, &done)
 				sp.Stop()
 				allResults = append(allResults, results...)
 				pending = append(pending, groupPending...)

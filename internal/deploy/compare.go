@@ -86,3 +86,24 @@ func Compare(local []LocalItem, deployed []fabric.Item, scope map[string]bool) [
 	}
 	return rows
 }
+
+// LogicalIDSeed returns logicalId -> deployed GUID for every local item the
+// compare found already present in the target — Exists, Changed or Unchanged
+// alike, since the content verdict says nothing about identity. New items have
+// no GUID yet and orphans have no local side, so neither contributes. This is
+// the one table both the preview diff and the publish translate logicalIds
+// through, so a reference the preview shows resolved is resolved the same way
+// in the payload.
+func LogicalIDSeed(rows []CompareRow) map[string]string {
+	seed := map[string]string{}
+	for _, r := range rows {
+		if r.Class == ClassNew || r.Class == ClassOrphan {
+			continue
+		}
+		if r.Local.LogicalID == "" || r.DeployedID == "" {
+			continue
+		}
+		seed[r.Local.LogicalID] = r.DeployedID
+	}
+	return seed
+}
