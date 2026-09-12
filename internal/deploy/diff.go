@@ -127,7 +127,11 @@ func normalizePartFor(partPath string, content []byte) []byte {
 			return n
 		}
 	}
-	return normalizePart(content)
+	generic := normalizePart(content)
+	if strings.HasSuffix(partPath, ".tmdl") {
+		return []byte(normalizeTMDL(string(generic)))
+	}
+	return generic
 }
 
 // PartDiff is the normalized old (deployed) vs new (substituted-local) text of

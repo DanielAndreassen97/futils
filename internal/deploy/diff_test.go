@@ -239,3 +239,73 @@ func TestDiffPartsFlagsReorderedParts(t *testing.T) {
 		t.Error("the reordered part must keep both sides so the report can show the move")
 	}
 }
+
+// --- TMDL canonicalization -------------------------------------------------
+//
+// Fabric stores a semantic model through the TMDL serializer, which picks one
+// spelling out of several the language accepts. A hand-written .tmdl in git
+// often uses another, equally valid one, so the two sides differ as text while
+// meaning the same thing — and every deploy reports the model Changed forever.
+
+// TestNormalizeTMDLFencedAndIndentedExpressionsMatch covers the backtick rule:
+// a multi-line expression may be wrapped in ``` or just indented under the
+// declaration. The serializer only emits the fence when the content would not
+// survive the round trip otherwise, so an optional fence in git must not read
+// as a difference.
+func TestNormalizeTMDLFencedAndIndentedExpressionsMatch(t *testing.T) {
+	fenced := "table T\n\n\tmeasure 'Antall kritiske' = ```\n\t\t\tCALCULATE(\n\t\t\t    [Antall],\n\t\t\t    KEEPFILTERS( 'Dim S'[Grad] = \"Critical\" )\n\t\t\t)\n\t\t\t```\n\t\tformatString: #,0\n"
+	plain := "table T\n\n\tmeasure 'Antall kritiske' =\n\t\t\tCALCULATE(\n\t\t\t    [Antall],\n\t\t\t    KEEPFILTERS( 'Dim S'[Grad] = \"Critical\" )\n\t\t\t)\n\t\tformatString: #,0\n"
+	a := normalizePartFor("definition/tables/T.tmdl", []byte(fenced))
+	b := normalizePartFor("definition/tables/T.tmdl", []byte(plain))
+	if string(a) != string(b) {
+		t.Errorf("fenced and indented spellings must normalize equal:\n--- fenced ---\n%s\n--- plain ---\n%s", a, b)
+	}
+	if strings.Contains(string(a), "```") {
+		t.Errorf("fence markers must be gone after normalization:\n%s", a)
+	}
+	// The expression itself is DAX and must survive intact, quotes included.
+	if !strings.Contains(string(a), `KEEPFILTERS( 'Dim S'[Grad] = "Critical" )`) {
+		t.Errorf("expression body was altered:\n%s", a)
+	}
+}
+
+// TestNormalizeTMDLDropsOptionalNameQuotes covers the quoting rule: a name is
+// only quoted when it contains a dot, equals, colon, single quote or
+// whitespace. The serializer drops the quotes when they are optional, so git
+// keeping them must not read as a difference — and a name that genuinely needs
+// them must keep them.
+func TestNormalizeTMDLDropsOptionalNameQuotes(t *testing.T) {
+	quoted := "table T\n\n\tmeasure 'Compliance-andel' = DIVIDE( [A], [B] )\n\n\tmeasure 'Antall kritiske' = COUNTROWS( T )\n\n\tcolumn 'EnhetID'\n\t\tdataType: int64\n"
+	bare := "table T\n\n\tmeasure Compliance-andel = DIVIDE( [A], [B] )\n\n\tmeasure 'Antall kritiske' = COUNTROWS( T )\n\n\tcolumn EnhetID\n\t\tdataType: int64\n"
+	a := normalizePartFor("definition/tables/T.tmdl", []byte(quoted))
+	b := normalizePartFor("definition/tables/T.tmdl", []byte(bare))
+	if string(a) != string(b) {
+		t.Errorf("optional quotes must normalize away:\n--- quoted ---\n%s\n--- bare ---\n%s", a, b)
+	}
+	if !strings.Contains(string(a), "measure 'Antall kritiske'") {
+		t.Errorf("a name containing whitespace must keep its quotes:\n%s", a)
+	}
+}
+
+// TestNormalizeTMDLLeavesExpressionBodiesAlone is the regression guard for the
+// quoting rule: inside a DAX or M body, single quotes delimit table names and
+// are not TMDL name syntax. Stripping them there would both corrupt the
+// comparison and hide real changes.
+func TestNormalizeTMDLLeavesExpressionBodiesAlone(t *testing.T) {
+	src := "table T\n\n\tpartition P = m\n\t\tmode: import\n\t\tsource =\n\t\t\t\tlet\n\t\t\t\t    Source = Sql.Database(\"h\", \"lh_gold\"),\n\t\t\t\t    Nav = Source{[Schema=\"Dim\",Item=\"Bank\"]}[Data]\n\t\t\t\tin\n\t\t\t\t    Nav\n\n\tmeasure M =\n\t\t\tCALCULATE( [X], 'Dim Enhet'[Type] = \"A\" )\n"
+	got := string(normalizePartFor("definition/tables/T.tmdl", []byte(src)))
+	for _, want := range []string{`Sql.Database("h", "lh_gold")`, `Item="Bank"`, `'Dim Enhet'[Type]`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expression body altered, %q missing:\n%s", want, got)
+		}
+	}
+}
+
+// TestNormalizeTMDLOnlyAppliesToTMDL keeps the canonicalization scoped: a JSON
+// part that happens to contain backticks is normalized as JSON, untouched.
+func TestNormalizeTMDLOnlyAppliesToTMDL(t *testing.T) {
+	src := []byte("measure 'X' = ```\n\tbody\n\t```\n")
+	if got := string(normalizePartFor("pipeline-content.json", src)); !strings.Contains(got, "```") {
+		t.Errorf("non-tmdl part must not be TMDL-canonicalized:\n%s", got)
+	}
+}
