@@ -618,16 +618,23 @@ func TestRenderItemPartsMarksMovedLines(t *testing.T) {
 	oldText := "table T\n\tcolumn A\n\t\tdataType: int64\n\n\tcolumn B\n\t\tdataType: string"
 	newText := "table T\n\tcolumn B\n\t\tdataType: string\n\n\tcolumn A\n\t\tdataType: int64"
 
-	html, added, removed, moved := renderItemParts(ItemDiff{
+	ir := renderItemParts(ItemDiff{
 		Name: "DW - Salg", Type: "SemanticModel",
 		Parts: []deploy.PartDiff{{Path: "definition/tables/T.tmdl", Old: oldText, New: newText, Reordered: true}},
 	})
+	html, added, removed, moved := ir.html, ir.added, ir.removed, ir.moved
 
 	if moved == 0 {
 		t.Fatalf("no moved lines detected; added=%d removed=%d", added, removed)
 	}
 	if added != 0 || removed != 0 {
 		t.Errorf("a pure move must not count as added/removed, got +%d −%d", added, removed)
+	}
+	if !ir.orderOnly() {
+		t.Error("a pure reshuffle must be classed order-only so the toggle can hide it")
+	}
+	if !strings.Contains(html, `class="part ord"`) {
+		t.Error("a reorder-only part must carry the ord class")
 	}
 	if !strings.Contains(html, `class="ln mov"`) {
 		t.Error("moved lines must render with the moved class")
@@ -643,10 +650,17 @@ func TestRenderItemPartsMarksMovedLines(t *testing.T) {
 // A real edit must keep its red and green. The move detection is per line text,
 // so an edited line appears on one side only and cannot be mistaken for a move.
 func TestRenderItemPartsKeepsRealEditsRed(t *testing.T) {
-	html, added, removed, moved := renderItemParts(ItemDiff{
+	ir := renderItemParts(ItemDiff{
 		Name: "NB_A", Type: "Notebook",
 		Parts: []deploy.PartDiff{{Path: "notebook-content.py", Old: "x = 1", New: "x = 2"}},
 	})
+	html, added, removed, moved := ir.html, ir.added, ir.removed, ir.moved
+	if ir.orderOnly() {
+		t.Error("a real edit must not be hidden as order-only")
+	}
+	if strings.Contains(html, `class="part ord"`) {
+		t.Error("a part with real changes must not carry the ord class")
+	}
 	if moved != 0 {
 		t.Errorf("an edit is not a move, got moved=%d", moved)
 	}
@@ -705,5 +719,55 @@ func TestClassifyMovedIsPerIndex(t *testing.T) {
 	}
 	if moved[1] {
 		t.Error("a line removed and never re-added must stay a removal")
+	}
+}
+
+// An item that only shuffled its lines must be hidden until the reader asks for
+// it: the card carries the ord class, the CSS hides that class, and the toggle
+// appears with the hidden-item count. An item with real changes stays visible.
+func TestRenderDeployDiffHTMLHidesOrderOnlyByDefault(t *testing.T) {
+	shuffled := ItemDiff{Name: "DW - Salg", Type: "SemanticModel", Parts: []deploy.PartDiff{{
+		Path:      "definition/tables/T.tmdl",
+		Old:       "table T\n\tcolumn A\n\t\tdataType: int64\n\n\tcolumn B\n\t\tdataType: string",
+		New:       "table T\n\tcolumn B\n\t\tdataType: string\n\n\tcolumn A\n\t\tdataType: int64",
+		Reordered: true,
+	}}}
+	edited := ItemDiff{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{
+		{Path: "notebook-content.py", Old: "x = 1", New: "x = 2"},
+	}}
+	out := renderDeployDiffHTML([]deployGroup{{
+		Target: fabric.Workspace{DisplayName: "W"},
+		Diffs:  []ItemDiff{shuffled, edited},
+	}}, nil)
+
+	if !strings.Contains(out, `<details class="item changed ord">`) {
+		t.Error("the reshuffled item must be marked ord so the CSS can hide it")
+	}
+	if !strings.Contains(out, `.item.ord,.part.ord,pre .ln.mov{display:none}`) {
+		t.Error("order-only markup must be hidden by default")
+	}
+	if !strings.Contains(out, `id="ordtoggle"`) || !strings.Contains(out, "Show order diffs") {
+		t.Error("a report with order noise must offer the toggle")
+	}
+	if !strings.Contains(out, `<span class="cnt">1 item(s)</span>`) {
+		t.Error("the toggle must say how many items it hides")
+	}
+	// The edited item is ordinary content — it must not be swept up.
+	if strings.Contains(out, `<details class="item changed ord"><summary><span class="dot changed"></span>NB_A`) {
+		t.Error("a real edit must stay visible")
+	}
+}
+
+// Without any reshuffling there is nothing to reveal, so the toggle stays off
+// the page rather than sitting there as a dead control.
+func TestRenderDeployDiffHTMLOmitsToggleWithoutOrderNoise(t *testing.T) {
+	out := renderDeployDiffHTML([]deployGroup{{
+		Target: fabric.Workspace{DisplayName: "W"},
+		Diffs: []ItemDiff{{Name: "NB_A", Type: "Notebook", Parts: []deploy.PartDiff{
+			{Path: "notebook-content.py", Old: "x = 1", New: "x = 2"},
+		}}},
+	}}, nil)
+	if strings.Contains(out, `id="ordtoggle"`) {
+		t.Error("no order noise means no toggle")
 	}
 }

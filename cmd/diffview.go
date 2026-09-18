@@ -349,6 +349,15 @@ const deployReportStyle = `<style>
   .btn{font:inherit;font-size:.74rem;color:#bff0cf;background:linear-gradient(150deg,rgba(74,222,128,.14),rgba(74,222,128,.04));
        border:1px solid rgba(74,222,128,.25);border-radius:7px;padding:.25rem .6rem;cursor:pointer;transition:.15s}
   .btn:hover{background:linear-gradient(150deg,rgba(74,222,128,.24),rgba(74,222,128,.08))}
+  .tgl{display:inline-flex;align-items:center;gap:.35rem;white-space:nowrap;user-select:none}
+  .tgl input{accent-color:#8ab4f8;margin:0;cursor:pointer}
+  .tgl .cnt{color:#8ab4f8;font-family:"SF Mono",Menlo,monospace}
+  /* Order-only noise — whole items and parts that merely shuffled, and the
+     moved lines inside a real diff — is hidden until the toggle is ticked. */
+  .item.ord,.part.ord,pre .ln.mov{display:none}
+  main:has(#ordtoggle:checked) .item.ord,
+  main:has(#ordtoggle:checked) .part.ord,
+  main:has(#ordtoggle:checked) pre .ln.mov{display:block}
   .h2row{display:flex;align-items:center;gap:.5rem;margin:1.9rem 0 .55rem}
   .h2row h2{margin:0}
   pre{margin:0;padding:.5rem 0;overflow-x:auto;font-size:.82rem;line-height:1.45}
@@ -554,10 +563,23 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 
 	// difftools is the expand/collapse-all control pair (inline onclick, no
 	// <script> tag), shared by the items section and the preview.
-	const difftools = `<div class="difftools">` +
-		`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=true)">Expand all</button>` +
-		`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>` +
-		`</div>`
+	difftools := func(ordItems int, hasOrd bool) string {
+		tgl := ""
+		if hasOrd {
+			// The CSS hides the order noise; the checkbox only has to exist.
+			// Naming the hidden item count keeps the section's "N changed
+			// item(s)" honest when cards are missing from the list.
+			cnt := ""
+			if ordItems > 0 {
+				cnt = fmt.Sprintf(` <span class="cnt">%d item(s)</span>`, ordItems)
+			}
+			tgl = `<label class="btn tgl" title="Lines and files that only changed position"><input type="checkbox" id="ordtoggle">Show order diffs` + cnt + `</label>`
+		}
+		return `<div class="difftools">` + tgl +
+			`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=true)">Expand all</button>` +
+			`<button class="btn" onclick="document.querySelectorAll('.item').forEach(d=&gt;d.open=false)">Collapse all</button>` +
+			`</div>`
+	}
 
 	if results != nil {
 		// ONE items section: creates, updates, deletes, failures together in
@@ -569,13 +591,30 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 				nDeleted++
 			}
 		}
+		// Render the diffs up front: the order-only toggle in the header has to
+		// know how many cards it hides before the first one is written.
+		renders := map[string]itemRender{}
+		ordItems, hasOrd := 0, false
+		for _, r := range results {
+			key := r.WorkspaceID + "\x00" + r.Type + "\x00" + r.Name
+			it, ok := diffByKey[key]
+			if !ok || r.Action == deploy.ActionDelete || r.Err != nil {
+				continue
+			}
+			ir := renderItemParts(it)
+			renders[key] = ir
+			if ir.orderOnly() {
+				ordItems++
+			}
+			hasOrd = hasOrd || ir.hasOrder()
+		}
 		b.WriteString(`<div class="h2row">`)
 		note := fmt.Sprintf("— %d item(s)", len(results))
 		if nDeleted > 0 {
 			note = fmt.Sprintf("— %d item(s) · %d deleted", len(results)-nDeleted, nDeleted)
 		}
 		fmt.Fprintf(&b, `<h2>Items <span class="note">%s</span></h2>`, note)
-		b.WriteString(difftools)
+		b.WriteString(difftools(ordItems, hasOrd))
 		b.WriteString(`</div>`)
 		b.WriteString(schedHint)
 
@@ -616,13 +655,16 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					` <span class="t">` + html.EscapeString(r.Type) + `</span>` +
 					` <span class="` + detailCls + `">` + html.EscapeString(detail) + `</span>`
 
-				it, hasDiff := diffByKey[r.WorkspaceID+"\x00"+r.Type+"\x00"+r.Name]
-				if hasDiff && r.Action != deploy.ActionDelete && r.Err == nil {
-					partsHTML, added, removed, moved := renderItemParts(it)
-					b.WriteString(`<details class="item ` + cardCls + `"><summary>` + row)
-					fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, added, removed, movedChip(moved))
+				ir, hasDiff := renders[r.WorkspaceID+"\x00"+r.Type+"\x00"+r.Name]
+				if hasDiff {
+					cls := cardCls
+					if ir.orderOnly() {
+						cls += " ord"
+					}
+					b.WriteString(`<details class="item ` + cls + `"><summary>` + row)
+					fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, ir.added, ir.removed, movedChip(ir.moved))
 					b.WriteString(`<span class="chev">▾</span></summary>`)
-					b.WriteString(partsHTML)
+					b.WriteString(ir.html)
 					b.WriteString(`</details>`)
 				} else {
 					b.WriteString(`<div class="item ` + cardCls + `"><div class="irow">` + row + `</div></div>`)
@@ -746,28 +788,47 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 				groupsWithDiffs++
 			}
 		}
+		// Same reason as the results section: the toggle's hidden-item count
+		// has to be known before the header is written.
+		renders := make([][]itemRender, len(groups))
+		ordItems, hasOrd := 0, false
+		for gi, g := range groups {
+			renders[gi] = make([]itemRender, len(g.Diffs))
+			for i, it := range g.Diffs {
+				ir := renderItemParts(it)
+				renders[gi][i] = ir
+				if ir.orderOnly() {
+					ordItems++
+				}
+				hasOrd = hasOrd || ir.hasOrder()
+			}
+		}
 		b.WriteString(`<div class="h2row">`)
 		b.WriteString(fmt.Sprintf(`<h2>Content diffs <span class="note">— deployed → local · %d changed item(s)</span></h2>`, changed))
-		b.WriteString(difftools)
+		b.WriteString(difftools(ordItems, hasOrd))
 		b.WriteString(`</div>`)
 		b.WriteString(schedHint)
 
-		for _, g := range groups {
+		for gi, g := range groups {
 			if len(g.Diffs) == 0 {
 				continue
 			}
 			if groupsWithDiffs > 1 {
 				b.WriteString(`<div class="wsgroup">` + html.EscapeString(g.Target.DisplayName) + `</div>`)
 			}
-			for _, it := range g.Diffs {
-				partsHTML, added, removed, moved := renderItemParts(it)
-				b.WriteString(`<details class="item changed">`)
+			for i, it := range g.Diffs {
+				ir := renders[gi][i]
+				cls := "item changed"
+				if ir.orderOnly() {
+					cls += " ord"
+				}
+				b.WriteString(`<details class="` + cls + `">`)
 				b.WriteString(`<summary><span class="dot changed"></span>`)
 				b.WriteString(html.EscapeString(it.Name))
 				b.WriteString(` <span class="t">` + html.EscapeString(it.Type) + `</span>`)
-				fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, added, removed, movedChip(moved))
+				fmt.Fprintf(&b, `<span class="pm"><span class="plus">+%d</span><span class="minus">−%d</span>%s</span>`, ir.added, ir.removed, movedChip(ir.moved))
 				b.WriteString(`<span class="chev">▾</span></summary>`)
-				b.WriteString(partsHTML)
+				b.WriteString(ir.html)
 				b.WriteString(`</details>`)
 			}
 		}
@@ -836,14 +897,31 @@ func classifyMoved(lines []DiffLine) []bool {
 	return moved
 }
 
+// itemRender is one changed item's rendered diff plus the counts the collapsed
+// card summary shows. ordParts counts the parts that only shuffled lines, which
+// the report hides behind the order-only toggle.
+type itemRender struct {
+	html                  string
+	added, removed, moved int
+	ordParts              int
+}
+
+// hasOrder reports whether anything in the item is hidden by default — a
+// shuffled part, or moved lines sitting inside an otherwise real diff.
+func (r itemRender) hasOrder() bool { return r.moved > 0 || r.ordParts > 0 }
+
+// orderOnly reports an item whose every change is a reshuffle. Nothing is left
+// to read once the moves are hidden, so the whole card goes with them.
+func (r itemRender) orderOnly() bool { return r.added == 0 && r.removed == 0 && r.hasOrder() }
+
 // renderItemParts renders one changed item's per-part content diffs, counting
 // added/removed/moved lines so the collapsed card summary can show a +N −N ⇅N
 // chip — enough to gauge a change's size, and its NATURE, without expanding it.
 // Moved lines are counted apart from added/removed on purpose: a part that only
 // shuffled its lines should read as +0 −0, not as a rewrite of the whole file.
-func renderItemParts(it ItemDiff) (string, int, int, int) {
+func renderItemParts(it ItemDiff) itemRender {
 	var parts strings.Builder
-	added, removed, moved := 0, 0, 0
+	out := itemRender{}
 	for _, p := range it.Parts {
 		oldPretty, oldIsJSON := prettyForDiff(p.Old)
 		newPretty, newIsJSON := prettyForDiff(p.New)
@@ -859,33 +937,44 @@ func renderItemParts(it ItemDiff) (string, int, int, int) {
 		}
 		lines := cappedLineDiff(oldPretty, newPretty)
 		mov := classifyMoved(lines)
-		parts.WriteString(`<div class="part"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
+		var body strings.Builder
+		partAdded, partRemoved, partMoved := 0, 0, 0
 		for i, ln := range lines {
 			cls, prefix := "ctx", " "
 			switch ln.Op {
 			case '-', '+':
 				if mov[i] {
 					cls, prefix = "mov", "⇅"
-					moved++
+					partMoved++
 					break
 				}
 				if ln.Op == '-' {
 					cls, prefix = "rem", "-"
-					removed++
+					partRemoved++
 				} else {
 					cls, prefix = "add", "+"
-					added++
+					partAdded++
 				}
 			case '@':
 				cls, prefix = "fold", " "
 			}
-			parts.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
+			body.WriteString(`<span class="ln ` + cls + `">` + lineNoCell(ln.OldNo) + lineNoCell(ln.NewNo) + prefix + " " + html.EscapeString(ln.Text) + "</span>")
 		}
+		// A part nothing was added to or removed from changed only where its
+		// lines sit, so it hides with the rest of the order noise.
+		cls := "part"
+		if partAdded == 0 && partRemoved == 0 && (partMoved > 0 || p.Reordered) {
+			cls, out.ordParts = "part ord", out.ordParts+1
+		}
+		parts.WriteString(`<div class="` + cls + `"><div class="path">` + html.EscapeString(p.Path) + badge + `</div><pre>`)
+		parts.WriteString(body.String())
 		parts.WriteString(`</pre></div>`)
+		out.added, out.removed, out.moved = out.added+partAdded, out.removed+partRemoved, out.moved+partMoved
 	}
 	// Both sides of a move were counted, so a block that slid down the file
 	// reports its own length rather than twice it.
-	return parts.String(), added, removed, moved / 2
+	out.html, out.moved = parts.String(), out.moved/2
+	return out
 }
 
 // renderDeployDiffHTML is the compare-only view (no deploy results) used by the
