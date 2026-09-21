@@ -25,8 +25,11 @@ type fakeMoveAPI struct {
 	createCalls       int
 	updateCalls       int
 	lastCreateName    string
+	createNames       []string        // every CreateItem name, in call order
+	failCreateNames   map[string]bool // CreateItem fails for these names only
 	lastUpdateItemID  string
 	lastRebindDataset string
+	rebindByReport    map[string]string // report ID -> dataset it was rebound to
 	rebindErr         error
 	createErr         error
 }
@@ -85,8 +88,12 @@ func (f *fakeMoveAPI) GetItemDefinition(_, _, itemID, _ string) (*fabric.Definit
 func (f *fakeMoveAPI) CreateItem(_, ws, name, typ string, _ *fabric.Definition, _ json.RawMessage, _ string) (fabric.Item, error) {
 	f.createCalls++
 	f.lastCreateName = name
+	f.createNames = append(f.createNames, name)
 	if f.createErr != nil {
 		return fabric.Item{}, f.createErr
+	}
+	if f.failCreateNames[name] {
+		return fabric.Item{}, fmt.Errorf("create %s: 500 boom", name)
 	}
 	created := fabric.Item{ID: "new-" + name, DisplayName: name, Type: typ, WorkspaceID: ws}
 	f.items[ws] = append(f.items[ws], created)
@@ -99,9 +106,13 @@ func (f *fakeMoveAPI) UpdateItemDefinition(_, _, itemID string, _ *fabric.Defini
 }
 func (f *fakeMoveAPI) UpdateItem(_, _, _, _, _ string) error { return nil }
 func (f *fakeMoveAPI) DeleteItem(_, _, _ string) error       { return nil }
-func (f *fakeMoveAPI) RebindReport(_, _, _, datasetID string) error {
+func (f *fakeMoveAPI) RebindReport(_, _, reportID, datasetID string) error {
 	f.rebindCalls++
 	f.lastRebindDataset = datasetID
+	if f.rebindByReport == nil {
+		f.rebindByReport = map[string]string{}
+	}
+	f.rebindByReport[reportID] = datasetID
 	return f.rebindErr
 }
 
@@ -160,12 +171,21 @@ func (f *fakeMoveAPI) ListCapacities(string) ([]fabric.Capacity, error) {
 func withMovePickers(t *testing.T, filterPicks []string, numberPicks []string, promptReturn string) func() {
 	t.Helper()
 	origFilter := moveFilterPicker
+	origMulti := moveMultiPicker
 	origNumber := moveNumberPicker
 	origPrompt := movePromptInput
 	origConfirm := moveConfirm
 
 	filterIdx := 0
 	numberIdx := 0
+	moveMultiPicker = func(_ string, items []ui.CheckItem) ([]int, error) {
+		if filterIdx >= len(filterPicks) {
+			return nil, errors.New("ran out of filter picks (item picker)")
+		}
+		target := filterPicks[filterIdx]
+		filterIdx++
+		return multiPickByNames(target)("", items)
+	}
 	moveFilterPicker = func(_ string, options []ui.FilterOption, _ ui.FilterRowRenderer) (string, error) {
 		if filterIdx >= len(filterPicks) {
 			return "", errors.New("ran out of filter picks")
@@ -200,9 +220,50 @@ func withMovePickers(t *testing.T, filterPicks []string, numberPicks []string, p
 
 	return func() {
 		moveFilterPicker = origFilter
+		moveMultiPicker = origMulti
 		moveNumberPicker = origNumber
 		movePromptInput = origPrompt
 		moveConfirm = origConfirm
+	}
+}
+
+// multiPickByNames returns an item-picker stub that checks the rows whose label
+// starts with one of the given names (labels are "<name><padding>  <type>").
+// No names means the user pressed enter with nothing checked.
+func multiPickByNames(names ...string) func(string, []ui.CheckItem) ([]int, error) {
+	return func(_ string, items []ui.CheckItem) ([]int, error) {
+		var out []int
+		for _, name := range names {
+			if name == "" {
+				continue
+			}
+			found := false
+			for i, it := range items {
+				if strings.HasPrefix(it.Label, name+" ") || it.Label == name {
+					out = append(out, i)
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("no item row labeled %q", name)
+			}
+		}
+		return out, nil
+	}
+}
+
+// multiPickQueue answers successive multi-picker calls with successive name
+// sets: the item picker first, then any rebind-plan change pickers.
+func multiPickQueue(picks ...[]string) func(string, []ui.CheckItem) ([]int, error) {
+	i := 0
+	return func(title string, items []ui.CheckItem) ([]int, error) {
+		if i >= len(picks) {
+			return nil, fmt.Errorf("unexpected multi picker call %q", title)
+		}
+		names := picks[i]
+		i++
+		return multiPickByNames(names...)(title, items)
 	}
 }
 
@@ -536,7 +597,8 @@ func TestMove_RebindPicker_DestinationModelsFirst(t *testing.T) {
 	restore := withMovePickers(t, nil, nil, "")
 	defer restore()
 
-	picks := []string{"DW - DEV", "HR", "feature/jane"} // source ws, item, destination ws
+	moveMultiPicker = multiPickByNames("HR")
+	picks := []string{"DW - DEV", "feature/jane"} // source ws, destination ws
 	pickIdx := 0
 	var rebindOptions []ui.FilterOption
 	moveFilterPicker = func(_ string, options []ui.FilterOption, _ ui.FilterRowRenderer) (string, error) {
@@ -600,6 +662,158 @@ func (f *fakeMoveAPI) RenameItem(string, string, string, string) (fabric.Item, e
 }
 func (f *fakeMoveAPI) SetItemDescription(string, string, string, string) (fabric.Item, error) {
 	return fabric.Item{}, errors.New("SetItemDescription not used by move tests")
+}
+
+func twoNotebookTenant() *fakeMoveAPI {
+	return &fakeMoveAPI{
+		token: "fake",
+		workspaces: []fabric.Workspace{
+			{ID: "ws-a", DisplayName: "DW - DEV"},
+			{ID: "ws-b", DisplayName: "DW - feature"},
+		},
+		items: map[string][]fabric.Item{
+			"ws-a": {
+				{ID: "nb-1", DisplayName: "LoadHR", Type: "Notebook", WorkspaceID: "ws-a"},
+				{ID: "nb-2", DisplayName: "LoadSales", Type: "Notebook", WorkspaceID: "ws-a"},
+			},
+			"ws-b": {},
+		},
+	}
+}
+
+func TestMove_MultipleItems_EachCopiedToDestination(t *testing.T) {
+	api := twoNotebookTenant()
+	restore := withMovePickers(t, []string{"DW - DEV", "DW - feature"}, nil, "")
+	defer restore()
+	moveMultiPicker = multiPickByNames("LoadHR", "LoadSales")
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+	if got := strings.Join(api.createNames, ","); got != "LoadHR,LoadSales" {
+		t.Errorf("expected both notebooks created in order, got %q", got)
+	}
+}
+
+func TestMove_CollisionSkip_LeavesOtherItemsMoving(t *testing.T) {
+	api := twoNotebookTenant()
+	api.items["ws-b"] = []fabric.Item{{ID: "nb-old", DisplayName: "LoadHR", Type: "Notebook", WorkspaceID: "ws-b"}}
+	restore := withMovePickers(t,
+		[]string{"DW - DEV", "DW - feature"},
+		[]string{"Skip this item"}, // collision menu for LoadHR
+		"")
+	defer restore()
+	moveMultiPicker = multiPickByNames("LoadHR", "LoadSales")
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+	if got := strings.Join(api.createNames, ","); got != "LoadSales" {
+		t.Errorf("expected only LoadSales created, got %q", got)
+	}
+	if api.updateCalls != 0 {
+		t.Errorf("skip must not overwrite, got %d updates", api.updateCalls)
+	}
+}
+
+func TestMove_OneCreateFails_RemainingItemsStillMoved(t *testing.T) {
+	api := twoNotebookTenant()
+	api.failCreateNames = map[string]bool{"LoadHR": true}
+	restore := withMovePickers(t, []string{"DW - DEV", "DW - feature"}, nil, "")
+	defer restore()
+	moveMultiPicker = multiPickByNames("LoadHR", "LoadSales")
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("a failed item is reported, not returned: %v", err)
+	}
+	if got := strings.Join(api.createNames, ","); got != "LoadHR,LoadSales" {
+		t.Errorf("expected LoadSales attempted after LoadHR failed, got %q", got)
+	}
+}
+
+func TestMove_NothingChecked_NothingMoved(t *testing.T) {
+	api := twoNotebookTenant()
+	restore := withMovePickers(t, []string{"DW - DEV"}, nil, "")
+	defer restore()
+	moveMultiPicker = multiPickByNames()
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("empty selection is a no-op, got %v", err)
+	}
+	if api.createCalls != 0 {
+		t.Errorf("nothing checked must create nothing, got %d creates", api.createCalls)
+	}
+}
+
+func twoReportTenant() *fakeMoveAPI {
+	return &fakeMoveAPI{
+		token: "fake",
+		workspaces: []fabric.Workspace{
+			{ID: "ws-a", DisplayName: "DW - DEV"},
+			{ID: "ws-b", DisplayName: "DW - feature"},
+		},
+		items: map[string][]fabric.Item{
+			"ws-a": {
+				{ID: "r-1", DisplayName: "HR", Type: "Report", WorkspaceID: "ws-a"},
+				{ID: "r-2", DisplayName: "Sales", Type: "Report", WorkspaceID: "ws-a"},
+			},
+			"ws-b": {
+				{ID: "sm-1", DisplayName: "HR-Model", Type: "SemanticModel", WorkspaceID: "ws-b"},
+				{ID: "sm-2", DisplayName: "Sales-Model", Type: "SemanticModel", WorkspaceID: "ws-b"},
+			},
+		},
+	}
+}
+
+func TestMove_TwoReports_OneRebindPickAppliesToBoth(t *testing.T) {
+	api := twoReportTenant()
+	restore := withMovePickers(t,
+		[]string{"DW - DEV", "DW - feature", "HR-Model"}, // src ws, dst ws, default model
+		[]string{"Continue with this plan"},              // rebind plan menu
+		"")
+	defer restore()
+	moveMultiPicker = multiPickQueue([]string{"HR", "Sales"})
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+	if api.rebindByReport["new-HR"] != "sm-1" || api.rebindByReport["new-Sales"] != "sm-1" {
+		t.Errorf("both reports should rebind to sm-1, got %v", api.rebindByReport)
+	}
+}
+
+func TestMove_TwoReports_ChangeModelForOne(t *testing.T) {
+	api := twoReportTenant()
+	restore := withMovePickers(t,
+		[]string{"DW - DEV", "DW - feature", "HR-Model", "Sales-Model"}, // ..., default model, model for the changed row
+		[]string{"Change model for some reports", "Continue with this plan"},
+		"")
+	defer restore()
+	moveMultiPicker = multiPickQueue([]string{"HR", "Sales"}, []string{"Sales"})
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+	if got := api.rebindByReport; got["new-HR"] != "sm-1" || got["new-Sales"] != "sm-2" {
+		t.Errorf("HR should keep the default sm-1 and Sales move to sm-2, got %v", got)
+	}
+}
+
+func TestMove_TwoReports_ChangeToSkipLeavesBinding(t *testing.T) {
+	api := twoReportTenant()
+	restore := withMovePickers(t,
+		[]string{"DW - DEV", "DW - feature", "HR-Model", "⋯ Skip (keep current binding)"},
+		[]string{"Change model for some reports", "Continue with this plan"},
+		"")
+	defer restore()
+	moveMultiPicker = multiPickQueue([]string{"HR", "Sales"}, []string{"HR"})
+
+	if err := MoveWithAPI(writeTestConfig(t), api); err != nil {
+		t.Fatalf("MoveWithAPI: %v", err)
+	}
+	if api.rebindCalls != 1 || api.rebindByReport["new-Sales"] != "sm-1" {
+		t.Errorf("only Sales should rebind, got calls=%d map=%v", api.rebindCalls, api.rebindByReport)
+	}
 }
 
 func TestMoveWriteErrorOnlyBlamesPermissionsWhenItIsPermissions(t *testing.T) {

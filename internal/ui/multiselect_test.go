@@ -232,3 +232,23 @@ func TestMultiSelectFilter_EscClearsQueryThenBacks(t *testing.T) {
 		t.Error("second esc must go back")
 	}
 }
+
+func TestRichFilteredModel_StyledRowsNarrowOnQuery(t *testing.T) {
+	m := newRichFilteredModel("t", []CheckItem{
+		{Label: "LoadHR  Notebook", Style: lipgloss.NewStyle().Bold(true)},
+		{Label: "Sales  Report"},
+	})
+	if !m.filter {
+		t.Fatal("rich filtered model must have type-to-filter on")
+	}
+	if !m.items[0].styled {
+		t.Error("CheckItem style must survive into the model")
+	}
+	for _, r := range "rep" {
+		next, _ := m.Update(keyMsg(string(r)))
+		m = next.(checkboxModel)
+	}
+	if got := m.visibleIdx(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("query 'rep' should leave only the Report row, got %v", got)
+	}
+}
