@@ -32,7 +32,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
 - **Run notebooks** — pick a customer, environment, and notebook, override Papermill parameters, and submit a `RunNotebook` job. Polls until completion and reports status.
 - **Run pipelines** — pick a data pipeline the same way and trigger a pipeline job, polled to completion.
 - **Refresh tables** — pick a semantic model, multi-select tables (with group toggles and type-to-filter search), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
-- **Move items** — copy a Report, Semantic Model, or Notebook from one workspace to another. For Reports, optionally rebind to a different semantic model in the destination.
+- **Move items** — copy Reports, Semantic Models, and Notebooks from one workspace to another, one or many at a time. For Reports, optionally rebind to a different semantic model in the destination.
 - **Favourites** — pin the notebooks and parameters you actually use, so the run flow surfaces them first instead of scrolling through 200+ items.
 - **Per-customer config** — multiple customers, each with an environment ladder (e.g. `DEV, TEST, PROD`) where every environment maps to one or more workspaces (e.g. a Config workspace and a SemMod workspace).
 - **Friendly TUI** — numbered menus (`1`–`9` jump straight to an option), type-to-filter pickers, inline descriptions, and `?` info boxes explaining every setting. `esc` goes back, `m` returns to the main menu, `q` quits — a key legend is always visible.
@@ -163,11 +163,10 @@ First-time deploy setup is guided: pick the repo, pick the baseline environment,
 5. Triggers an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) (`type=full`, `commitMode=transactional`) and polls until completion.
 
 ### Move items
-1. Picks source workspace + item.
-2. Fetches the item definition (`getDefinition`) — Reports, Semantic Models, and Notebooks all expose this.
-3. Picks the destination workspace.
-4. Creates the item in the destination via [`POST /workspaces/{id}/items`](https://learn.microsoft.com/en-us/rest/api/fabric/core/items/create-item).
-5. For Reports, optionally rebinds the report's dataset reference to a semantic model that exists in the destination workspace.
+1. Picks the source workspace, then one or more items from a searchable checkbox list.
+2. Picks the destination workspace once for the whole batch.
+3. Per item: fetches the definition (`getDefinition`), checks for a name collision in the destination (overwrite, rename, skip the item, or cancel the batch), and for Reports asks which semantic model to rebind to.
+4. Shows one summary and one confirm, then creates each item via [`POST /workspaces/{id}/items`](https://learn.microsoft.com/en-us/rest/api/fabric/core/items/create-item). A failed item does not stop the rest; a tally closes the run.
 
 ### APIs used
 

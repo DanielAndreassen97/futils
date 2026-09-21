@@ -370,22 +370,48 @@ func toCheckboxItems(items []CheckItem) []checkboxItem {
 // so two rows with identical labels stay distinct. Returns ErrGoBack on esc,
 // ErrQuit on ctrl+c/q.
 func MultiSelectRich(title string, items []CheckItem) ([]int, error) {
-	model := checkboxModel{title: title, items: toCheckboxItems(items)}
-	final, err := tea.NewProgram(model).Run()
+	result, err := runCheckbox(checkboxModel{title: title, items: toCheckboxItems(items)})
 	if err != nil {
 		return nil, err
 	}
-	result := final.(checkboxModel)
-	if result.quit {
-		return nil, ErrQuit
-	}
-	if result.goHome {
-		return nil, ErrGoHome
-	}
-	if result.goBack {
-		return nil, ErrGoBack
+	return result.checkedIndices(), nil
+}
+
+// newRichFilteredModel is MultiSelectRichFiltered's model: styled rows plus the
+// always-on type-to-filter mode MultiSelect has. Split out so tests can drive it.
+func newRichFilteredModel(title string, items []CheckItem) checkboxModel {
+	return checkboxModel{title: title, items: toCheckboxItems(items), filter: true}
+}
+
+// MultiSelectRichFiltered is MultiSelectRich with type-to-filter: printable keys
+// narrow the list, so a fifty-item workspace is searchable the way the single
+// item picker was. Returns the checked indices in list order, ErrGoBack on esc
+// and ErrQuit on ctrl+c. The letter shortcuts (a/j/k/q/m) belong to the query.
+func MultiSelectRichFiltered(title string, items []CheckItem) ([]int, error) {
+	result, err := runCheckbox(newRichFilteredModel(title, items))
+	if err != nil {
+		return nil, err
 	}
 	return result.checkedIndices(), nil
+}
+
+// runCheckbox runs a checkbox model to completion and maps the way it ended to
+// the shared navigation errors, so every MultiSelect variant exits the same way.
+func runCheckbox(model checkboxModel) (checkboxModel, error) {
+	final, err := tea.NewProgram(model).Run()
+	if err != nil {
+		return checkboxModel{}, err
+	}
+	result := final.(checkboxModel)
+	switch {
+	case result.quit:
+		return checkboxModel{}, ErrQuit
+	case result.goHome:
+		return checkboxModel{}, ErrGoHome
+	case result.goBack:
+		return checkboxModel{}, ErrGoBack
+	}
+	return result, nil
 }
 
 // MultiSelect shows an interactive checkbox list. Items in `initial` are
@@ -419,21 +445,9 @@ func MultiSelect(title string, options []string, initial []string) ([]string, er
 		items[i] = checkboxItem{label: o, checked: initialSet[o]}
 	}
 
-	model := checkboxModel{title: title, items: items, filter: true}
-	p := tea.NewProgram(model)
-	final, err := p.Run()
+	result, err := runCheckbox(checkboxModel{title: title, items: items, filter: true})
 	if err != nil {
 		return nil, err
-	}
-	result := final.(checkboxModel)
-	if result.quit {
-		return nil, ErrQuit
-	}
-	if result.goHome {
-		return nil, ErrGoHome
-	}
-	if result.goBack {
-		return nil, ErrGoBack
 	}
 
 	out := make([]string, 0, result.countChecked())
