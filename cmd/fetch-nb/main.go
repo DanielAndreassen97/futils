@@ -10,6 +10,8 @@
 // Optional flags:
 //
 //	-raw            dump the decoded .ipynb to stdout instead of parsed parameters
+//	-py             dump the decoded notebook-content.py in the default
+//	                FabricGitSource format, the form deploy compares against
 //	-profile        keychain profile name (default "default")
 //	-run            actually trigger a RunNotebook job using discovered defaults
 //	                (plus any -p overrides), then poll until completion
@@ -22,6 +24,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -44,17 +47,18 @@ func (p paramFlag) Set(s string) error {
 
 func main() {
 	raw := flag.Bool("raw", false, "print decoded .ipynb instead of parsed parameters")
+	py := flag.Bool("py", false, "print the decoded notebook-content.py (default FabricGitSource format, what deploy compares against)")
 	profile := flag.String("profile", "default", "keychain profile for token caching")
 	run := flag.Bool("run", false, "submit a RunNotebook job using discovered defaults + -p overrides")
 	overrides := paramFlag{}
 	flag.Var(overrides, "p", "override parameter value (name=value, repeatable)")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: fetch-nb [-raw] [-run] [-profile name] [-p k=v ...] <workspace> <notebook>")
+		fmt.Fprintln(os.Stderr, "usage: fetch-nb [-raw | -py] [-run] [-profile name] [-p k=v ...] <workspace> <notebook>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
-	if flag.NArg() != 2 {
+	if flag.NArg() != 2 || (*py && (*raw || *run)) {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -75,6 +79,18 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  → %s\n", item.ID)
 
 	fmt.Fprintln(os.Stderr, "Fetching definition (may take a few seconds)…")
+	if *py {
+		def, err := fabric.GetItemDefinition(token, wsID, item.ID, "")
+		check(err)
+		for _, p := range def.Parts {
+			if path.Base(p.Path) == ".platform" {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "── %s\n", p.Path)
+			_, _ = os.Stdout.Write(p.Decoded())
+		}
+		return
+	}
 	ipynb, err := fabric.GetNotebookIpynb(token, wsID, item.ID)
 	check(err)
 

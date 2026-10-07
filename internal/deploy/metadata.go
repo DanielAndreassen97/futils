@@ -28,34 +28,40 @@ func extractMetadataJSON(content []byte) (string, bool) {
 	if json.Valid(content) {
 		return string(content), true
 	}
-	var meta []string
-	inMeta := false
-	for _, ln := range strings.Split(string(content), "\n") {
-		t := strings.TrimSpace(ln)
-		if strings.HasPrefix(t, "# METADATA *") {
-			inMeta = true
-			continue
-		}
-		if !inMeta {
-			continue
-		}
-		if t == "# META" {
-			meta = append(meta, "")
-			continue
-		}
-		if strings.HasPrefix(t, "# META ") {
-			meta = append(meta, strings.TrimPrefix(t, "# META "))
-			continue
-		}
-		if t == "" {
-			continue
-		}
-		break // a non-META line ends the metadata section
-	}
+	_, _, meta := metaSection(strings.Split(string(content), "\n"))
 	if len(meta) == 0 {
 		return "", false
 	}
 	return strings.Join(meta, "\n"), true
+}
+
+// metaSection finds the "# META" lines of the first "# METADATA" section of a
+// .py-format notebook: the index of the first and last such line, and their
+// JSON text with the prefix removed (empty when there is no section). Blank
+// lines inside the section are skipped; any other line ends it.
+func metaSection(lines []string) (start, end int, meta []string) {
+	inMeta := false
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		switch {
+		case strings.HasPrefix(t, "# METADATA *"):
+			inMeta = true
+			continue
+		case !inMeta, t == "":
+			continue
+		case t == "# META":
+			meta = append(meta, "")
+		case strings.HasPrefix(t, "# META "):
+			meta = append(meta, strings.TrimPrefix(t, "# META "))
+		default:
+			return start, end, meta // a non-META line ends the metadata section
+		}
+		if len(meta) == 1 {
+			start = i
+		}
+		end = i
+	}
+	return start, end, meta
 }
 
 // parseNotebookLakehouse extracts the lakehouse dependency block from a notebook

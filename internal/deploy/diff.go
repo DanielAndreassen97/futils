@@ -158,11 +158,7 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 		if path.Base(p.Path) == ".platform" {
 			continue // local parts exclude .platform; its description is diffed as a field
 		}
-		raw, err := base64.StdEncoding.DecodeString(p.Payload)
-		if err != nil {
-			raw = []byte(p.Payload)
-		}
-		deployedNorm[p.Path] = string(normalizePartFor(p.Path, raw))
+		deployedNorm[p.Path] = string(normalizePartFor(p.Path, p.Decoded()))
 	}
 	var diffs []PartDiff
 	seen := make(map[string]bool, len(localParts))
@@ -170,7 +166,7 @@ func DiffParts(localParts map[string][]byte, deployed *fabric.Definition) []Part
 		seen[path] = true
 		newN := string(normalizePartFor(path, lb))
 		oldN := deployedNorm[path]
-		if newN != oldN {
+		if newN != oldN && !sameNotebookMeta(path, oldN, newN) {
 			diffs = append(diffs, PartDiff{
 				Path: path, Old: oldN, New: newN,
 				Reordered: reorderedOnly(path, oldN, newN),

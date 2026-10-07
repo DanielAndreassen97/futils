@@ -630,6 +630,16 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 				// Desktop wrote into the target reads as a part this publish
 				// deletes, on every run.
 				def.Parts = deploy.DropFabricOwnedParts(rows[idx].ItemType(), def.Parts)
+				// Fabric's .py notebook export can drop the dependencies block its
+				// ipynb export still carries; put it back so it compares as git does.
+				// Best effort: if the ipynb fetch fails, the notebook diffs as before.
+				_ = deploy.RestoreNotebookDependencies(rows[idx].Local, def, func() ([]byte, error) {
+					nb, err := client.GetItemDefinition(token, target.ID, rows[idx].DeployedID, "ipynb")
+					if err != nil {
+						return nil, err
+					}
+					return fabric.IpynbFromDefinition(nb)
+				})
 			}
 			if skipSchedules && def != nil {
 				// Local parts were stripped before Compare; strip the deployed

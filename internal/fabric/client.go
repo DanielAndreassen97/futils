@@ -574,6 +574,17 @@ type DefinitionPart struct {
 	PayloadType string `json:"payloadType"`
 }
 
+// Decoded returns the part's content: base64-decoded for InlineBase64 (or an
+// unset type), the payload as-is otherwise or when it is not valid base64.
+func (p DefinitionPart) Decoded() []byte {
+	if p.PayloadType == "InlineBase64" || p.PayloadType == "" {
+		if raw, err := base64.StdEncoding.DecodeString(p.Payload); err == nil {
+			return raw
+		}
+	}
+	return []byte(p.Payload)
+}
+
 // BulkImportOptions configures a bulkImportDefinitions request. AllowPairingByName
 // controls how an imported item WITHOUT a logicalId is matched against an existing
 // workspace item: true → pair by display name + type; false → name pairing is
@@ -686,17 +697,16 @@ func GetNotebookIpynb(token, workspaceID, itemID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return IpynbFromDefinition(def)
+}
+
+// IpynbFromDefinition returns the decoded .ipynb part of a notebook definition
+// fetched with format "ipynb".
+func IpynbFromDefinition(def *Definition) ([]byte, error) {
 	for _, p := range def.Parts {
-		if !strings.HasSuffix(p.Path, ".ipynb") {
-			continue
+		if strings.HasSuffix(p.Path, ".ipynb") {
+			return p.Decoded(), nil
 		}
-		if p.PayloadType == "InlineBase64" || p.PayloadType == "" {
-			decoded, err := base64.StdEncoding.DecodeString(p.Payload)
-			if err == nil {
-				return decoded, nil
-			}
-		}
-		return []byte(p.Payload), nil
 	}
 	return nil, fmt.Errorf("no .ipynb part in notebook definition")
 }
