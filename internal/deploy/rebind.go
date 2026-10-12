@@ -270,6 +270,12 @@ func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, boo
 	}
 	base, ok := rb.baseline.ItemByGUID(guid)
 	if !ok {
+		// Already a target GUID: logicalId substitution runs before the rebind
+		// and turns a same-workspace reference (Fabric git-sync writes those as
+		// logicalIds) into the deployed target item. Nothing left to translate.
+		if tgt, found := rb.target.ItemByGUID(guid); found && (targetType == "" || tgt.Type == targetType) {
+			return tgt, true, ""
+		}
 		return IndexedItem{}, false, ReasonNameUnknown
 	}
 	typ := base.Type

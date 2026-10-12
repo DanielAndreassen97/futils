@@ -113,6 +113,22 @@ func TestRebindUnresolvedKnownLakehouse(t *testing.T) {
 	}
 }
 
+func TestRebindKnownLakehouseAlreadyTarget(t *testing.T) {
+	// Fabric git-sync writes a same-workspace lakehouse as its logicalId, and
+	// logicalId substitution turns that into the TARGET GUID before the rebind
+	// runs. The GUID is then absent from the baseline but already correct, so it
+	// must not be reported as unresolved.
+	rb := newRebindFixture(t, nil)
+	in := rebindNotebook("test-config-lh", placeholderGUID, "LH_ConfigLog", "test-config-lh")
+	out, outcome := rb.RebindNotebookLakehouses(in)
+	if string(out) != string(in) {
+		t.Errorf("already-target notebook should be unchanged:\n%s", out)
+	}
+	if len(outcome.Unresolved) != 0 || len(outcome.Changes) != 0 {
+		t.Fatalf("unresolved = %#v, changes = %#v", outcome.Unresolved, outcome.Changes)
+	}
+}
+
 func TestRebindOverrideTakesPrecedence(t *testing.T) {
 	// Override maps the unknown baseline GUID directly to LH_Silver by name; add
 	// LH_Silver to the target so the override resolves.
