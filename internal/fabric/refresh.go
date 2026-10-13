@@ -62,7 +62,7 @@ func QueryRefreshableTables(token, workspaceID, datasetID string) ([]string, err
 
 	url := fmt.Sprintf("%s/v1/workspaces/%s/semanticModels/%s/getDefinition",
 		baseURL, workspaceID, datasetID)
-	body, err := doLRO(token, url, nil, 0)
+	body, err := doReadLRO(token, url)
 	if err != nil {
 		return nil, err
 	}

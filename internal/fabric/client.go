@@ -667,7 +667,7 @@ func GetItemDefinition(token, workspaceID, itemID, format string) (*Definition, 
 		url += "?format=" + format
 	}
 
-	body, err := doLRO(token, url, nil, 0)
+	body, err := doReadLRO(token, url)
 	if err != nil {
 		return nil, err
 	}
@@ -961,6 +961,31 @@ func doLRO(token, rawURL string, reqBody io.Reader, maxAttempts int) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	return finishLRO(token, rawURL, resp, body, maxAttempts)
+}
+
+// doReadLRO is doLRO for a POST that only reads, such as getDefinition.
+// Sending it again can't create or change anything, so a transport-level
+// failure on it (connection reset, EOF, timeout) is retried like a GET
+// instead of failing the read. The polling that follows retries through doGet.
+func doReadLRO(token, rawURL string) ([]byte, error) {
+	for attempt := 0; ; attempt++ {
+		resp, body, err := doPost(token, rawURL, nil)
+		var uerr *neturl.Error
+		if err != nil && errors.As(err, &uerr) && attempt < maxNetRetries {
+			sleep(netBackoff(attempt))
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		return finishLRO(token, rawURL, resp, body, 0)
+	}
+}
+
+// finishLRO turns the initial response of a long-running operation into its
+// result: a direct 200/201/204 body, or the polled result of a 202.
+func finishLRO(token, rawURL string, resp *http.Response, body []byte, maxAttempts int) ([]byte, error) {
 	switch resp.StatusCode {
 	case 200, 201, 204:
 		return body, nil

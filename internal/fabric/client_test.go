@@ -659,3 +659,46 @@ func TestRunNotebookHCRejectsInvalidTagWithoutCalling(t *testing.T) {
 		t.Errorf("no request may be sent for an invalid tag, got %v", transport.urls)
 	}
 }
+
+// getDefinition is a POST but only reads, so a dropped connection on it must
+// be retried like a GET. Without that, one reset during a deploy compare left
+// the item unverified ("shown as Exists") instead of compared.
+func TestGetItemDefinitionRetriesTransientNetworkError(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{err: errors.New("read tcp: wsarecv: An existing connection was forcibly closed by the remote host.")},
+		{status: http.StatusOK, body: `{"definition":{"parts":[{"path":"a.json","payload":"e30=","payloadType":"InlineBase64"}]}}`},
+	}}
+	origClient, origSleep := httpClient, sleep
+	t.Cleanup(func() { httpClient = origClient; sleep = origSleep })
+	httpClient = &http.Client{Transport: transport}
+	sleep = func(time.Duration) {}
+
+	def, err := GetItemDefinition("tok", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "")
+	if err != nil {
+		t.Fatalf("getDefinition should retry a dropped connection, got: %v", err)
+	}
+	if len(def.Parts) != 1 || len(transport.calls) != 2 {
+		t.Fatalf("parts = %d, calls = %d; want 1 part after 2 calls", len(def.Parts), len(transport.calls))
+	}
+}
+
+// A write is not retried on a transport error: the request may have reached
+// Fabric, and sending it again could apply it twice.
+func TestUpdateDefinitionDoesNotRetryTransportError(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{
+		{err: errors.New("read: connection reset by peer")},
+		{status: http.StatusOK, body: `{}`},
+	}}
+	origClient, origSleep := httpClient, sleep
+	t.Cleanup(func() { httpClient = origClient; sleep = origSleep })
+	httpClient = &http.Client{Transport: transport}
+	sleep = func(time.Duration) {}
+
+	def := &Definition{Parts: []DefinitionPart{{Path: "a.json", Payload: "e30=", PayloadType: "InlineBase64"}}}
+	if err := UpdateItemDefinition("tok", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", def); err == nil {
+		t.Fatal("a write must surface the transport error, not retry it")
+	}
+	if len(transport.calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(transport.calls))
+	}
+}
