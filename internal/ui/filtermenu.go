@@ -48,6 +48,16 @@ type FilterOption struct {
 	pinnedNum int
 }
 
+// FilterOptionsFromStrings is FilterMenu's counterpart to
+// MenuOptionsFromStrings: one row per value, label and value identical.
+func FilterOptionsFromStrings(values []string) []FilterOption {
+	opts := make([]FilterOption, len(values))
+	for i, v := range values {
+		opts[i] = FilterOption{Label: v, Value: v}
+	}
+	return opts
+}
+
 // FilterRowRenderer turns a FilterOption + selection state into a
 // rendered string. Selection state takes precedence: a renderer
 // MUST return a uniformly-highlighted row when selected, regardless

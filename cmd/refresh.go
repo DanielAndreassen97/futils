@@ -217,7 +217,7 @@ func selectDataset(tagged []taggedDataset) (taggedDataset, error) {
 			maxName = n
 		}
 	}
-	options := make([]ui.MenuOption, len(tagged))
+	options := make([]ui.FilterOption, len(tagged))
 	key := func(t taggedDataset) string { return t.Workspace.ID + "/" + t.Dataset.ID }
 	byKey := map[string]taggedDataset{}
 	for i, t := range tagged {
@@ -226,10 +226,10 @@ func selectDataset(tagged []taggedDataset) (taggedDataset, error) {
 			strings.Repeat(" ", maxName-utf8.RuneCountInString(t.Dataset.Name)),
 			t.Workspace.Name,
 		)
-		options[i] = ui.MenuOption{Label: label, Value: key(t)}
+		options[i] = ui.FilterOption{Label: label, Value: key(t)}
 		byKey[key(t)] = t
 	}
-	selected, err := ui.NumberMenu("Select semantic model", options)
+	selected, err := ui.FilterMenu("Select semantic model", options, ui.DefaultFilterRowRenderer)
 	if err != nil {
 		return taggedDataset{}, err
 	}

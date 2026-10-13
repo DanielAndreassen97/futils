@@ -842,43 +842,108 @@ func diffExistingRows(client deploy.FabricClient, token string, target fabric.Wo
 	return unresolved, changes, itemDiffs
 }
 
-// setupDeployMappings asks the user which workspace each repo folder deploys to,
-// using the folders discovered in the repo as the pick-list. Folders the user
-// skips are left unmapped. Returns the chosen mappings (possibly empty).
+// setupDeployMappings builds the first deployment mappings for env alias. When
+// another environment already has mappings it first offers to copy them across
+// (see offerCopyMappings); otherwise, or when the user declines, it walks the
+// repo's folders and asks which workspace each one deploys to. A folder with
+// subfolders can be split, so FrontEnd/Reports and FrontEnd/SemanticModels map
+// to different workspaces. Skipped folders stay unmapped. Returns the chosen
+// mappings (possibly empty).
 func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace, customer config.Customer, alias string) ([]config.DeployMapping, error) {
+	baseOpts, wsEnv := mappingWorkspaceOptions(workspaces, customer, alias)
+
+	copied, done, err := offerCopyMappings(customer, alias, baseOpts, wsEnv)
+	if err != nil || done {
+		return copied, err
+	}
+
 	folders := deploy.TopLevelFolders(all)
 	if len(folders) == 0 {
 		return nil, fmt.Errorf("couldn't detect any folders to map in the repo — add mappings via Manage customers → Edit customer instead")
 	}
-	const skipValue = "\x00skip"
 	fmt.Println()
 	fmt.Println(infoStyle.Render(fmt.Sprintf("Deployment mappings — which repo folder deploys to which %s workspace?", alias)))
-	fmt.Println(wrapIndented(fmt.Sprintf("Each mapping is saved on env %s: every %s deploy sends that folder's items to its workspace. Skip folders that shouldn't deploy.", alias, alias), 2))
-
-	baseOpts, wsEnv := mappingWorkspaceOptions(workspaces, customer, alias)
+	fmt.Println(wrapIndented(fmt.Sprintf("Each mapping is saved on env %s: every %s deploy sends that folder's items to its workspace. Skip folders that shouldn't deploy, or split one to map its subfolders separately.", alias, alias), 2))
 
 	var mappings []config.DeployMapping
-	for _, folder := range folders {
-		opts := append([]ui.FilterOption{{Label: "⋯ Skip this folder", Value: skipValue}}, baseOpts...)
-		for {
-			chosen, err := ui.FilterMenu(fmt.Sprintf("Map %s/ → which workspace?", folder), opts, ui.DefaultFilterRowRenderer)
-			if err != nil {
-				return nil, err
-			}
-			if chosen == skipValue {
-				break
-			}
-			if ok, cerr := confirmCrossEnvMapping(wsEnv, chosen, alias); cerr != nil {
-				return nil, cerr
-			} else if !ok {
-				continue // re-show the picker for this folder
-			}
-			mappings = append(mappings, config.DeployMapping{Folder: folder, Workspace: chosen})
-			fmt.Printf("  %s/ → %s\n", folder, chosen)
-			break
+	// A queue rather than a range: splitting a folder puts its subfolders next
+	// in line, so the questions stay in repo order.
+	queue := folders
+	for len(queue) > 0 {
+		folder := queue[0]
+		queue = queue[1:]
+
+		subs, direct := deploy.SubFolders(all, folder)
+		lead := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: mappingSkipValue}}
+		if len(subs) > 0 {
+			lead = append(lead, ui.FilterOption{Label: splitRowLabel(folder, subs), Value: mappingSplitValue})
 		}
+		chosen, err := pickMappingWorkspace(fmt.Sprintf("Map %s/ → which workspace?", folder), lead, baseOpts, wsEnv, alias)
+		if err != nil {
+			return nil, err
+		}
+		switch chosen {
+		case mappingSkipValue:
+			continue
+		case mappingSplitValue:
+			if direct > 0 {
+				fmt.Println(warningStyle.Render(fmt.Sprintf(
+					"  %s/ has %d item(s) directly in it, outside any subfolder. Subfolder mappings don't cover them, so they won't deploy.",
+					folder, direct)))
+			}
+			queue = append(append([]string{}, subs...), queue...)
+			continue
+		}
+		mappings = append(mappings, config.DeployMapping{Folder: folder, Workspace: chosen})
+		fmt.Printf("  %s/ → %s\n", folder, chosen)
 	}
 	return mappings, nil
+}
+
+// Sentinel values for the non-workspace rows in a mapping picker. The leading
+// NUL keeps them from colliding with a real workspace name.
+const (
+	mappingSkipValue  = "\x00skip"
+	mappingSplitValue = "\x00split"
+)
+
+// splitRowLabel names the subfolders a split would ask about, so the row says
+// what it does: "⤵ Split into subfolders: Reports, SemanticModels".
+func splitRowLabel(folder string, subs []string) string {
+	const shown = 4
+	names := make([]string, 0, shown)
+	for i, s := range subs {
+		if i == shown {
+			names = append(names, fmt.Sprintf("+%d more", len(subs)-shown))
+			break
+		}
+		names = append(names, strings.TrimPrefix(s, folder+"/"))
+	}
+	return "⤵ Split into subfolders: " + strings.Join(names, ", ")
+}
+
+// pickMappingWorkspace shows one mapping question: the lead rows (Skip, Split)
+// first, then the workspaces. A workspace registered on another environment is
+// challenged, and declining re-asks. Returns the chosen workspace name or the
+// Value of the lead row picked.
+func pickMappingWorkspace(title string, lead, baseOpts []ui.FilterOption, wsEnv map[string]string, alias string) (string, error) {
+	opts := append(append([]ui.FilterOption{}, lead...), baseOpts...)
+	for {
+		chosen, err := ui.FilterMenu(title, opts, ui.DefaultFilterRowRenderer)
+		if err != nil {
+			return "", err
+		}
+		if strings.HasPrefix(chosen, "\x00") {
+			return chosen, nil
+		}
+		ok, err := confirmCrossEnvMapping(wsEnv, chosen, alias)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return chosen, nil
+		}
+	}
 }
 
 // mappingWorkspaceOptions orders workspaces for a mapping picker: the target
@@ -1484,7 +1549,7 @@ func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, map[int]
 	if len(items) == 0 {
 		return map[int][]deploy.LocalItem{}, nil, nil
 	}
-	idx, err := ui.MultiSelectRich(title, items)
+	idx, err := ui.MultiSelectRichFiltered(title, items)
 	if err != nil {
 		return nil, nil, err
 	}

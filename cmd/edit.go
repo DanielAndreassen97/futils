@@ -570,11 +570,7 @@ func removeWorkspaceFromEnv(configPath, customerName, alias string, customer con
 		return nil
 	}
 
-	options := make([]ui.MenuOption, len(env.Workspaces))
-	for i, ws := range env.Workspaces {
-		options[i] = ui.MenuOption{Label: ws, Value: ws}
-	}
-	chosen, err := ui.NumberMenu("Select workspace to remove", options)
+	chosen, err := ui.FilterMenu("Select workspace to remove", ui.FilterOptionsFromStrings(env.Workspaces), ui.DefaultFilterRowRenderer)
 	if err != nil {
 		return err
 	}
@@ -657,11 +653,7 @@ func pickAvailableWorkspace(client APIClient, token string, customer config.Cust
 	if err != nil {
 		return "", err
 	}
-	options := make([]ui.MenuOption, len(available))
-	for i, name := range available {
-		options[i] = ui.MenuOption{Label: name, Value: name}
-	}
-	return ui.NumberMenu("Select workspace", options)
+	return ui.FilterMenu("Select workspace", ui.FilterOptionsFromStrings(available), ui.DefaultFilterRowRenderer)
 }
 
 // availableWorkspaceNames lists (sorted) workspaces the user can see that are
@@ -765,11 +757,7 @@ func addDeploymentMapping(configPath string, client APIClient, customerName, ali
 	// Empty is valid: a folder that is the whole repo maps as an empty folder.
 	folder = strings.Trim(strings.TrimSpace(folder), "/")
 
-	wsOptions := make([]ui.MenuOption, len(env.Workspaces))
-	for i, ws := range env.Workspaces {
-		wsOptions[i] = ui.MenuOption{Label: ws, Value: ws}
-	}
-	workspace, err := ui.NumberMenu("Deploy this folder to which workspace?", wsOptions)
+	workspace, err := ui.FilterMenu("Deploy this folder to which workspace?", ui.FilterOptionsFromStrings(env.Workspaces), ui.DefaultFilterRowRenderer)
 	if err != nil {
 		return err
 	}
