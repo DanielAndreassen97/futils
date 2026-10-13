@@ -307,7 +307,7 @@ func printPostDeployPlan(steps []postDeployStep) {
 		} else if s.Runs[0].Type == "DataPipeline" {
 			kind = "alone, pipeline"
 		}
-		fmt.Printf("  %d. %s  %s\n", i+1, postDeployDimStyle.Render(fmt.Sprintf("phase %d · %s", s.Phase, kind)), strings.Join(names, ", "))
+		fmt.Printf("  %d. %s  %s\n", i+1, postDeployDimStyle.Render(fmt.Sprintf("run order %d · %s", s.Phase, kind)), strings.Join(names, ", "))
 	}
 	fmt.Println()
 }
@@ -338,7 +338,7 @@ func buildPostDeployPickItems(runs []postDeployRun, phaseOf func(string) int) []
 	for i, r := range runs {
 		label := r.Name
 		if phaseOf != nil {
-			label = fmt.Sprintf("[P%d] %s", phaseOf(r.Name), label)
+			label = fmt.Sprintf("[%d] %s", phaseOf(r.Name), label)
 		}
 		if r.Type == "DataPipeline" {
 			label += "  [pipeline]"
@@ -429,7 +429,7 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 			if len(s.Runs) == 1 {
 				stepLabel = fmt.Sprintf("Running %d/%d: %s", i+1, n, s.Runs[0].Name)
 			} else {
-				stepLabel = fmt.Sprintf("Running %d/%d: phase %d, %d notebooks in one shared Spark session", i+1, n, s.Phase, len(s.Runs))
+				stepLabel = fmt.Sprintf("Running %d/%d: run order %d, %d notebooks in one shared Spark session", i+1, n, s.Phase, len(s.Runs))
 			}
 			sp = ui.NewSpinner(stepLabel)
 			sp.Start()

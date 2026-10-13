@@ -100,11 +100,11 @@ type Customer struct {
 	// a successful deploy. Only those actually deployed (created/updated) in a
 	// run are offered. List order = run order.
 	PostDeployRuns []string `json:"post_deploy_runs,omitempty"`
-	// PostDeployPhases assigns a post-deploy run to a phase: phases run in
-	// ascending order, and with ParallelPostDeploy the runs inside one phase
-	// run concurrently. A run without an entry is phase 1; only phases above 1
-	// are stored.
-	PostDeployPhases map[string]int `json:"post_deploy_phases,omitempty"`
+	// PostDeployPhases (shown to users as "run order") assigns a post-deploy
+	// run to a phase: phases run in ascending order, and with
+	// ParallelPostDeploy the runs inside one phase run concurrently. A run
+	// without an entry is phase 1; only phases above 1 are stored.
+	PostDeployPhases map[string]int `json:"post_deploy_run_order,omitempty"`
 	// ParallelPostDeploy runs each phase's notebooks concurrently in a shared
 	// high-concurrency Spark session (groups of at most five). Only safe when
 	// the notebooks tolerate running at the same time. Default false = one
@@ -280,7 +280,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
 		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
 		PostDeployRuns      []string            `json:"post_deploy_runs,omitempty"`
-		PostDeployPhases    map[string]int      `json:"post_deploy_phases,omitempty"`
+		PostDeployPhases    map[string]int      `json:"post_deploy_run_order,omitempty"`
 		ParallelPostDeploy  bool                `json:"parallel_post_deploy,omitempty"`
 		SkipSchedules       bool                `json:"skip_schedules,omitempty"`
 		UseBulkDeploy       bool                `json:"use_bulk_deploy,omitempty"`

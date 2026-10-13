@@ -72,7 +72,7 @@ func TestPhaseEditorEnterKeepsEditsEscDiscards(t *testing.T) {
 func TestPhaseEditorViewListsEveryRowWithItsPhase(t *testing.T) {
 	m := newPhaseEditorModel("Phases", []string{"NB_Config", "NB_Long_Name"}, []int{1, 2})
 	v := m.View()
-	for _, want := range []string{"NB_Config", "NB_Long_Name", "Phase 1: 1", "Phase 2: 1"} {
+	for _, want := range []string{"NB_Config", "NB_Long_Name", "Run order 1: 1", "Run order 2: 1"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view missing %q:\n%s", want, v)
 		}

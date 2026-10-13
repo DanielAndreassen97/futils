@@ -81,7 +81,7 @@ func (m phaseEditorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// summary counts runs per phase, lowest phase first: "Phase 1: 2 · Phase 2: 9".
+// summary counts runs per run order, lowest first: "Run order 1: 2 · Run order 2: 9".
 func (m phaseEditorModel) summary() string {
 	counts := map[int]int{}
 	for _, p := range m.phases {
@@ -90,7 +90,7 @@ func (m phaseEditorModel) summary() string {
 	var parts []string
 	for p := 1; p <= maxPhase; p++ {
 		if counts[p] > 0 {
-			parts = append(parts, fmt.Sprintf("Phase %d: %d", p, counts[p]))
+			parts = append(parts, fmt.Sprintf("Run order %d: %d", p, counts[p]))
 		}
 	}
 	return strings.Join(parts, " · ")
@@ -108,7 +108,7 @@ func (m phaseEditorModel) View() string {
 		nameW = max(nameW, utf8.RuneCountInString(n))
 	}
 	var b strings.Builder
-	hint := "←/→ change phase • 1-9 set phase • ↑↓ move • enter save • esc back • q quit"
+	hint := "←/→ change run order • 1-9 set run order • ↑↓ move • enter save • esc back • q quit"
 	fmt.Fprintf(&b, "  %s\n", m.title)
 	fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(hint))
 	fmt.Fprintf(&b, "  %s\n\n", checkboxHintStyle.Render(m.summary()))

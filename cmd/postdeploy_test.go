@@ -260,7 +260,7 @@ func TestBuildPostDeployPickItems(t *testing.T) {
 // run together; sequential mode keeps the plain names.
 func TestBuildPostDeployPickItemsShowsPhaseInParallelMode(t *testing.T) {
 	items := buildPostDeployPickItems([]postDeployRun{nb("NB_Config", "ws"), nb("NB_A", "ws")}, phases(map[string]int{"NB_A": 2}))
-	if items[0].Label != "[P1] NB_Config" || items[1].Label != "[P2] NB_A" {
+	if items[0].Label != "[1] NB_Config" || items[1].Label != "[2] NB_A" {
 		t.Fatalf("labels = %q, %q", items[0].Label, items[1].Label)
 	}
 }

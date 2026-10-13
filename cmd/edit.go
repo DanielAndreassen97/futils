@@ -308,14 +308,14 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Post-deploy runs",
 			Value:       editActionPostDeploy,
 			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
-			Info:        "After a successful deploy, futils offers to run the notebooks you register here — but only the ones actually created or updated in that run — stopping at the first failure. Handy for re-seeding config or running smoke tests in the target without doing it by hand. With Post-deploy mode set to PARALLEL you also assign each run a phase here.",
+			Info:        "After a successful deploy, futils offers to run the notebooks you register here — but only the ones actually created or updated in that run — stopping at the first failure. Handy for re-seeding config or running smoke tests in the target without doing it by hand. With Post-deploy mode set to PARALLEL you also give each run its run order here.",
 		},
 		ui.MenuOption{
 			Label:       "Post-deploy mode",
 			Value:       editActionPostDeployMode,
 			Badge:       postDeployModeBadge,
-			Description: "Run post-deploy notebooks one after another, or in phases of parallel groups.",
-			Info:        "SEQUENTIAL runs one job after another, each in its own Spark session. PARALLEL runs the notebooks of each phase at the same time, in groups of up to five that share one high-concurrency Spark session — only the first pays the session start, and only one session runs at a time. Phases run in order (e.g. a config/schema notebook in phase 1, the insert scripts in phase 2). Only choose PARALLEL when the notebooks tolerate running concurrently: scripts that write their own partition (replaceWhere) do; a MERGE over a shared table can fail with ConcurrentAppendException.",
+			Description: "Run post-deploy notebooks one after another, or by run order in parallel groups.",
+			Info:        "SEQUENTIAL runs one job after another, each in its own Spark session. PARALLEL runs the notebooks that share a run order at the same time, in groups of up to five that share one high-concurrency Spark session — only the first pays the session start, and only one session runs at a time. Lower run orders finish first (e.g. a config/schema notebook at run order 1, the insert scripts at run order 2). Only choose PARALLEL when the notebooks tolerate running concurrently: scripts that write their own partition (replaceWhere) do; a MERGE over a shared table can fail with ConcurrentAppendException.",
 		},
 		ui.MenuOption{
 			Label:       "Deploy-history folder",
@@ -1435,15 +1435,15 @@ func editPostDeployRuns(configPath, customerName string) error {
 	if customer.ParallelPostDeploy && len(customer.PostDeployRuns) > 1 {
 		if err := assignPostDeployPhases(&customer); err != nil {
 			if errors.Is(err, ui.ErrGoBack) {
-				fmt.Println(infoStyle.Render("Saved post-deploy runs; phases left unchanged."))
+				fmt.Println(infoStyle.Render("Saved post-deploy runs; run order left unchanged."))
 				return nil
 			}
 			return err
 		}
 		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
-			return fmt.Errorf("save post-deploy phases: %w", err)
+			return fmt.Errorf("save post-deploy run order: %w", err)
 		}
-		fmt.Println(infoStyle.Render("Saved post-deploy runs and phases."))
+		fmt.Println(infoStyle.Render("Saved post-deploy runs and run order."))
 		return nil
 	}
 	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
@@ -1472,7 +1472,7 @@ func togglePostDeployMode(configPath, customerName string) error {
 		{Label: "Sequential" + current(false), Value: "sequential",
 			Description: "One job after another, each in its own Spark session. Always safe."},
 		{Label: "Parallel" + current(true), Value: "parallel",
-			Description: "Each phase's notebooks run together, up to five per shared Spark session. Only for notebooks that tolerate running at the same time."},
+			Description: "Notebooks with the same run order run together, up to five per shared Spark session. Only for notebooks that tolerate running at the same time."},
 	})
 	if err != nil {
 		return err
@@ -1487,7 +1487,7 @@ func togglePostDeployMode(configPath, customerName string) error {
 		return fmt.Errorf("save customer: %w", err)
 	}
 	if customer.ParallelPostDeploy {
-		fmt.Println(infoStyle.Render("Post-deploy runs now run in parallel phases. Change phases under Post-deploy runs."))
+		fmt.Println(infoStyle.Render("Post-deploy runs now run in parallel by run order. Change the run order under Post-deploy runs."))
 	} else {
 		fmt.Println(infoStyle.Render("Post-deploy runs now run one after another."))
 	}
@@ -1502,7 +1502,7 @@ func assignPostDeployPhases(customer *config.Customer) error {
 	for i, name := range customer.PostDeployRuns {
 		current[i] = customer.PostDeployPhase(name)
 	}
-	edited, err := ui.PhaseEditor("Post-deploy phases: same phase = runs together, lower phases first", customer.PostDeployRuns, current)
+	edited, err := ui.PhaseEditor("Post-deploy run order: same number = runs together, lower numbers first", customer.PostDeployRuns, current)
 	if err != nil {
 		return err
 	}
