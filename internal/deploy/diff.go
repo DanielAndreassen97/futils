@@ -21,11 +21,16 @@ import (
 func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver, rb *Rebinder, targetWS string) (map[string][]byte, RebindOutcome, error) {
 	out := make(map[string][]byte, len(item.Parts))
 	var outcome RebindOutcome
-	for _, part := range item.Parts {
+	// Substitutions run over every part before any rebind, so a rebind pass
+	// that reads the item's other parts (a semantic model parameter looking
+	// for the Sql.Database calls that use it) sees the same text that deploys.
+	subbed := item
+	subbed.Parts = make([]Part, len(item.Parts))
+	for i, part := range item.Parts {
 		substituted := ReplaceLogicalIds(part.Content, idMap)
 		if rb != nil {
-			subbed, subOutcome := rb.ApplyCustomSubstitutions(item, part.Path, substituted)
-			substituted = subbed
+			var subOutcome RebindOutcome
+			substituted, subOutcome = rb.ApplyCustomSubstitutions(item, part.Path, substituted)
 			outcome.Changes = append(outcome.Changes, subOutcome.Changes...)
 			for _, u := range subOutcome.Unresolved {
 				u.ItemName = item.DisplayName
@@ -33,21 +38,26 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 				// every part/table expression of the item.
 				outcome.AddUnresolved(u)
 			}
-
-			rebound, partOutcome := rb.RebindPart(item, part.Path, substituted, targetWS)
-			substituted = rebound
+		}
+		subbed.Parts[i] = Part{Path: part.Path, Content: substituted}
+	}
+	for _, part := range subbed.Parts {
+		content := part.Content
+		if rb != nil {
+			rebound, partOutcome := rb.RebindPart(subbed, part.Path, content, targetWS)
+			content = rebound
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
 			for _, u := range partOutcome.Unresolved {
 				u.ItemName = item.DisplayName
 				outcome.AddUnresolved(u)
 			}
 
-			for _, u := range rb.ScanLeftovers(part.Path, substituted) {
+			for _, u := range rb.ScanLeftovers(part.Path, content) {
 				u.ItemName = item.DisplayName
 				outcome.AddUnresolved(u)
 			}
 		}
-		out[part.Path] = substituted
+		out[part.Path] = content
 	}
 	return out, outcome, nil
 }

@@ -1,6 +1,10 @@
 package deploy
 
-import "regexp"
+import (
+	"regexp"
+	"slices"
+	"strings"
+)
 
 // pipelineGUID matches canonical GUIDs anywhere in a pipeline part. guidPat
 // is the shared pattern from the semantic-model pass.
@@ -44,32 +48,57 @@ func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 			continue
 		}
 		hostSeen[host] = true
-		if owner, tgtHost, ok := rb.targetHostFor(host); ok {
-			recordChangePair(&out, pairSeen, "SQL endpoint", owner.Name, host, tgtHost)
+		if label, tgtHost, ok := rb.targetHostFor(host); ok {
+			recordChangePair(&out, pairSeen, "SQL endpoint", label, host, tgtHost)
 		}
 	}
 
 	return []byte(applyChanges(string(content), out.Changes)), out
 }
 
-// targetHostFor maps a bare baseline SQL endpoint host to the endpoint host of
-// the same-named lakehouse in the target. ok is false whenever there is nothing
-// to rewrite: the host isn't a baseline endpoint, the target has no lakehouse
-// by that name, its endpoint can't be looked up, or both envs share the
-// endpoint. Callers leave the host as-is then and stay silent; the leftover
-// scan owns the warning.
-func (rb *Rebinder) targetHostFor(host string) (owner IndexedItem, tgtHost string, ok bool) {
-	owner, ok = rb.baselineLakehouseByHost(host)
-	if !ok {
-		return IndexedItem{}, "", false
+// hostResolution is where a baseline SQL endpoint host lands in the target.
+// A host belongs to a workspace, so it is resolved through every baseline
+// lakehouse it serves: each is looked up by name in the target, and the
+// target endpoints of those found are collected.
+type hostResolution struct {
+	owners      []IndexedItem // baseline lakehouses served by the host, by name
+	resolved    []string      // owners whose same-named target lakehouse has an endpoint
+	targets     []string      // distinct target endpoint hosts of resolved, sorted
+	endpointErr bool          // a same-named target lakehouse exists but its endpoint lookup failed
+}
+
+func (rb *Rebinder) resolveHost(host string) hostResolution {
+	r := hostResolution{owners: rb.baselineLakehousesByHost(host)}
+	for _, owner := range r.owners {
+		tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
+		if !ok {
+			continue
+		}
+		h, _, ok := rb.targetEndpointFor(tgtLake)
+		if !ok {
+			r.endpointErr = true
+			continue
+		}
+		r.resolved = append(r.resolved, owner.Name)
+		if !slices.Contains(r.targets, h) {
+			r.targets = append(r.targets, h)
+		}
 	}
-	tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
-	if !ok {
-		return IndexedItem{}, "", false
+	slices.Sort(r.targets)
+	return r
+}
+
+// targetHostFor maps a bare baseline SQL endpoint host to its target host.
+// Owners missing from the target don't count against it, since any owner that
+// is present shows where the workspace went. ok is false whenever there is
+// nothing safe to rewrite: the host isn't a baseline endpoint, no owner
+// resolves in the target, the owners land on different target endpoints, or
+// both envs share the endpoint. Callers leave the host as-is then and stay
+// silent; the leftover scan owns the warning. label names the resolved owners.
+func (rb *Rebinder) targetHostFor(host string) (label, tgtHost string, ok bool) {
+	r := rb.resolveHost(host)
+	if len(r.targets) != 1 || r.targets[0] == host {
+		return "", "", false
 	}
-	tgtHost, _, ok = rb.targetEndpointFor(tgtLake)
-	if !ok || tgtHost == host {
-		return IndexedItem{}, "", false
-	}
-	return owner, tgtHost, true
+	return strings.Join(r.resolved, ", "), r.targets[0], true
 }

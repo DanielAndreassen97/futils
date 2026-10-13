@@ -839,3 +839,51 @@ func TestRebindHostParameterSeveralDatabases(t *testing.T) {
 		t.Fatalf("want one leftover warning for the host: %#v", outcome.Unresolved)
 	}
 }
+
+// A parameter whose Sql.Database calls name no literal database (here the
+// database is a parameter too) falls back to the host's owners, and resolves
+// the same way on every run.
+func TestRebindHostParameterFallbackIsDeterministic(t *testing.T) {
+	const dynTable = "table Dato\n\tpartition Dato = m\n\t\tsource = Sql.Database(SqlEndpoint, DatabaseName)\n"
+	for i := 0; i < 20; i++ {
+		rb := sharedHostRebinder(true)
+		rb.target = idx(IndexedItem{Name: "LH_Gold", Type: "Lakehouse", GUID: gLHGoldTst, WorkspaceID: gWSTst})
+		item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", Parts: []Part{
+			{Path: "definition/expressions.tmdl", Content: []byte(paramExpressions(paramDevHost))},
+			{Path: "definition/tables/Dato.tmdl", Content: []byte(dynTable)},
+		}}
+		parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := string(parts["definition/expressions.tmdl"]); got != paramExpressions(goldTstHost) {
+			t.Fatalf("run %d: fallback must follow the owner present in the target:\n%s", i, got)
+		}
+		if len(outcome.Changes) != 1 || outcome.Changes[0].Name != "LH_Gold" {
+			t.Fatalf("run %d: changes = %#v", i, outcome.Changes)
+		}
+	}
+}
+
+// A custom substitution can rename the database a table reads
+// ("lh_gold_dev" → "lh_gold"). The parameter must be resolved from the
+// substituted text that deploys, not from git's raw text.
+func TestRebindHostParameterSeesSubstitutedDatabaseName(t *testing.T) {
+	rb := sharedHostRebinder(true)
+	rb.SetSubstitutions([]Substitution{{FindValue: `"lh_gold_dev"`, Literal: `"lh_gold"`, FilePath: "definition/tables/*"}})
+	devTable := strings.Replace(goldTable, `"lh_gold"`, `"lh_gold_dev"`, 1)
+	item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", Parts: []Part{
+		{Path: "definition/expressions.tmdl", Content: []byte(paramExpressions(paramDevHost))},
+		{Path: "definition/tables/Dato.tmdl", Content: []byte(devTable)},
+	}}
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(parts["definition/expressions.tmdl"]); got != paramExpressions(goldTstHost) {
+		t.Fatalf("parameter must resolve through the substituted database name:\n%s", got)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unresolved = %#v", outcome.Unresolved)
+	}
+}

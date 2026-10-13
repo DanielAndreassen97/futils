@@ -1,6 +1,9 @@
 package deploy
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // LocationLeftover is the stable UnresolvedRef.Location every ScanLeftovers
 // ref carries, regardless of which part file it was found in. AddUnresolved
@@ -79,25 +82,28 @@ func (rb *Rebinder) ScanLeftovers(partPath string, content []byte) []UnresolvedR
 		}
 		seen[host] = true
 
-		// baselineLakehouseByHost lazily builds the reverse host map on first
-		// call — only reached here, when a host actually matched the SQL
-		// endpoint pattern, so content with no hardcoded hosts triggers zero
-		// extra API calls.
-		owner, ok := rb.baselineLakehouseByHost(host)
-		if !ok {
+		// resolveHost lazily builds the reverse host map on first call — only
+		// reached here, when a host actually matched the SQL endpoint pattern,
+		// so content with no hardcoded hosts triggers zero extra API calls.
+		r := rb.resolveHost(host)
+		if len(r.owners) == 0 {
 			continue
 		}
-		hint := fmt.Sprintf("%s: SQL endpoint of %s %q", partPath, owner.Type, owner.Name)
-		if tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse"); ok {
-			if tgtHost, _, ok := rb.targetEndpointFor(tgtLake); ok {
-				if tgtHost == host {
-					continue // shared endpoint, correct on both sides
-				}
-				hint += fmt.Sprintf("; in the target this is %s", tgtHost)
-			} else {
-				hint += "; couldn't resolve the target lakehouse's SQL endpoint"
-			}
-		} else {
+		names := make([]string, len(r.owners))
+		for i, o := range r.owners {
+			names[i] = fmt.Sprintf("%q", o.Name)
+		}
+		hint := fmt.Sprintf("%s: SQL endpoint of Lakehouse %s", partPath, strings.Join(names, ", "))
+		switch {
+		case len(r.targets) == 1 && r.targets[0] == host:
+			continue // shared endpoint, correct on both sides
+		case len(r.targets) == 1:
+			hint += fmt.Sprintf("; in the target this is %s", r.targets[0])
+		case len(r.targets) > 1:
+			hint += "; ambiguous (its lakehouses map to different target endpoints: " + strings.Join(r.targets, ", ") + ")"
+		case r.endpointErr:
+			hint += "; couldn't resolve the target lakehouse's SQL endpoint"
+		default:
 			hint += "; no same-named lakehouse in the target"
 		}
 		refs = append(refs, UnresolvedRef{GUID: host, ItemType: "SQL endpoint", Location: LocationLeftover, Reason: ReasonLeftover, Hint: hint})

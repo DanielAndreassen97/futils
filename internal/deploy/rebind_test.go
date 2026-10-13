@@ -724,8 +724,8 @@ func TestDescribeAutoResolvableRequiresTargetResolution(t *testing.T) {
 
 	// Host branch: the owning lakehouse is known baseline-side, but there's no
 	// same-named lakehouse in the target to resolve its SQL endpoint through.
-	rb.baselineHostMap = map[string]IndexedItem{
-		"aaa111-dev.datawarehouse.fabric.microsoft.com": {Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev},
+	rb.baselineHostMap = map[string][]IndexedItem{
+		"aaa111-dev.datawarehouse.fabric.microsoft.com": {{Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev}},
 	}
 	if desc, ok := rb.DescribeAutoResolvable("aaa111-dev.datawarehouse.fabric.microsoft.com"); ok {
 		t.Errorf("host whose owner has no target counterpart must not be auto-resolvable: %q %v", desc, ok)

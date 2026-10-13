@@ -136,3 +136,50 @@ func TestSubstitutePartsThreadsTargetWorkspaceToPipeline(t *testing.T) {
 		t.Fatalf("zero GUID must not be reported as unresolved: %#v", outcome.Unresolved)
 	}
 }
+
+// A bare host belongs to a workspace, so several baseline lakehouses own it.
+// It must resolve the same way on every run, whichever order the baseline
+// index is walked in: through every owner, rewriting only when the owners that
+// exist in the target agree on one endpoint. sharedHostRebinder (semmod_test.go)
+// gives LH_Bronze and LH_Gold one DEV host and different TEST hosts.
+func TestRebindPipelineSharedHostOnlyOneOwnerInTarget(t *testing.T) {
+	in := []byte(`{"server":"` + paramDevHost + `"}`)
+	for i := 0; i < 20; i++ {
+		rb := sharedHostRebinder(true)
+		rb.target = idx(IndexedItem{Name: "LH_Gold", Type: "Lakehouse", GUID: gLHGoldTst, WorkspaceID: gWSTst})
+		out, outcome := rb.RebindPipeline(in)
+		if string(out) != `{"server":"`+goldTstHost+`"}` {
+			t.Fatalf("run %d: host must follow the one owner present in the target: %s", i, out)
+		}
+		if len(outcome.Changes) != 1 || outcome.Changes[0].Name != "LH_Gold" {
+			t.Fatalf("run %d: changes = %#v", i, outcome.Changes)
+		}
+	}
+}
+
+func TestRebindPipelineSharedHostSplitInTargetIsLeftAndWarned(t *testing.T) {
+	in := []byte(`{"server":"` + paramDevHost + `"}`)
+	for i := 0; i < 20; i++ {
+		rb := sharedHostRebinder(true) // LH_Bronze → TEST host, LH_Gold → gold host
+		out, outcome := rb.RebindPipeline(in)
+		if string(out) != string(in) || len(outcome.Changes) != 0 {
+			t.Fatalf("run %d: owners on different target endpoints must leave the host: %s %#v", i, out, outcome.Changes)
+		}
+		refs := rb.ScanLeftovers("pipeline-content.json", out)
+		if len(refs) != 1 || !strings.Contains(refs[0].Hint, "ambiguous") || !strings.Contains(refs[0].Hint, `"LH_Bronze", "LH_Gold"`) {
+			t.Fatalf("run %d: want one ambiguous leftover naming both owners: %#v", i, refs)
+		}
+	}
+}
+
+func TestRebindPipelineSharedHostSameTargetRewrites(t *testing.T) {
+	rb := sharedHostRebinder(true)
+	rb.client.(*fakeFabric).sqlByLH[gLHGoldTst] = [2]string{paramTstHost, "ep-gold-test"}
+	out, outcome := rb.RebindPipeline([]byte(`{"server":"` + paramDevHost + `"}`))
+	if string(out) != `{"server":"`+paramTstHost+`"}` {
+		t.Fatalf("owners agreeing on one target endpoint must rewrite: %s", out)
+	}
+	if len(outcome.Changes) != 1 || outcome.Changes[0].Name != "LH_Bronze, LH_Gold" {
+		t.Fatalf("changes = %#v", outcome.Changes)
+	}
+}

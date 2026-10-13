@@ -46,17 +46,19 @@ func (rb *Rebinder) targetEndpointFor(lake IndexedItem) (string, string, bool) {
 	return host, id, true
 }
 
-// baselineLakehouseByHost resolves a SQL endpoint host to the baseline
-// lakehouse that owns it. The reverse map is built lazily on the first call —
-// one GetLakehouseSqlEndpoint per baseline lakehouse — so deploys whose
-// content carries no hardcoded hosts pay zero extra API calls. Fetch errors
-// skip that lakehouse: resolution is best-effort and the leftover scan will
-// still flag the host as baseline-looking if it matches nothing.
-func (rb *Rebinder) baselineLakehouseByHost(host string) (IndexedItem, bool) {
+// baselineLakehousesByHost returns every baseline lakehouse whose SQL endpoint
+// is host, sorted by name. Fabric gives all lakehouses in a workspace one
+// endpoint host, so a host usually has several owners. The reverse map is
+// built lazily on the first call — one GetLakehouseSqlEndpoint per baseline
+// lakehouse — so deploys whose content carries no hardcoded hosts pay zero
+// extra API calls. Fetch errors skip that lakehouse: resolution is best-effort
+// and the leftover scan will still flag the host as baseline-looking if it
+// matches nothing.
+func (rb *Rebinder) baselineLakehousesByHost(host string) []IndexedItem {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	if rb.baselineHostMap == nil {
-		rb.baselineHostMap = map[string]IndexedItem{}
+		rb.baselineHostMap = map[string][]IndexedItem{}
 		for _, it := range rb.baseline.byGUID {
 			if it.Type != "Lakehouse" {
 				continue
@@ -65,11 +67,13 @@ func (rb *Rebinder) baselineLakehouseByHost(host string) (IndexedItem, bool) {
 			if err != nil || h == "" {
 				continue
 			}
-			rb.baselineHostMap[h] = it
+			rb.baselineHostMap[h] = append(rb.baselineHostMap[h], it)
+		}
+		for _, owners := range rb.baselineHostMap {
+			sort.Slice(owners, func(i, j int) bool { return owners[i].Name < owners[j].Name })
 		}
 	}
-	it, ok := rb.baselineHostMap[host]
-	return it, ok
+	return rb.baselineHostMap[host]
 }
 
 // resolveDBNameReason resolves a SQL database name (the NAME form of
@@ -252,7 +256,7 @@ func tmdlName(name string) string {
 // the endpoint is shared; the leftover scan then reports what is left. label
 // names the resolved target lakehouses.
 func (rb *Rebinder) targetHostForDatabases(host string, dbs []string) (label, tgtHost string, ok bool) {
-	if _, ok := rb.baselineLakehouseByHost(host); !ok {
+	if len(rb.baselineLakehousesByHost(host)) == 0 {
 		return "", "", false
 	}
 	var names []string
@@ -306,9 +310,7 @@ func (rb *Rebinder) rebindHostParameters(s string, out *RebindOutcome, parts []P
 		if dbs := dbsByParam[tmdlName(s[loc[2]:loc[3]])]; len(dbs) > 0 {
 			label, tgtHost, ok = rb.targetHostForDatabases(host, dbs)
 		} else {
-			var owner IndexedItem
-			owner, tgtHost, ok = rb.targetHostFor(host)
-			label = owner.Name
+			label, tgtHost, ok = rb.targetHostFor(host)
 		}
 		if !ok {
 			continue

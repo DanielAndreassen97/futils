@@ -143,10 +143,10 @@ type Rebinder struct {
 	target    *NameIndex
 	overrides map[string]Override // baseline GUID -> override
 
-	mu              sync.Mutex             // guards targetEndpoint and baselineHostMap
-	targetEndpoint  map[string][2]string   // target lakehouse GUID -> {host, id} (cache, guarded by mu)
-	baselineHostMap map[string]IndexedItem // baseline SQL endpoint host -> owning baseline lakehouse; nil until first host hit (cache, guarded by mu)
-	targetWSNames   map[string]string      // target workspace GUID -> display name (for summaries)
+	mu              sync.Mutex               // guards targetEndpoint and baselineHostMap
+	targetEndpoint  map[string][2]string     // target lakehouse GUID -> {host, id} (cache, guarded by mu)
+	baselineHostMap map[string][]IndexedItem // baseline SQL endpoint host -> baseline lakehouses it serves, by name; nil until first host hit (cache, guarded by mu)
+	targetWSNames   map[string]string        // target workspace GUID -> display name (for summaries)
 
 	// wsMap, wsAmbiguous, and baselineWSNames are all set in NewRebinder and
 	// SetWorkspaceSeeds before any concurrent use (the compare phase) and are
@@ -192,7 +192,7 @@ func (rb *Rebinder) DescribeAutoResolvable(value string) (string, bool) {
 	}
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	if it, ok := rb.baselineHostMap[value]; ok {
+	for _, it := range rb.baselineHostMap[value] {
 		if _, ok := rb.target.ItemByName(it.Name, "Lakehouse"); ok {
 			return fmt.Sprintf("SQL endpoint of %q", it.Name), true
 		}
