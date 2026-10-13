@@ -32,20 +32,42 @@ func ItemsInFolder(items []LocalItem, folder string) []LocalItem {
 // grouping folder and are skipped. Used to offer a pick-list of mappable
 // folders during deploy setup.
 func TopLevelFolders(items []LocalItem) []string {
+	subs, _ := SubFolders(items, "")
+	return subs
+}
+
+// SubFolders returns the immediate child folders of parent that hold items at
+// any depth, as full repo paths ("FrontEnd/Reports"), sorted, plus how many
+// items sit directly in parent itself. An empty parent means the repo root.
+//
+// A FolderPath ends in the item's own directory ("FrontEnd/X.Report"), so an
+// item is "direct" when nothing but that directory follows parent. Those items
+// are what a mapping per subfolder would leave uncovered, which is why the
+// count comes back alongside the folders.
+func SubFolders(items []LocalItem, parent string) (subs []string, direct int) {
+	parent = strings.Trim(parent, "/")
+	prefix := ""
+	if parent != "" {
+		prefix = parent + "/"
+	}
 	seen := map[string]bool{}
-	var out []string
 	for _, it := range items {
 		fp := strings.Trim(it.FolderPath, "/")
-		i := strings.Index(fp, "/")
-		if i < 0 {
-			continue // item at repo root — no grouping folder
+		if !strings.HasPrefix(fp, prefix) {
+			continue
 		}
-		seg := fp[:i]
-		if !seen[seg] {
-			seen[seg] = true
-			out = append(out, seg)
+		rest := fp[len(prefix):]
+		i := strings.Index(rest, "/")
+		if i < 0 {
+			direct++
+			continue
+		}
+		sub := prefix + rest[:i]
+		if !seen[sub] {
+			seen[sub] = true
+			subs = append(subs, sub)
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(subs)
+	return subs, direct
 }
