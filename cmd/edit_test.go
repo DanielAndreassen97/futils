@@ -133,69 +133,17 @@ func TestMappingLabel(t *testing.T) {
 	}
 }
 
-// scriptedPicks answers the phase editor's prompts in order and records what
-// each prompt offered, standing in for the interactive checkbox list.
-type scriptedPicks struct {
-	answers [][]string
-	offered [][]string
-	initial [][]string
-}
-
-func (s *scriptedPicks) pick(_ string, options, initial []string) ([]string, error) {
-	s.offered = append(s.offered, options)
-	s.initial = append(s.initial, initial)
-	a := s.answers[0]
-	s.answers = s.answers[1:]
-	return a, nil
-}
-
-// The phase editor peels phases off the list: what is checked runs in this
-// phase, the rest is offered for the next. Checking everything (or nothing)
-// ends it with the remainder in the current phase. Phase 1 is never stored.
-func TestChoosePostDeployPhases(t *testing.T) {
-	runs := []string{"NB_Config", "NB_A", "NB_B", "NB_Final"}
-	s := &scriptedPicks{answers: [][]string{{"NB_Config"}, {"NB_A", "NB_B"}, nil}}
-	got, err := choosePostDeployPhases(runs, func(string) int { return 1 }, s.pick)
-	if err != nil {
-		t.Fatal(err)
-	}
+// The editor's phases become the stored map: gaps close up (1 and 3 -> 1 and
+// 2, so no phase is ever empty) and phase 1 is never stored.
+func TestCompactPhases(t *testing.T) {
+	names := []string{"NB_Config", "NB_A", "NB_B", "NB_Final"}
+	got := compactPhases(names, []int{1, 3, 3, 7})
 	want := map[string]int{"NB_A": 2, "NB_B": 2, "NB_Final": 3}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("phases = %v, want %v", got, want)
 	}
-	if !reflect.DeepEqual(s.offered[1], []string{"NB_A", "NB_B", "NB_Final"}) || !reflect.DeepEqual(s.offered[2], []string{"NB_Final"}) {
-		t.Errorf("each phase must offer only the remainder, got %v", s.offered)
-	}
-}
-
-// Re-opening the editor pre-checks each run in its current phase, so keeping
-// the existing setup is just confirming every prompt.
-func TestChoosePostDeployPhasesPrechecksCurrent(t *testing.T) {
-	runs := []string{"NB_Config", "NB_A"}
-	current := map[string]int{"NB_A": 2}
-	s := &scriptedPicks{answers: [][]string{{"NB_Config"}, {"NB_A"}}}
-	got, err := choosePostDeployPhases(runs, func(n string) int {
-		if p := current[n]; p > 1 {
-			return p
-		}
-		return 1
-	}, s.pick)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(s.initial[0], []string{"NB_Config"}) || !reflect.DeepEqual(s.initial[1], []string{"NB_A"}) {
-		t.Errorf("initial = %v", s.initial)
-	}
-	if !reflect.DeepEqual(got, current) {
-		t.Errorf("phases = %v, want unchanged %v", got, current)
-	}
-}
-
-// Everything in one phase stores nothing: no phases map in the config.
-func TestChoosePostDeployPhasesAllInOne(t *testing.T) {
-	s := &scriptedPicks{answers: [][]string{{"A", "B"}}}
-	got, err := choosePostDeployPhases([]string{"A", "B"}, func(string) int { return 1 }, s.pick)
-	if err != nil || got != nil {
-		t.Fatalf("got %v, %v; want nil map", got, err)
+	// Everything in one phase, whatever its number, stores nothing.
+	if got := compactPhases([]string{"A", "B"}, []int{4, 4}); got != nil {
+		t.Fatalf("single phase = %v, want nil", got)
 	}
 }

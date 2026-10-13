@@ -1494,69 +1494,40 @@ func togglePostDeployMode(configPath, customerName string) error {
 	return nil
 }
 
-// assignPostDeployPhases runs the interactive phase editor over the
-// customer's registered runs and stores the result on customer (not saved).
-// esc returns ui.ErrGoBack and leaves the phases untouched.
+// assignPostDeployPhases opens the phase editor over the customer's
+// registered runs and stores the result on customer (not saved). esc returns
+// ui.ErrGoBack and leaves the phases untouched.
 func assignPostDeployPhases(customer *config.Customer) error {
-	phases, err := choosePostDeployPhases(customer.PostDeployRuns, customer.PostDeployPhase, ui.MultiSelect)
+	current := make([]int, len(customer.PostDeployRuns))
+	for i, name := range customer.PostDeployRuns {
+		current[i] = customer.PostDeployPhase(name)
+	}
+	edited, err := ui.PhaseEditor("Post-deploy phases: same phase = runs together, lower phases first", customer.PostDeployRuns, current)
 	if err != nil {
 		return err
 	}
-	customer.PostDeployPhases = phases
+	customer.PostDeployPhases = compactPhases(customer.PostDeployRuns, edited)
 	return nil
 }
 
-// choosePostDeployPhases peels phases off the run list: each prompt offers the
-// runs not yet placed, pre-checked when they are already in that phase; the
-// checked ones run in this phase and the rest move on to the next prompt.
-// Checking all of them, or none, puts the whole remainder in the current
-// phase and ends. Only phases above 1 are returned (nil when everything is
-// phase 1), matching how the config stores them. pick is ui.MultiSelect in
-// production.
-func choosePostDeployPhases(runs []string, current func(string) int, pick func(title string, options, initial []string) ([]string, error)) (map[string]int, error) {
-	var phases map[string]int
-	place := func(name string, phase int) {
-		if phase > 1 {
-			if phases == nil {
-				phases = map[string]int{}
+// compactPhases turns the editor's per-run phases into the stored map:
+// phases are renumbered 1..k in their original order so a gap (only 1 and 3
+// used) never leaves an empty phase, and only phases above 1 are kept — nil
+// when everything is phase 1, matching how the config stores them.
+func compactPhases(names []string, phases []int) map[string]int {
+	used := slices.Clone(phases)
+	slices.Sort(used)
+	used = slices.Compact(used)
+	var out map[string]int
+	for i, name := range names {
+		if p := slices.Index(used, phases[i]) + 1; p > 1 {
+			if out == nil {
+				out = map[string]int{}
 			}
-			phases[name] = phase
+			out[name] = p
 		}
 	}
-	remaining := runs
-	for phase := 1; len(remaining) > 0; phase++ {
-		var initial []string
-		for _, n := range remaining {
-			if current(n) == phase {
-				initial = append(initial, n)
-			}
-		}
-		title := fmt.Sprintf("Phase %d: check what runs in this phase; unchecked runs wait for it (all or none checked = everything left runs here)", phase)
-		chosen, err := pick(title, remaining, initial)
-		if err != nil {
-			return nil, err
-		}
-		if len(chosen) == 0 || len(chosen) == len(remaining) {
-			for _, n := range remaining {
-				place(n, phase)
-			}
-			break
-		}
-		in := make(map[string]bool, len(chosen))
-		for _, n := range chosen {
-			in[n] = true
-		}
-		var rest []string
-		for _, n := range remaining {
-			if in[n] {
-				place(n, phase)
-			} else {
-				rest = append(rest, n)
-			}
-		}
-		remaining = rest
-	}
-	return phases, nil
+	return out
 }
 
 // mergePostDeploySelection folds a fresh picker selection back into the
