@@ -346,9 +346,9 @@ func TestBulkImportDefinitionsSyncSuccess(t *testing.T) {
 		t.Fatalf("want 1 HTTP call, got %d", len(transport.calls))
 	}
 
-	// The bulk URL must include ?beta=true.
-	if !strings.Contains(transport.urls[0], "?beta=true") {
-		t.Errorf("bulk import URL missing ?beta=true: %q", transport.urls[0])
+	// The API is GA: the URL must not carry the old ?beta=true flag.
+	if strings.Contains(transport.urls[0], "beta=true") {
+		t.Errorf("bulk import URL still sends beta=true: %q", transport.urls[0])
 	}
 
 	// The request body must contain definitionParts (len 1) and options.allowPairingByName=true.

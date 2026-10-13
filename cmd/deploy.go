@@ -347,7 +347,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	// backend) instead of a per-deploy question.
 	useBulk := customer.UseBulkDeploy
 	if useBulk {
-		fmt.Println(warningStyle.Render("Bulk-import is a PREVIEW backend on a Fabric beta API — verify the deployed items afterwards."))
+		fmt.Println(warningStyle.Render("Bulk-import backend is newer in futils than per-item. Verify the deployed items afterwards."))
 	}
 
 	results, err := runDeploy(client, token, groups, pickGroupedRows, ui.Confirm, useBulk)
@@ -364,7 +364,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	runOutcomes := offerPostDeployRuns(client, token, customer, groups, results)
 	backendLabel := "per-item"
 	if useBulk {
-		backendLabel = "bulk-import (preview)"
+		backendLabel = "bulk-import"
 	}
 	saveDeployHistory(configPath, customerName, customer, alias, backendLabel, groups, results, runOutcomes, ui.Confirm)
 	return nil
@@ -1084,7 +1084,7 @@ func runDeploy(
 		}
 		modeLabel := "per-item"
 		if bulk {
-			modeLabel = "bulk-import (preview)"
+			modeLabel = "bulk-import"
 		}
 		printSelectedItems(groups, selected)
 		ok, err := confirm(fmt.Sprintf("Deploy %d item(s) across %d workspace(s) using the %s backend?", total, wsCount, modeLabel))

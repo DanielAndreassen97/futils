@@ -611,15 +611,12 @@ type BulkImportResult struct {
 }
 
 // BulkImportDefinitions imports many item definitions into a workspace in one
-// request via the beta Bulk Import Item Definitions API. parts is the flat list
+// request via the Bulk Import Item Definitions API. parts is the flat list
 // of ALL definition parts for ALL items (paths are workspace-absolute and
 // item-folder-scoped, e.g. "/Sales.Report/.platform"); Fabric resolves item
 // grouping and dependency order itself. The call is an LRO: doLRO returns the
 // result body on a synchronous 200 or after polling a 202 to completion, and
 // already applies the shared 429-throttle and 401-refresh handling.
-//
-// The ?beta=true query parameter is REQUIRED while the API is in beta; drop it
-// at GA.
 func BulkImportDefinitions(token, workspaceID string, parts []DefinitionPart, opts BulkImportOptions) (*BulkImportResult, error) {
 	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
 		return nil, err
@@ -633,7 +630,7 @@ func BulkImportDefinitions(token, workspaceID string, parts []DefinitionPart, op
 		return nil, fmt.Errorf("marshal bulk import body: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/v1/workspaces/%s/items/bulkImportDefinitions?beta=true", baseURL, workspaceID)
+	url := fmt.Sprintf("%s/v1/workspaces/%s/items/bulkImportDefinitions", baseURL, workspaceID)
 	resultBody, err := doLRO(token, url, bytes.NewReader(payload), 150)
 	if err != nil {
 		return nil, err

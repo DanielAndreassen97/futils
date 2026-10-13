@@ -420,7 +420,7 @@ type deployReportContext struct {
 	Environment string
 	Source      string // e.g. "origin/feature/daniel @ ab12cd3"
 	Baseline    string // baseline env alias references resolve against (e.g. "DEV")
-	Backend     string // "per-item" or "bulk-import (preview)"
+	Backend     string // "per-item" or "bulk-import"
 }
 
 // heroRoute renders the source→target pill route: what git state the deploy

@@ -17,7 +17,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
   - **Lakehouse shortcuts** — OneLake shortcut targets in `shortcuts.metadata.json` are rebound to the target environment by name, so an internal shortcut follows the promotion instead of pointing back at dev. External targets (ADLS/S3/…) are left untouched.
   - **Pipeline dependency order** — data pipelines that invoke other repo pipelines publish in dependency order, so the invoked pipeline exists before the invoker references it.
   - **Schedules toggle** — optionally keep schedules out of compare and deploy, so schedules configured directly in TEST/PROD survive.
-  - **Two backends** — stable per-item create/update (default), or the bulk-import backend (Fabric preview API) as an opt-in per customer.
+  - **Two backends** — stable per-item create/update (default), or the bulk-import backend (one API call per workspace, Fabric resolves dependency order) as an opt-in per customer.
   - **Variable libraries** — VariableLibrary items deploy first (anything may reference them), and after publish futils activates the value set named after the target environment — the same convention as fabric-cicd. No matching value set? The target's active-set choice is left untouched, by design.
   - **Environments** — a deployed Environment only *stages* its sparkcompute settings and libraries; after the deploy, futils offers to run the environment publish (it can take minutes) and tracks it to completion. Declining leaves it staged for a manual publish.
   - **Shell types done right** — Warehouse/SQLDatabase and other definitionless items are created as shells with their `.platform` `creationPayload` (collation, schema support) intact, compared on description instead of producing unverifiable rows, and a freshly created Lakehouse is held until its SQL analytics endpoint finishes provisioning so later rebinds resolve.
@@ -146,7 +146,7 @@ First-time deploy setup is guided: pick the repo, pick the baseline environment,
 2. Resolves each folder→workspace mapping and compares every local item against the target workspace: new, changed (per-part content diff), or orphan (exists only in the target).
 3. Translates baseline-environment references to the target environment by item name: lakehouse/workspace/SQL-endpoint GUIDs in notebooks, Direct Lake connections in semantic models (OneLake and SQL-endpoint forms), and report dataset bindings in `definition.pbir`. Unresolved references are surfaced with likely causes and can be fixed interactively.
 4. Shows the full compare (optionally as an HTML diff report in the browser) and asks before continuing — every deploy is a dry-run until you confirm.
-5. Publishes the selected items via [item create/update definition](https://learn.microsoft.com/en-us/rest/api/fabric/core/items) (or the bulk-import preview API), then offers orphan deletion as a separate confirmed pass, post-deploy notebook runs, and writes a timestamped HTML report to the deploy-history folder.
+5. Publishes the selected items via [item create/update definition](https://learn.microsoft.com/en-us/rest/api/fabric/core/items) (or the bulk-import API), then offers orphan deletion as a separate confirmed pass, post-deploy notebook runs, and writes a timestamped HTML report to the deploy-history folder.
 
 ### Run notebooks
 1. Authenticates via browser-based OAuth2 with Microsoft Entra ID (Fabric scope).
@@ -172,7 +172,7 @@ First-time deploy setup is guided: pick the repo, pick the baseline environment,
 
 | API | Purpose |
 |-----|---------|
-| **Fabric Items API** (`api.fabric.microsoft.com`) | Workspace resolution, item listing, `getDefinition`, item create/update/delete, bulk import (preview), notebook run + status, lakehouse SQL-endpoint lookup |
+| **Fabric Items API** (`api.fabric.microsoft.com`) | Workspace resolution, item listing, `getDefinition`, item create/update/delete, bulk import, notebook run + status, lakehouse SQL-endpoint lookup |
 | **Power BI REST API** (`api.powerbi.com`) | Enhanced Refresh trigger + polling, Report rebind |
 | **OneLake** | Lakehouse table schemas for Schema compare |
 | **Microsoft Entra ID** | OAuth2 authentication with token caching |

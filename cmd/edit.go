@@ -213,7 +213,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	}
 	bulkBadge := "OFF"
 	if customer.UseBulkDeploy {
-		bulkBadge = "ON (preview)"
+		bulkBadge = "ON"
 	}
 
 	// Grouped under section headers so the menu scans as three concerns:
@@ -277,8 +277,8 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Bulk-import backend",
 			Value:       editActionBulkBackend,
 			Badge:       bulkBadge,
-			Description: "Deploy with the bulk-import backend (PREVIEW) instead of the per-item one.",
-			Info:        "The bulk-import backend publishes many items in one API call — a big rate-limit win on large deploys — but runs on a Fabric beta API. When ON, deploys use it without asking; when OFF, the stable per-item backend is used silently. This replaces the old per-deploy question.",
+			Description: "Deploy with the bulk-import backend instead of the per-item one.",
+			Info:        "The bulk-import backend publishes many items in one API call — a big rate-limit win on large deploys — and Fabric resolves dependency order itself. It is newer in futils than the per-item backend, so verify a first run. When ON, deploys use it without asking; when OFF, the stable per-item backend is used silently. This replaces the old per-deploy question.",
 		},
 		ui.MenuOption{
 			Label:       "Reference overrides",
@@ -946,7 +946,7 @@ func toggleSchedules(configPath, customerName string) error {
 	return nil
 }
 
-// toggleBulkBackend flips whether deploys use the bulk-import (preview)
+// toggleBulkBackend flips whether deploys use the bulk-import
 // backend, replacing the old per-deploy question.
 func toggleBulkBackend(configPath, customerName string) error {
 	cfg, err := config.Load(configPath)
@@ -966,8 +966,8 @@ func toggleBulkBackend(configPath, customerName string) error {
 	chosen, err := ui.NumberMenu("Which deploy backend?", []ui.MenuOption{
 		{Label: "Per-item (stable, default)" + current(false), Value: "peritem",
 			Description: "One API call per item. Slower on big deploys but battle-tested."},
-		{Label: "Bulk-import (PREVIEW)" + current(true), Value: "bulk",
-			Description: "Many items per API call on a Fabric beta API — verify deployed items afterwards."},
+		{Label: "Bulk-import" + current(true), Value: "bulk",
+			Description: "Many items per API call — verify deployed items afterwards."},
 	})
 	if err != nil {
 		return err
@@ -977,7 +977,7 @@ func toggleBulkBackend(configPath, customerName string) error {
 		return fmt.Errorf("save customer: %w", err)
 	}
 	if customer.UseBulkDeploy {
-		fmt.Println(warningStyle.Render("Deploys now use the bulk-import PREVIEW backend — verify the deployed items afterwards."))
+		fmt.Println(warningStyle.Render("Deploys now use the bulk-import backend — verify the deployed items afterwards."))
 	} else {
 		fmt.Println(infoStyle.Render("Deploys use the stable per-item backend."))
 	}

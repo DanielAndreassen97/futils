@@ -56,7 +56,7 @@ func BulkImport(client FabricClient, token string, target fabric.Workspace, item
 
 	out := bulkResultsToResults(res.Details, target.ID)
 
-	// The report is built from the API's returned details, so an item the beta API
+	// The report is built from the API's returned details, so an item the API
 	// silently omits would vanish from the report/history. Flag any sent item with
 	// no matching returned result (by the same type+name identity the deploy uses)
 	// as an error rather than dropping it silently.

@@ -105,8 +105,8 @@ type Customer struct {
 	// pipelines scheduled in TEST/PROD but not in DEV) survive a deploy.
 	// Default false = schedules deploy like any other part.
 	SkipSchedules bool `json:"skip_schedules,omitempty"`
-	// UseBulkDeploy makes deploys use the bulk-import backend (PREVIEW beta
-	// API) without asking per run. Default false = the stable per-item
+	// UseBulkDeploy makes deploys use the bulk-import backend without
+	// asking per run. Default false = the stable per-item
 	// backend, silently.
 	UseBulkDeploy bool `json:"use_bulk_deploy,omitempty"`
 }
