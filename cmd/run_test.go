@@ -273,3 +273,51 @@ func TestPollJobErrorCounterResets(t *testing.T) {
 		t.Fatalf("status = %q, want Completed", st.Status)
 	}
 }
+
+// The notebook picker is one searchable list: favourites first in the
+// user's order, every other notebook after, each exactly once. A notebook
+// listed twice would match a search twice; one missing could not be run.
+func TestNotebookOptions_FavouritesFirstThenTheRestOnce(t *testing.T) {
+	ws := WorkspaceRef{ID: "ws-1", Name: "DW - Config - DEV"}
+	nb := func(id, name string) TaggedNotebook {
+		return TaggedNotebook{Notebook: fabric.Item{ID: id, DisplayName: name}, Workspace: ws}
+	}
+	tagged := []TaggedNotebook{nb("1", "NB_A"), nb("2", "NB_B"), nb("3", "NB_C")}
+	favs := []config.NotebookFavorite{{Name: "NB_C"}, {Name: "NB_A"}, {Name: "NB_Gone"}}
+
+	opts, byKey := notebookOptions(tagged, favs)
+
+	var got []string
+	for _, o := range opts {
+		if o.IsHeader {
+			got = append(got, "# "+o.Label)
+			continue
+		}
+		got = append(got, byKey[o.Value].Notebook.DisplayName)
+	}
+	want := []string{"# Favourites", "NB_C", "NB_A", "# All notebooks", "NB_B"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("rows = %v, want %v", got, want)
+	}
+}
+
+// Without live favourites there is nothing to group, so no section headers:
+// a lone "All notebooks" title over the only list would just be noise.
+func TestNotebookOptions_NoLiveFavouritesMeansNoHeaders(t *testing.T) {
+	ws := WorkspaceRef{ID: "ws-1", Name: "DW - Config - DEV"}
+	tagged := []TaggedNotebook{
+		{Notebook: fabric.Item{ID: "1", DisplayName: "NB_A"}, Workspace: ws},
+		{Notebook: fabric.Item{ID: "2", DisplayName: "NB_B"}, Workspace: ws},
+	}
+	for _, favs := range [][]config.NotebookFavorite{nil, {{Name: "NB_Gone"}}} {
+		opts, _ := notebookOptions(tagged, favs)
+		if len(opts) != 2 {
+			t.Fatalf("favs %v: got %d rows, want 2", favs, len(opts))
+		}
+		for _, o := range opts {
+			if o.IsHeader {
+				t.Errorf("favs %v: unexpected header %q", favs, o.Label)
+			}
+		}
+	}
+}

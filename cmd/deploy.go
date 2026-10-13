@@ -1484,7 +1484,7 @@ func pickGroupedRows(groups []deployGroup) (map[int][]deploy.LocalItem, map[int]
 	if len(items) == 0 {
 		return map[int][]deploy.LocalItem{}, nil, nil
 	}
-	idx, err := ui.MultiSelectRich(title, items)
+	idx, err := ui.MultiSelectRichFiltered(title, items)
 	if err != nil {
 		return nil, nil, err
 	}

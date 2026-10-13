@@ -33,7 +33,7 @@ Interactive CLI for Microsoft Fabric — run notebooks with parameters, refresh 
 - **Run pipelines** — pick a data pipeline the same way and trigger a pipeline job, polled to completion.
 - **Refresh tables** — pick a semantic model, multi-select tables (with group toggles and type-to-filter search), and trigger an [Enhanced Refresh](https://learn.microsoft.com/en-us/power-bi/connect-data/asynchronous-refresh) job. Filters out calculated tables and calculation groups automatically.
 - **Move items** — copy Reports, Semantic Models, and Notebooks from one workspace to another, one or many at a time. For Reports, optionally rebind to a different semantic model in the destination.
-- **Favourites** — pin the notebooks and parameters you actually use, so the run flow surfaces them first instead of scrolling through 200+ items.
+- **Favourites** — pin the notebooks and parameters you actually use, so the run flow lists them first. Every other notebook sits right below in the same list, and typing searches both, so there is no separate "show all" step.
 - **Per-customer config** — multiple customers, each with an environment ladder (e.g. `DEV, TEST, PROD`) where every environment maps to one or more workspaces (e.g. a Config workspace and a SemMod workspace).
 - **Friendly TUI** — numbered menus (`1`–`9` jump straight to an option), type-to-filter pickers, inline descriptions, and `?` info boxes explaining every setting. `esc` goes back, `m` returns to the main menu, `q` quits — a key legend is always visible.
 - **Sandboxed config** — point `FUTILS_CONFIG` at an alternate config file to try flows (or demo the tool) without touching your real setup.

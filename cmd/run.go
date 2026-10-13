@@ -13,15 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// menuValueShowAll is the sentinel used in the favourites-filtered menu
-// to jump to the full notebook list. Prefixed with __ so it can't
-// collide with a real notebook UUID.
-const menuValueShowAll = "__showall"
-
-// showAllLabel is the "Show all notebooks" entry in the favourites-filtered
-// menu. Leading ellipsis dots give it visual separation from real names.
-const showAllLabel = "⋯ Show all notebooks"
-
 // Styled message boxes used for the final job-result presentation.
 var (
 	successStyle = lipgloss.NewStyle().
@@ -470,109 +461,94 @@ func notebookKey(t TaggedNotebook) string {
 	return t.Workspace.ID + "/" + t.Notebook.ID
 }
 
-// selectNotebook is the full notebook picker (no favourite filtering).
-// Always shows the workspace alongside the notebook name so the user
-// knows where the run will land.
-func selectNotebook(tagged []TaggedNotebook) (TaggedNotebook, error) {
-	if len(tagged) == 1 {
-		return tagged[0], nil
-	}
-	maxName := 0
-	for _, t := range tagged {
-		// Rune count, not byte length — Norwegian display names with Æ/Ø/Å
-		// (2 bytes each in UTF-8) would otherwise misalign the workspace
-		// column. lipgloss counts runes for printable width as well.
-		if n := utf8.RuneCountInString(t.Notebook.DisplayName); n > maxName {
-			maxName = n
-		}
-	}
-	options := make([]ui.MenuOption, len(tagged))
-	byKey := map[string]TaggedNotebook{}
-	for i, t := range tagged {
-		label := fmt.Sprintf("%s  %s → %s",
-			t.Notebook.DisplayName,
-			strings.Repeat(" ", maxName-utf8.RuneCountInString(t.Notebook.DisplayName)),
-			t.Workspace.Name,
-		)
-		options[i] = ui.MenuOption{Label: label, Value: notebookKey(t)}
-		byKey[notebookKey(t)] = t
-	}
-	selected, err := ui.NumberMenu("Select notebook", options)
+// selectNotebookWithFavorites shows every notebook in the env as one
+// searchable list. When the customer has favourites, they come first under
+// their own header in the user-curated order, so the likeliest pick is still
+// one Enter away, and typing searches favourites and the rest alike. Customers
+// with no favourites (or only stale ones) get a single headerless list.
+//
+// Favourites match by display name across all workspaces in the env; if the
+// same notebook name exists in two workspaces, both surface as favourites and
+// the workspace suffix disambiguates them.
+func selectNotebookWithFavorites(tagged []TaggedNotebook, customer config.Customer) (TaggedNotebook, error) {
+	options, byKey := notebookOptions(tagged, customer.Favorites)
+	selected, err := ui.FilterMenu("Select notebook", options, ui.DefaultFilterRowRenderer)
 	if err != nil {
 		return TaggedNotebook{}, err
 	}
 	return byKey[selected], nil
 }
 
-// selectNotebookWithFavorites narrows the notebook menu to the
-// customer's favourites when any are configured, with a "Show all"
-// escape hatch appended as the last option. Customers with no
-// favourites see the full list — zero UI churn for first-time users.
-//
-// Favourites match by display name across all workspaces in the env;
-// if the same notebook name exists in two workspaces, both surface as
-// favourites and the workspace suffix disambiguates them in the menu.
-func selectNotebookWithFavorites(tagged []TaggedNotebook, customer config.Customer) (TaggedNotebook, error) {
-	if len(customer.Favorites) == 0 {
-		return selectNotebook(tagged)
-	}
-
-	// Group tagged notebooks by display name so we can preserve the
-	// user-curated order from customer.Favorites instead of whatever
-	// order ListNotebooks returned them in.
-	byName := make(map[string][]TaggedNotebook, len(tagged))
+// notebookOptions builds the notebook picker rows: favourites first (in
+// favourites order) under a "Favourites" header, then every other notebook
+// under "All notebooks". Each notebook appears exactly once. With no live
+// favourites there are no headers at all. Split out of the picker so the row
+// layout is testable without a terminal.
+func notebookOptions(tagged []TaggedNotebook, favorites []config.NotebookFavorite) ([]ui.FilterOption, map[string]TaggedNotebook) {
 	byKey := make(map[string]TaggedNotebook, len(tagged))
+	byName := make(map[string][]TaggedNotebook, len(tagged))
 	for _, t := range tagged {
 		byKey[notebookKey(t)] = t
 		byName[t.Notebook.DisplayName] = append(byName[t.Notebook.DisplayName], t)
 	}
 
+	// Group by display name so the user-curated order from favorites wins over
+	// whatever order ListNotebooks returned them in.
 	var favTagged []TaggedNotebook
-	for _, fav := range customer.Favorites {
-		favTagged = append(favTagged, byName[fav.Name]...)
+	isFav := map[string]bool{}
+	for _, fav := range favorites {
+		for _, t := range byName[fav.Name] {
+			if !isFav[notebookKey(t)] {
+				isFav[notebookKey(t)] = true
+				favTagged = append(favTagged, t)
+			}
+		}
+	}
+	rest := make([]TaggedNotebook, 0, len(tagged))
+	for _, t := range tagged {
+		if !isFav[notebookKey(t)] {
+			rest = append(rest, t)
+		}
 	}
 
-	// Fallback: all favourites are stale. Degrade to full list rather
-	// than showing an empty menu.
-	if len(favTagged) == 0 {
-		return selectNotebook(tagged)
-	}
-
+	// One name column across both sections so the workspace arrows line up.
+	// Rune count, not byte length: Norwegian display names with Æ/Ø/Å (2 bytes
+	// each in UTF-8) would otherwise misalign the workspace column.
 	maxName := 0
-	for _, t := range favTagged {
+	for _, t := range tagged {
 		if n := utf8.RuneCountInString(t.Notebook.DisplayName); n > maxName {
 			maxName = n
 		}
 	}
-
-	options := make([]ui.MenuOption, 0, len(favTagged)+1)
-	for _, t := range favTagged {
+	row := func(t TaggedNotebook) ui.FilterOption {
 		label := fmt.Sprintf("%s  %s → %s",
 			t.Notebook.DisplayName,
 			strings.Repeat(" ", maxName-utf8.RuneCountInString(t.Notebook.DisplayName)),
 			t.Workspace.Name,
 		)
-		options = append(options, ui.MenuOption{Label: label, Value: notebookKey(t)})
+		return ui.FilterOption{Label: label, Value: notebookKey(t)}
 	}
-	options = append(options, ui.MenuOption{
-		Label: fmt.Sprintf("%s (%d total)", showAllLabel, len(tagged)),
-		Value: menuValueShowAll,
-	})
 
-	selected, err := ui.NumberMenu("Select notebook", options)
-	if err != nil {
-		return TaggedNotebook{}, err
+	options := make([]ui.FilterOption, 0, len(tagged)+2)
+	if len(favTagged) > 0 {
+		options = append(options, ui.FilterOption{Label: "Favourites", IsHeader: true})
+		for _, t := range favTagged {
+			options = append(options, row(t))
+		}
+		if len(rest) > 0 {
+			options = append(options, ui.FilterOption{Label: "All notebooks", IsHeader: true})
+		}
 	}
-	if selected == menuValueShowAll {
-		return selectNotebook(tagged)
+	for _, t := range rest {
+		options = append(options, row(t))
 	}
-	return byKey[selected], nil
+	return options, byKey
 }
 
 // filterParamsByFavorite returns the subset of params the user has
 // pinned for this notebook, preserving notebook-declared order. Returns
 // the full list when the notebook has no favourite or its Parameters
-// slice is empty (the "show all" signal from the favourites flow).
+// slice is empty.
 func filterParamsByFavorite(params []fabric.Parameter, customer config.Customer, notebookName string) []fabric.Parameter {
 	fav, ok := customer.FavoriteFor(notebookName)
 	if !ok || len(fav.Parameters) == 0 {

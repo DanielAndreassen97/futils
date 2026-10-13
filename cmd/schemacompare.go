@@ -123,7 +123,7 @@ func pickSchemaCompareWorkspace(side string, customer config.Customer, workspace
 			names = append(names, w.DisplayName)
 		}
 		sort.Strings(names)
-		wsName, err = ui.NumberMenu(fmt.Sprintf("%s workspace", side), ui.MenuOptionsFromStrings(names))
+		wsName, err = ui.FilterMenu(fmt.Sprintf("%s workspace", side), ui.FilterOptionsFromStrings(names), ui.DefaultFilterRowRenderer)
 		if err != nil {
 			return "", "", err
 		}
@@ -136,8 +136,8 @@ func pickSchemaCompareWorkspace(side string, customer config.Customer, workspace
 		case 1:
 			wsName = env.Workspaces[0]
 		default:
-			wsName, err = ui.NumberMenu(fmt.Sprintf("%s workspace (%s)", side, alias),
-				ui.MenuOptionsFromStrings(env.Workspaces))
+			wsName, err = ui.FilterMenu(fmt.Sprintf("%s workspace (%s)", side, alias),
+				ui.FilterOptionsFromStrings(env.Workspaces), ui.DefaultFilterRowRenderer)
 			if err != nil {
 				return "", "", err
 			}
