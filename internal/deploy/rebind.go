@@ -361,7 +361,7 @@ func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []
 		return rb.RebindNotebookLakehouses(content)
 	}
 	if item.Type == "SemanticModel" {
-		return rb.rebindSemanticModel(content, item.Parts)
+		return rb.RebindSemanticModel(content, item.Parts)
 	}
 	if item.Type == "Report" && path.Base(partPath) == "definition.pbir" {
 		return rb.RebindReportConnection(item, content)

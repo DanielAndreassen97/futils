@@ -134,7 +134,7 @@ func TestRebinderConcurrentEndpointCaches(t *testing.T) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			out, _ := rb.RebindSemanticModel(semModelWithSQLSource())
+			out, _ := rb.RebindSemanticModel(semModelWithSQLSource(), nil)
 			outs[w] = string(out)
 		}(w)
 	}

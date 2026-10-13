@@ -139,7 +139,7 @@ func TestRunPostDeployRunsAllComplete(t *testing.T) {
 		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
 		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
 	}
-	out := runPostDeployRuns(f, "tok", runs, nil, nil)
+	out := runSequential(f, runs, nil, nil)
 	if len(out) != 2 {
 		t.Fatalf("got %d outcomes, want 2", len(out))
 	}
@@ -160,7 +160,7 @@ func TestRunPostDeployRunsStopsOnFailure(t *testing.T) {
 		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
 		{Name: "NB_C", ItemID: "c", WorkspaceID: "ws-1"},
 	}
-	out := runPostDeployRuns(f, "tok", runs, nil, nil)
+	out := runSequential(f, runs, nil, nil)
 	if len(out) != 3 {
 		t.Fatalf("got %d outcomes, want 3", len(out))
 	}
@@ -183,7 +183,7 @@ func TestRunPostDeployRunsFailureReason(t *testing.T) {
 		status:     map[string]string{"a": fabric.JobStatusFailed},
 		failReason: map[string]any{"a": "NotebookExecutionFailed: division by zero"},
 	}
-	out := runPostDeployRuns(f, "tok", []postDeployRun{
+	out := runSequential(f, []postDeployRun{
 		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
 	}, nil, nil)
 	if out[0].Status != fabric.JobStatusFailed || out[0].Err == nil {
@@ -197,7 +197,7 @@ func TestRunPostDeployRunsFailureReason(t *testing.T) {
 func TestRunPostDeployRunsPollError(t *testing.T) {
 	pollErr := errors.New("connection reset")
 	f := &fakeRunner{pollErr: map[string]error{"a": pollErr}}
-	out := runPostDeployRuns(f, "tok", []postDeployRun{
+	out := runSequential(f, []postDeployRun{
 		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
 		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
 	}, nil, nil)
@@ -214,7 +214,7 @@ func TestRunPostDeployRunsPollError(t *testing.T) {
 
 func TestRunPostDeployRunsSubmitError(t *testing.T) {
 	f := &fakeRunner{submitErr: map[string]error{"a": errors.New("403")}}
-	out := runPostDeployRuns(f, "tok", []postDeployRun{
+	out := runSequential(f, []postDeployRun{
 		{Name: "NB_A", ItemID: "a", WorkspaceID: "ws-1"},
 		{Name: "NB_B", ItemID: "b", WorkspaceID: "ws-1"},
 	}, nil, nil)
@@ -291,8 +291,8 @@ func TestRunPostDeployRunsHooks(t *testing.T) {
 		{Name: "NB_C", ItemID: "c", WorkspaceID: "ws-1"},
 	}
 	var startedNames, finishedNames []string
-	out := runPostDeployRuns(f, "tok", runs,
-		func(i, n int, r postDeployRun) { startedNames = append(startedNames, r.Name) },
+	out := runSequential(f, runs,
+		func(i, n int, s postDeployStep) { startedNames = append(startedNames, s.Runs[0].Name) },
 		func(o postDeployOutcome) { finishedNames = append(finishedNames, o.Run.Name) })
 	if !reflect.DeepEqual(startedNames, []string{"NB_A", "NB_B"}) {
 		t.Fatalf("started = %v — must not fire for skipped NB_C", startedNames)
@@ -323,7 +323,7 @@ func TestPostDeployPipelines(t *testing.T) {
 	}
 
 	f := &fakeRunner{status: map[string]string{"pl-1": fabric.JobStatusCompleted, "nb-1": fabric.JobStatusCompleted}}
-	outcomes := runPostDeployRuns(f, "tok", runs, nil, nil)
+	outcomes := runSequential(f, runs, nil, nil)
 	if len(outcomes) != 2 || outcomes[0].Err != nil || outcomes[1].Err != nil {
 		t.Fatalf("outcomes: %+v", outcomes)
 	}
@@ -496,4 +496,11 @@ func TestRunPostDeployStepsUntaggedUsesRegularEndpoint(t *testing.T) {
 	if !reflect.DeepEqual(f.submitted, []string{"id-A"}) {
 		t.Errorf("submitted = %v", f.submitted)
 	}
+}
+
+// runSequential runs runs the way a deploy without parallel phases does: one
+// step per run, as planPostDeploySteps lays them out.
+func runSequential(f jobRunner, runs []postDeployRun, started func(i, n int, s postDeployStep), finished func(postDeployOutcome)) []postDeployOutcome {
+	steps := planPostDeploySteps(runs, func(string) int { return 1 }, false, "")
+	return runPostDeploySteps(f, "tok", steps, started, finished)
 }

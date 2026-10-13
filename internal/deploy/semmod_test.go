@@ -83,7 +83,7 @@ func TestRebindOneLakeSharedWorkspaceDifferentTargets(t *testing.T) {
 	B = AzureStorage.DataLake("https://onelake.dfs.fabric.microsoft.com/dev-data/` + lhTwo + `")
 in
 	B`
-	got, outcome := rb.RebindSemanticModel([]byte(in))
+	got, outcome := rb.RebindSemanticModel([]byte(in), nil)
 	s := string(got)
 	if !strings.Contains(s, "onelake.dfs.fabric.microsoft.com/tgt-a/"+tgtA) {
 		t.Errorf("LH_One must land in tgt-a:\n%s", s)
@@ -179,7 +179,7 @@ func TestRebindSemanticModelSQLVariant(t *testing.T) {
 	rb := newSemmodSQLRebinder(t)
 	// SQL variant only (this fixture has no data workspace for OneLake).
 	in := []byte(semmodSQL("devhost.datawarehouse.fabric.microsoft.com", devConfigEP))
-	out, outcome := rb.RebindSemanticModel(in)
+	out, outcome := rb.RebindSemanticModel(in, nil)
 	if strings.Contains(string(out), "devhost") {
 		t.Errorf("SQL endpoint not rebound:\n%s", out)
 	}
@@ -702,8 +702,8 @@ func TestRebindHostParameterNotInTargetLeavesLeftover(t *testing.T) {
 
 func TestRebindHostParameterIdempotent(t *testing.T) {
 	rb := paramRebinder()
-	once, _ := rb.RebindSemanticModel([]byte(paramExpressions(paramDevHost)))
-	twice, outcome := rb.RebindSemanticModel(once)
+	once, _ := rb.RebindSemanticModel([]byte(paramExpressions(paramDevHost)), nil)
+	twice, outcome := rb.RebindSemanticModel(once, nil)
 	if string(twice) != string(once) || len(outcome.Changes) != 0 {
 		t.Fatalf("second run must be a no-op: %s %#v", twice, outcome.Changes)
 	}

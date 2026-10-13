@@ -187,23 +187,6 @@ type postDeployOutcome struct {
 // earlier run in the sequence failed.
 const postDeployStatusSkipped = "Skipped"
 
-// runPostDeployRuns executes runs sequentially — each job is submitted only
-// after the previous one reached a terminal state — and stops at the first
-// failure; the remainder are marked Skipped. It is runPostDeploySteps with one
-// run per step. started/finished are optional UI hooks (nil = silent); the
-// runner itself never prints.
-func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, started func(i, n int, r postDeployRun), finished func(o postDeployOutcome)) []postDeployOutcome {
-	steps := make([]postDeployStep, len(runs))
-	for i, r := range runs {
-		steps[i] = postDeployStep{Phase: 1, Runs: []postDeployRun{r}}
-	}
-	var onStart func(i, n int, s postDeployStep)
-	if started != nil {
-		onStart = func(i, n int, s postDeployStep) { started(i, n, s.Runs[0]) }
-	}
-	return runPostDeploySteps(client, token, steps, onStart, finished)
-}
-
 // runPostDeploySteps executes steps one after another. The runs inside a step
 // are submitted together and polled concurrently, so a tagged group lands in
 // one shared Spark session; the step ends when every run in it is terminal.

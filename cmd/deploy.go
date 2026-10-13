@@ -874,11 +874,11 @@ func setupDeployMappings(all []deploy.LocalItem, workspaces []fabric.Workspace, 
 		queue = queue[1:]
 
 		subs, direct := deploy.SubFolders(all, folder)
-		lead := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: mappingSkipValue}}
+		splitLabel := ""
 		if len(subs) > 0 {
-			lead = append(lead, ui.FilterOption{Label: splitRowLabel(folder, subs), Value: mappingSplitValue})
+			splitLabel = splitRowLabel(folder, subs)
 		}
-		chosen, err := pickMappingWorkspace(fmt.Sprintf("Map %s/ → which workspace?", folder), lead, baseOpts, wsEnv, alias)
+		chosen, err := pickMappingWorkspace(fmt.Sprintf("Map %s/ → which workspace?", folder), splitLabel, baseOpts, wsEnv, alias)
 		if err != nil {
 			return nil, err
 		}
@@ -922,18 +922,23 @@ func splitRowLabel(folder string, subs []string) string {
 	return "⤵ Split into subfolders: " + strings.Join(names, ", ")
 }
 
-// pickMappingWorkspace shows one mapping question: the lead rows (Skip, Split)
-// first, then the workspaces. A workspace registered on another environment is
-// challenged, and declining re-asks. Returns the chosen workspace name or the
-// Value of the lead row picked.
-func pickMappingWorkspace(title string, lead, baseOpts []ui.FilterOption, wsEnv map[string]string, alias string) (string, error) {
-	opts := append(append([]ui.FilterOption{}, lead...), baseOpts...)
+// pickMappingWorkspace shows one mapping question: a Skip row, a Split row
+// labelled splitLabel (none when it is empty), then the workspaces. A
+// workspace registered on another environment is challenged, and declining
+// re-asks. Returns the chosen workspace name, mappingSkipValue or
+// mappingSplitValue.
+func pickMappingWorkspace(title, splitLabel string, baseOpts []ui.FilterOption, wsEnv map[string]string, alias string) (string, error) {
+	opts := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: mappingSkipValue}}
+	if splitLabel != "" {
+		opts = append(opts, ui.FilterOption{Label: splitLabel, Value: mappingSplitValue})
+	}
+	opts = append(opts, baseOpts...)
 	for {
 		chosen, err := ui.FilterMenu(title, opts, ui.DefaultFilterRowRenderer)
 		if err != nil {
 			return "", err
 		}
-		if strings.HasPrefix(chosen, "\x00") {
+		if chosen == mappingSkipValue || chosen == mappingSplitValue {
 			return chosen, nil
 		}
 		ok, err := confirmCrossEnvMapping(wsEnv, chosen, alias)

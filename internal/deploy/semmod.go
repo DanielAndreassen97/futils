@@ -177,17 +177,12 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 // connection from baseline to target. It handles both on-disk shapes: Direct
 // Lake on OneLake (workspace+lakehouse GUID URL) and Direct Lake on SQL
 // (Sql.Database host+endpoint-id), plus a SQL endpoint host held in an M
-// parameter that Sql.Database reads by name. Only the values inside a matched
-// connection expression are rewritten. Content with none of these shapes is
-// returned unchanged.
-func (rb *Rebinder) RebindSemanticModel(content []byte) ([]byte, RebindOutcome) {
-	return rb.rebindSemanticModel(content, nil)
-}
-
-// rebindSemanticModel is RebindSemanticModel with the model's other parts at
-// hand: a parameter lives in expressions.tmdl, but the Sql.Database calls that
-// say which database it serves sit in the table parts.
-func (rb *Rebinder) rebindSemanticModel(content []byte, parts []Part) ([]byte, RebindOutcome) {
+// parameter that Sql.Database reads by name. parts is every part of the model:
+// a parameter lives in expressions.tmdl, but the Sql.Database calls that say
+// which database it serves sit in the table parts. Only the values inside a
+// matched connection expression are rewritten. Content with none of these
+// shapes is returned unchanged.
+func (rb *Rebinder) RebindSemanticModel(content []byte, parts []Part) ([]byte, RebindOutcome) {
 	var out RebindOutcome
 	s := string(content)
 	s = rb.rebindOneLakeSources(s, &out)

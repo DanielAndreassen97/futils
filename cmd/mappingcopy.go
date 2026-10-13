@@ -42,12 +42,9 @@ func mappingCopyChoices(customer config.Customer, alias string) []mappingCopyCho
 		}
 		order = append(order, ranked{d, i})
 	}
-	sort.SliceStable(order, func(a, b int) bool {
-		if order[a].dist != order[b].dist {
-			return order[a].dist < order[b].dist
-		}
-		return order[a].idx < order[b].idx
-	})
+	// order is built in index order, so a stable sort keeps the earlier env
+	// first among equally distant ones.
+	sort.SliceStable(order, func(a, b int) bool { return order[a].dist < order[b].dist })
 
 	out := make([]mappingCopyChoice, 0, len(order))
 	for _, r := range order {
@@ -141,8 +138,7 @@ func offerCopyMappings(customer config.Customer, alias string, baseOpts []ui.Fil
 		mappings = append([]config.DeployMapping{}, choice.copied...)
 		for _, m := range choice.missing {
 			title := fmt.Sprintf("%s has no %s counterpart for %s — map it to?", mappingLabel(m.Folder, m.Repo), alias, m.Workspace)
-			lead := []ui.FilterOption{{Label: "⋯ Skip this folder", Value: mappingSkipValue}}
-			ws, err := pickMappingWorkspace(title, lead, baseOpts, wsEnv, alias)
+			ws, err := pickMappingWorkspace(title, "", baseOpts, wsEnv, alias)
 			if err != nil {
 				return nil, false, err
 			}

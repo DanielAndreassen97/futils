@@ -1420,21 +1420,22 @@ func editPostDeployRuns(configPath, customerName string) error {
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save post-deploy runs: %w", err)
 	}
-	if customer.ParallelPostDeploy && len(customer.PostDeployRuns) > 1 {
-		if err := assignPostDeployPhases(&customer); err != nil {
-			if errors.Is(err, ui.ErrGoBack) {
-				fmt.Println(infoStyle.Render("Saved post-deploy runs; run order left unchanged."))
-				return nil
-			}
-			return err
-		}
-		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
-			return fmt.Errorf("save post-deploy run order: %w", err)
-		}
-		fmt.Println(infoStyle.Render("Saved post-deploy runs and run order."))
+	if !customer.ParallelPostDeploy {
+		fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
 		return nil
 	}
-	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
+	assigned, err := assignPostDeployPhases(&customer)
+	if err != nil {
+		return err
+	}
+	if !assigned {
+		fmt.Println(infoStyle.Render("Saved post-deploy runs; run order left unchanged."))
+		return nil
+	}
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save post-deploy run order: %w", err)
+	}
+	fmt.Println(infoStyle.Render("Saved post-deploy runs and run order."))
 	return nil
 }
 
@@ -1466,8 +1467,8 @@ func togglePostDeployMode(configPath, customerName string) error {
 		return err
 	}
 	customer.ParallelPostDeploy = chosen == "parallel"
-	if customer.ParallelPostDeploy && len(customer.PostDeployRuns) > 1 {
-		if err := assignPostDeployPhases(&customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
+	if customer.ParallelPostDeploy {
+		if _, err := assignPostDeployPhases(&customer); err != nil {
 			return err
 		}
 	}
@@ -1483,19 +1484,26 @@ func togglePostDeployMode(configPath, customerName string) error {
 }
 
 // assignPostDeployPhases opens the phase editor over the customer's
-// registered runs and stores the result on customer (not saved). esc returns
-// ui.ErrGoBack and leaves the phases untouched.
-func assignPostDeployPhases(customer *config.Customer) error {
+// registered runs and stores the result on customer (not saved). It reports
+// false, with the phases untouched, when there are fewer than two runs to
+// order or the editor was left with esc.
+func assignPostDeployPhases(customer *config.Customer) (bool, error) {
+	if len(customer.PostDeployRuns) < 2 {
+		return false, nil
+	}
 	current := make([]int, len(customer.PostDeployRuns))
 	for i, name := range customer.PostDeployRuns {
 		current[i] = customer.PostDeployPhase(name)
 	}
 	edited, err := ui.PhaseEditor("Post-deploy run order: same number = runs together, lower numbers first", customer.PostDeployRuns, current)
+	if errors.Is(err, ui.ErrGoBack) {
+		return false, nil
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	customer.PostDeployPhases = compactPhases(customer.PostDeployRuns, edited)
-	return nil
+	return true, nil
 }
 
 // compactPhases turns the editor's per-run phases into the stored map:
