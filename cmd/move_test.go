@@ -64,6 +64,9 @@ func (f *fakeMoveAPI) RunPipeline(string, string, string, map[string]any) (strin
 func (f *fakeMoveAPI) RunNotebook(string, string, string, []fabric.JobInput, *fabric.DefaultLakehouse) (string, error) {
 	return "", errors.New("not used by move tests")
 }
+func (f *fakeMoveAPI) RunNotebookHC(string, string, string, string) (string, error) {
+	return "", errors.New("not used by move tests")
+}
 func (f *fakeMoveAPI) GetJobInstance(string, string) (fabric.JobInstanceStatus, error) {
 	return fabric.JobInstanceStatus{}, errors.New("not used by move tests")
 }

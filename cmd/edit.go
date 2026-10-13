@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,26 +17,27 @@ import (
 )
 
 const (
-	editActionAddEnv        = "__add_env"
-	editActionEditEnv       = "__edit_env:"
-	editActionBack          = "__back"
-	editActionRefOverrides  = "__ref_overrides"
-	editActionSetBaseline   = "__set_baseline"
-	editActionSetRepo       = "__set_repo"
-	editActionSubstitutions = "__substitutions"
-	editActionExcludeTypes  = "__exclude_types"
-	editActionDeployHistory = "__deploy_history"
-	editActionSetBranch     = "__deploy_branch"
-	editActionSchedules     = "__schedules"
-	editActionBulkBackend   = "__bulk_backend"
-	editActionPostDeploy    = "__post_deploy_runs"
-	editActionFavorites     = "__favorites"
-	envActionAddWS          = "__add_ws"
-	envActionRemoveWS       = "__remove_ws"
-	envActionRenameAlias    = "__rename_alias"
-	envActionDeleteEnv      = "__delete_env"
-	envActionAddDeploy      = "__add_deploy"
-	envActionEditDeploy     = "__edit_deploy:"
+	editActionAddEnv         = "__add_env"
+	editActionEditEnv        = "__edit_env:"
+	editActionBack           = "__back"
+	editActionRefOverrides   = "__ref_overrides"
+	editActionSetBaseline    = "__set_baseline"
+	editActionSetRepo        = "__set_repo"
+	editActionSubstitutions  = "__substitutions"
+	editActionExcludeTypes   = "__exclude_types"
+	editActionDeployHistory  = "__deploy_history"
+	editActionSetBranch      = "__deploy_branch"
+	editActionSchedules      = "__schedules"
+	editActionBulkBackend    = "__bulk_backend"
+	editActionPostDeploy     = "__post_deploy_runs"
+	editActionPostDeployMode = "__post_deploy_mode"
+	editActionFavorites      = "__favorites"
+	envActionAddWS           = "__add_ws"
+	envActionRemoveWS        = "__remove_ws"
+	envActionRenameAlias     = "__rename_alias"
+	envActionDeleteEnv       = "__delete_env"
+	envActionAddDeploy       = "__add_deploy"
+	envActionEditDeploy      = "__edit_deploy:"
 )
 
 // Edit is the top-level customer editing flow. Drills down into a
@@ -128,6 +130,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			if err := editPostDeployRuns(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
+		case action == editActionPostDeployMode:
+			if err := togglePostDeployMode(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
+				return err
+			}
 		case action == editActionSetBranch:
 			if err := setDeployBranch(configPath, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
@@ -210,6 +216,10 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	schedulesBadge := "DEPLOYED"
 	if customer.SkipSchedules {
 		schedulesBadge = "KEPT IN TARGET"
+	}
+	postDeployModeBadge := "SEQUENTIAL"
+	if customer.ParallelPostDeploy {
+		postDeployModeBadge = "PARALLEL"
 	}
 	bulkBadge := "OFF"
 	if customer.UseBulkDeploy {
@@ -298,7 +308,14 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Label:       "Post-deploy runs",
 			Value:       editActionPostDeploy,
 			Description: "Notebooks to run after a successful deploy (only the ones deployed that run).",
-			Info:        "After a successful deploy, futils offers to run the notebooks you register here — but only the ones actually created or updated in that run — sequentially, stopping at the first failure. Handy for re-seeding config or running smoke tests in the target without doing it by hand.",
+			Info:        "After a successful deploy, futils offers to run the notebooks you register here — but only the ones actually created or updated in that run — stopping at the first failure. Handy for re-seeding config or running smoke tests in the target without doing it by hand. With Post-deploy mode set to PARALLEL you also give each run its run order here.",
+		},
+		ui.MenuOption{
+			Label:       "Post-deploy mode",
+			Value:       editActionPostDeployMode,
+			Badge:       postDeployModeBadge,
+			Description: "Run post-deploy notebooks one after another, or by run order in parallel groups.",
+			Info:        "SEQUENTIAL runs one job after another, each in its own Spark session. PARALLEL runs the notebooks that share a run order at the same time, in groups of up to five that share one high-concurrency Spark session — only the first pays the session start, and only one session runs at a time. Lower run orders finish first (e.g. a config/schema notebook at run order 1, the insert scripts at run order 2). Only choose PARALLEL when the notebooks tolerate running concurrently: scripts that write their own partition (replaceWhere) do; a MERGE over a shared table can fail with ConcurrentAppendException.",
 		},
 		ui.MenuOption{
 			Label:       "Deploy-history folder",
@@ -1406,11 +1423,111 @@ func editPostDeployRuns(configPath, customerName string) error {
 		return err
 	}
 	customer.PostDeployRuns = mergePostDeploySelection(customer.PostDeployRuns, chosen)
+	// A deselected run takes its phase with it.
+	for name := range customer.PostDeployPhases {
+		if !slices.Contains(customer.PostDeployRuns, name) {
+			delete(customer.PostDeployPhases, name)
+		}
+	}
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save post-deploy runs: %w", err)
 	}
+	if customer.ParallelPostDeploy && len(customer.PostDeployRuns) > 1 {
+		if err := assignPostDeployPhases(&customer); err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				fmt.Println(infoStyle.Render("Saved post-deploy runs; run order left unchanged."))
+				return nil
+			}
+			return err
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save post-deploy run order: %w", err)
+		}
+		fmt.Println(infoStyle.Render("Saved post-deploy runs and run order."))
+		return nil
+	}
 	fmt.Println(infoStyle.Render("Saved post-deploy runs. Run order = list order in the config file."))
 	return nil
+}
+
+// togglePostDeployMode switches post-deploy runs between sequential and
+// parallel. Turning parallel on goes straight on to the phase editor, since
+// phases are what decide which runs share a session.
+func togglePostDeployMode(configPath, customerName string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[customerName]
+	if !ok {
+		return fmt.Errorf("customer %q disappeared from config", customerName)
+	}
+	current := func(v bool) string {
+		if v == customer.ParallelPostDeploy {
+			return " (current)"
+		}
+		return ""
+	}
+	chosen, err := ui.NumberMenu("How should post-deploy runs execute?", []ui.MenuOption{
+		{Label: "Sequential" + current(false), Value: "sequential",
+			Description: "One job after another, each in its own Spark session. Always safe."},
+		{Label: "Parallel" + current(true), Value: "parallel",
+			Description: "Notebooks with the same run order run together, up to five per shared Spark session. Only for notebooks that tolerate running at the same time."},
+	})
+	if err != nil {
+		return err
+	}
+	customer.ParallelPostDeploy = chosen == "parallel"
+	if customer.ParallelPostDeploy && len(customer.PostDeployRuns) > 1 {
+		if err := assignPostDeployPhases(&customer); err != nil && !errors.Is(err, ui.ErrGoBack) {
+			return err
+		}
+	}
+	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+		return fmt.Errorf("save customer: %w", err)
+	}
+	if customer.ParallelPostDeploy {
+		fmt.Println(infoStyle.Render("Post-deploy runs now run in parallel by run order. Change the run order under Post-deploy runs."))
+	} else {
+		fmt.Println(infoStyle.Render("Post-deploy runs now run one after another."))
+	}
+	return nil
+}
+
+// assignPostDeployPhases opens the phase editor over the customer's
+// registered runs and stores the result on customer (not saved). esc returns
+// ui.ErrGoBack and leaves the phases untouched.
+func assignPostDeployPhases(customer *config.Customer) error {
+	current := make([]int, len(customer.PostDeployRuns))
+	for i, name := range customer.PostDeployRuns {
+		current[i] = customer.PostDeployPhase(name)
+	}
+	edited, err := ui.PhaseEditor("Post-deploy run order: same number = runs together, lower numbers first", customer.PostDeployRuns, current)
+	if err != nil {
+		return err
+	}
+	customer.PostDeployPhases = compactPhases(customer.PostDeployRuns, edited)
+	return nil
+}
+
+// compactPhases turns the editor's per-run phases into the stored map:
+// phases are renumbered 1..k in their original order so a gap (only 1 and 3
+// used) never leaves an empty phase, and only phases above 1 are kept — nil
+// when everything is phase 1, matching how the config stores them.
+func compactPhases(names []string, phases []int) map[string]int {
+	used := slices.Clone(phases)
+	slices.Sort(used)
+	used = slices.Compact(used)
+	var out map[string]int
+	for i, name := range names {
+		if p := slices.Index(used, phases[i]) + 1; p > 1 {
+			if out == nil {
+				out = map[string]int{}
+			}
+			out[name] = p
+		}
+	}
+	return out
 }
 
 // mergePostDeploySelection folds a fresh picker selection back into the

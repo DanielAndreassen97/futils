@@ -1151,6 +1151,57 @@ func RunNotebook(token, workspaceID, itemID string, inputs []JobInput, lakehouse
 	return submitJobInstance(token, workspaceID, itemID, "RunNotebook", bytes.NewReader(payload))
 }
 
+// sessionTagPattern is what Fabric accepts as a high-concurrency session tag.
+// Anything else is accepted with a 202 and only fails the job afterwards.
+var sessionTagPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// ValidSessionTag reports whether Fabric accepts tag as a sessionTag.
+func ValidSessionTag(tag string) bool {
+	return sessionTagPattern.MatchString(tag)
+}
+
+// RunNotebookHC triggers a notebook job in high-concurrency mode: runs that
+// share sessionTag and are submitted while the tagged session is alive (i.e.
+// concurrently) are packed into one Spark session, so only the first pays the
+// session start. Uses the release endpoint, the only one documenting
+// highConcurrencyModeOptions; it takes no parameters here, which is all
+// post-deploy needs. Returns the job-instance URL from the Location header.
+func RunNotebookHC(token, workspaceID, itemID, sessionTag string) (string, error) {
+	if !ValidSessionTag(sessionTag) {
+		return "", fmt.Errorf("invalid session tag %q: only letters, digits and underscores are allowed", sessionTag)
+	}
+	if err := validateUUID(workspaceID, "workspace ID"); err != nil {
+		return "", err
+	}
+	if err := validateUUID(itemID, "item ID"); err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(map[string]any{
+		"executionData": map[string]any{
+			"compute": "Spark",
+			"computeConfiguration": map[string]any{
+				"highConcurrencyModeOptions": map[string]any{"enabled": true, "sessionTag": sessionTag},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal run body: %w", err)
+	}
+	url := fmt.Sprintf("%s/v1/workspaces/%s/notebooks/%s/jobs/execute/instances?beta=false", baseURL, workspaceID, itemID)
+	resp, respBody, err := doPost(token, url, bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != 202 {
+		return "", fmt.Errorf("run notebook (high concurrency) %d: %s", resp.StatusCode, string(respBody))
+	}
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", fmt.Errorf("run notebook (high concurrency): 202 missing Location header")
+	}
+	return loc, nil
+}
+
 // RunPipeline submits a data-pipeline job (jobType=Pipeline) and returns the
 // job-instance URL from the Location header — poll it with GetJobInstance,
 // exactly like a notebook run. params are the pipeline-parameter overrides:

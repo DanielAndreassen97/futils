@@ -132,3 +132,18 @@ func TestMappingLabel(t *testing.T) {
 		}
 	}
 }
+
+// The editor's phases become the stored map: gaps close up (1 and 3 -> 1 and
+// 2, so no phase is ever empty) and phase 1 is never stored.
+func TestCompactPhases(t *testing.T) {
+	names := []string{"NB_Config", "NB_A", "NB_B", "NB_Final"}
+	got := compactPhases(names, []int{1, 3, 3, 7})
+	want := map[string]int{"NB_A": 2, "NB_B": 2, "NB_Final": 3}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("phases = %v, want %v", got, want)
+	}
+	// Everything in one phase, whatever its number, stores nothing.
+	if got := compactPhases([]string{"A", "B"}, []int{4, 4}); got != nil {
+		t.Fatalf("single phase = %v, want nil", got)
+	}
+}

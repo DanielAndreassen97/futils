@@ -601,3 +601,61 @@ func TestDoGetAcceptsBodyExactlyAtCap(t *testing.T) {
 		t.Errorf("body = %d bytes, want 64", len(body))
 	}
 }
+
+// Post-deploy runs concurrent notebooks in one high-concurrency Spark session.
+// That is only offered on the release notebook endpoint, and Fabric accepts
+// (202) a malformed tag only to fail the job a moment later — so the tag is
+// validated before any request leaves.
+func TestRunNotebookHCSendsReleaseEndpointWithSessionTag(t *testing.T) {
+	transport := &seqTransport{responses: []seqResponse{{status: 202, location: "https://example/jobs/instances/job-1"}}}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	ws, nb := "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"
+	loc, err := RunNotebookHC("tok", ws, nb, "futils_postdeploy_1_p1g1")
+	if err != nil {
+		t.Fatalf("RunNotebookHC: %v", err)
+	}
+	if loc != "https://example/jobs/instances/job-1" {
+		t.Errorf("location = %q", loc)
+	}
+	wantURL := baseURL + "/v1/workspaces/" + ws + "/notebooks/" + nb + "/jobs/execute/instances?beta=false"
+	if transport.urls[0] != wantURL {
+		t.Errorf("url = %q, want %q", transport.urls[0], wantURL)
+	}
+	var body struct {
+		ExecutionData struct {
+			Compute              string `json:"compute"`
+			ComputeConfiguration struct {
+				HighConcurrencyModeOptions struct {
+					Enabled    bool   `json:"enabled"`
+					SessionTag string `json:"sessionTag"`
+				} `json:"highConcurrencyModeOptions"`
+			} `json:"computeConfiguration"`
+		} `json:"executionData"`
+	}
+	if err := json.Unmarshal(transport.bodies[0], &body); err != nil {
+		t.Fatalf("body: %v (%s)", err, transport.bodies[0])
+	}
+	hc := body.ExecutionData.ComputeConfiguration.HighConcurrencyModeOptions
+	if body.ExecutionData.Compute != "Spark" || !hc.Enabled || hc.SessionTag != "futils_postdeploy_1_p1g1" {
+		t.Errorf("body = %s", transport.bodies[0])
+	}
+}
+
+func TestRunNotebookHCRejectsInvalidTagWithoutCalling(t *testing.T) {
+	transport := &seqTransport{}
+	origClient := httpClient
+	t.Cleanup(func() { httpClient = origClient })
+	httpClient = &http.Client{Transport: transport}
+
+	for _, tag := range []string{"", "futils-postdeploy", "has space", "æøå"} {
+		if _, err := RunNotebookHC("tok", "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", tag); err == nil {
+			t.Errorf("tag %q: want error", tag)
+		}
+	}
+	if len(transport.urls) != 0 {
+		t.Errorf("no request may be sent for an invalid tag, got %v", transport.urls)
+	}
+}

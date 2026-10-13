@@ -779,6 +779,10 @@ func (c *demoClient) RunNotebook(token, workspaceID, itemID string, inputs []fab
 	return "demo://jobs/" + itemID, nil
 }
 
+func (c *demoClient) RunNotebookHC(token, workspaceID, itemID, sessionTag string) (string, error) {
+	return c.RunNotebook(token, workspaceID, itemID, nil, nil)
+}
+
 func (c *demoClient) RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error) {
 	time.Sleep(600 * time.Millisecond)
 	return "demo://jobs/" + itemID, nil
