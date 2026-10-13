@@ -475,6 +475,9 @@ func notebookKey(t TaggedNotebook) string {
 // same notebook name exists in two workspaces, both surface as favourites and
 // the workspace suffix disambiguates them.
 func selectNotebookWithFavorites(tagged []TaggedNotebook, customer config.Customer) (TaggedNotebook, error) {
+	if len(tagged) == 1 {
+		return tagged[0], nil // nothing to choose, like the customer and env pickers
+	}
 	options, byKey := notebookOptions(tagged, customer.Favorites)
 	selected, err := ui.FilterMenu("Select notebook", options, ui.DefaultFilterRowRenderer)
 	if err != nil {

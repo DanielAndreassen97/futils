@@ -56,6 +56,37 @@ func localTypeScope(items []deploy.LocalItem) map[string]bool {
 	return s
 }
 
+// discoverRepoItems fetches one repo's deploy branch and reads its items.
+func discoverRepoItems(customer config.Customer, input string) ([]deploy.LocalItem, error) {
+	src, err := deploy.NewSourceAt(input, customer.BranchForRepo(input))
+	if err != nil {
+		return nil, fmt.Errorf("repo %q: %w", input, err)
+	}
+	sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s (%s)...", input, src.Ref()))
+	sp.Start()
+	defer sp.Stop()
+	if err := src.Fetch(); err != nil {
+		return nil, fmt.Errorf("repo %q: %w", input, err)
+	}
+	items, err := src.DiscoverItems()
+	if err != nil {
+		return nil, fmt.Errorf("repo %q: %w", input, err)
+	}
+	return items, nil
+}
+
+// unreadRepos returns the repos alias's mappings use that itemsByRepo hasn't
+// read yet, in repoInputsForAlias order.
+func unreadRepos(customer config.Customer, alias string, itemsByRepo map[string][]deploy.LocalItem) []string {
+	var out []string
+	for _, input := range repoInputsForAlias(customer, alias) {
+		if _, ok := itemsByRepo[input]; !ok {
+			out = append(out, input)
+		}
+	}
+	return out
+}
+
 // repoInputsForAlias returns the distinct repo config-strings to discover for an
 // environment: the customer's primary RepoPath (when set) first, then every
 // distinct non-empty per-mapping Repo, in first-seen order. Empty strings are
@@ -192,26 +223,9 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	itemsByRepo := make(map[string][]deploy.LocalItem, len(repoInputs))
 	totalItems := 0
 	for _, input := range repoInputs {
-		src, serr := deploy.NewSourceAt(input, customer.BranchForRepo(input))
-		if serr != nil {
-			return fmt.Errorf("repo %q: %w", input, serr)
-		}
-		sp := ui.NewSpinner(fmt.Sprintf("Fetching and reading %s (%s)...", input, src.Ref()))
-		sp.Start()
-		var items []deploy.LocalItem
-		var fetchErr, discErr error
-		func() {
-			defer sp.Stop()
-			if fetchErr = src.Fetch(); fetchErr != nil {
-				return
-			}
-			items, discErr = src.DiscoverItems()
-		}()
-		if fetchErr != nil {
-			return fmt.Errorf("repo %q: %w", input, fetchErr)
-		}
-		if discErr != nil {
-			return fmt.Errorf("repo %q: %w", input, discErr)
+		items, err := discoverRepoItems(customer, input)
+		if err != nil {
+			return err
 		}
 		itemsByRepo[input] = items
 		totalItems += len(items)
@@ -255,6 +269,15 @@ func DeployWithAPI(configPath string, client APIClient) error {
 				return fmt.Errorf("save deployment mappings: %w", err)
 			}
 			fmt.Println(infoStyle.Render(fmt.Sprintf("Saved %d mapping(s) to env %q.", len(mappings), alias)))
+		}
+		// Mappings copied from another env can point at repos this run
+		// hasn't read yet; read them now so those folders deploy too.
+		for _, input := range unreadRepos(customer, alias, itemsByRepo) {
+			items, err := discoverRepoItems(customer, input)
+			if err != nil {
+				return err
+			}
+			itemsByRepo[input] = items
 		}
 	}
 

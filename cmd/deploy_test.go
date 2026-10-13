@@ -1964,3 +1964,27 @@ func TestDiffExistingRows_FabricOwnedPartIsNotARemoval(t *testing.T) {
 		t.Errorf(".pbi must not surface as a diff, got %+v", diffs)
 	}
 }
+
+// A new env's first deploy reads only the primary repo, since it has no
+// mappings yet. Mappings copied from another env can name a second repo; it
+// must be read before grouping, or its folders deploy nothing that first run.
+func TestUnreadReposAfterCopiedMappings(t *testing.T) {
+	c := config.Customer{
+		RepoPath: "/repos/primary",
+		Environments: []config.Environment{{
+			Alias: "PROD",
+			Deployments: []config.DeployMapping{
+				{Folder: "Backend", Workspace: "DW - PROD - Data"},
+				{Folder: "", Workspace: "DW - PROD - Rapporter", Repo: "/repos/reports"},
+			},
+		}},
+	}
+	read := map[string][]deploy.LocalItem{"/repos/primary": nil}
+	if got := unreadRepos(c, "PROD", read); !reflect.DeepEqual(got, []string{"/repos/reports"}) {
+		t.Fatalf("unreadRepos = %v, want [/repos/reports]", got)
+	}
+	read["/repos/reports"] = nil
+	if got := unreadRepos(c, "PROD", read); len(got) != 0 {
+		t.Fatalf("unreadRepos after reading both = %v, want none", got)
+	}
+}
