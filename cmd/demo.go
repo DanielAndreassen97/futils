@@ -136,6 +136,7 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 	return []fabric.Item{
 		mk("Sales Model", "SemanticModel"),
 		mk("Finance Model", "SemanticModel"),
+		mk("Budget Model", "SemanticModel"),
 		mk("Sales Overview", "Report"),
 	}, true
 }
@@ -263,6 +264,35 @@ table fact_margins
 	/// Gross margin across product lines
 	measure 'Gross Margin' = SUM(fact_margins[margin])
 		formatString: #,0.00
+`
+	return expressions, model
+}
+
+// demoBudgetModelTMDL is a Direct Lake on SQL model that keeps the endpoint
+// host in an M parameter and reads Sql.Database(SqlEndpoint, "LH_Silver"), so
+// only the parameter value differs per environment. After rebinding it
+// compares as Unchanged.
+func demoBudgetModelTMDL(env string) (expressions, model string) {
+	expressions = `expression SqlEndpoint = "` + demoSQLHost(env) + `" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+	lineageTag: ` + demoGUID("lineage", "SqlEndpoint") + `
+
+	annotation PBI_ResultType = Text
+
+expression DatabaseQuery =
+		let
+		    database = Sql.Database(SqlEndpoint, "LH_Silver")
+		in
+		    database
+	lineageTag: ` + demoGUID("lineage", "BudgetDatabaseQuery") + `
+`
+	model = `model Model
+	culture: en-US
+	defaultPowerBIDataSourceVersion: powerBI_V3
+
+table fact_budget
+	/// Budgeted amount per cost centre
+	measure 'Budget Amount' = SUM(fact_budget[amount])
+		formatString: #,0
 `
 	return expressions, model
 }
@@ -495,6 +525,7 @@ func demoPlatform(itemType, displayName string) string {
 func demoRepoFiles() map[string]string {
 	salesExpr, salesModel := demoSalesModelTMDL("DEV", true)
 	finExpr, finModel := demoFinanceModelTMDL("DEV")
+	budExpr, budModel := demoBudgetModelTMDL("DEV")
 	vlVars, vlSettings, vlSets := demoVariableLibrary(true)
 	return map[string]string{
 		"Backend/VL_Settings.VariableLibrary/.platform":           demoPlatform("VariableLibrary", "VL_Settings"),
@@ -536,6 +567,10 @@ func demoRepoFiles() map[string]string {
 		"Frontend/Finance Model.SemanticModel/.platform":                   demoPlatform("SemanticModel", "Finance Model"),
 		"Frontend/Finance Model.SemanticModel/definition/expressions.tmdl": finExpr,
 		"Frontend/Finance Model.SemanticModel/definition/model.tmdl":       finModel,
+
+		"Frontend/Budget Model.SemanticModel/.platform":                   demoPlatform("SemanticModel", "Budget Model"),
+		"Frontend/Budget Model.SemanticModel/definition/expressions.tmdl": budExpr,
+		"Frontend/Budget Model.SemanticModel/definition/model.tmdl":       budModel,
 
 		"Frontend/Sales Overview.Report/.platform":       demoPlatform("Report", "Sales Overview"),
 		"Frontend/Sales Overview.Report/definition.pbir": demoReportPBIR("DEV"),
@@ -597,6 +632,12 @@ spark.read.table("bronze.sales_orders").write.format("csv").save("Files/export/l
 		}}
 	case "SemanticModel/Finance Model":
 		expr, model := demoFinanceModelTMDL(env)
+		return &fabric.Definition{Parts: []fabric.DefinitionPart{
+			part("definition/expressions.tmdl", expr),
+			part("definition/model.tmdl", model),
+		}}
+	case "SemanticModel/Budget Model":
+		expr, model := demoBudgetModelTMDL(env)
 		return &fabric.Definition{Parts: []fabric.DefinitionPart{
 			part("definition/expressions.tmdl", expr),
 			part("definition/model.tmdl", model),

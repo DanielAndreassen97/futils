@@ -599,3 +599,243 @@ func TestRebindSQLNameFormMatchesLakehouseCaseInsensitively(t *testing.T) {
 		t.Errorf("database literal must keep the casing from git, never adopt the lakehouse display name:\n%s", got)
 	}
 }
+
+// M parameter host rebind. A model can keep its SQL endpoint host in an M
+// parameter and read Sql.Database(SqlEndpoint, "LH_Bronze"); the Sql.Database
+// pass can't see that host, so without this pass the target model kept reading
+// from the baseline environment after deploy. Example: a parameter holding the
+// DEV host of LH_Bronze deploys to TEST holding the TEST host of LH_Bronze.
+
+const (
+	paramDevHost = "aaa111-dev.datawarehouse.fabric.microsoft.com"
+	paramTstHost = "bbb222-test.datawarehouse.fabric.microsoft.com"
+)
+
+func paramRebinder() *Rebinder {
+	rb := pipelineRebinderGUIDs()
+	rb.client = &fakeFabric{sqlByLH: map[string][2]string{
+		gLHDev: {paramDevHost, "ep-dev"},
+		gLHTst: {paramTstHost, "ep-test"},
+	}}
+	return rb
+}
+
+func paramExpressions(host string) string {
+	return "expression SqlEndpoint = \"" + host + "\" meta [IsParameterQuery=true, Type=\"Text\", IsParameterQueryRequired=true]\n" +
+		"\tlineageTag: 00000000-aaaa-4bbb-8ccc-000000000001\n\n" +
+		"\tannotation PBI_ResultType = Text\n"
+}
+
+func substituteParamModel(t *testing.T, rb *Rebinder, content string) (string, RebindOutcome) {
+	t.Helper()
+	item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", Parts: []Part{
+		{Path: "definition/expressions.tmdl", Content: []byte(content)},
+	}}
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(parts["definition/expressions.tmdl"]), outcome
+}
+
+func TestRebindHostParameterRewritten(t *testing.T) {
+	rb := paramRebinder()
+	got, outcome := substituteParamModel(t, rb, paramExpressions(paramDevHost))
+	if got != paramExpressions(paramTstHost) {
+		t.Fatalf("parameter host not rewritten:\n%s", got)
+	}
+	if len(outcome.Changes) != 1 || outcome.Changes[0] != (RebindChange{Kind: "SQL endpoint", Name: "LH_Bronze", Old: paramDevHost, New: paramTstHost}) {
+		t.Fatalf("changes = %#v", outcome.Changes)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("rewritten host must not be reported as a leftover: %#v", outcome.Unresolved)
+	}
+}
+
+// Only the parameter's value is rewritten: the same host in a /// description,
+// a // comment or a non-parameter expression is arbitrary text and stays.
+func TestRebindHostParameterLeavesOtherTextAlone(t *testing.T) {
+	rb := paramRebinder()
+	in := "/// Points at " + paramDevHost + " in DEV\n" +
+		"// " + paramDevHost + "\n" +
+		paramExpressions(paramDevHost) + "\n" +
+		"expression NotAParam = \"" + paramDevHost + "\" meta [IsParameterQuery=false]\n" +
+		"expression Prefixed = \"tcp:" + paramDevHost + "\" meta [IsParameterQuery=true, Type=\"Text\"]\n"
+	var out RebindOutcome
+	got := rb.rebindHostParameters(in, &out, nil)
+	want := strings.Replace(in, "expression SqlEndpoint = \""+paramDevHost, "expression SqlEndpoint = \""+paramTstHost, 1)
+	if got != want {
+		t.Fatalf("only the parameter value may change:\n%s", got)
+	}
+	if len(out.Changes) != 1 {
+		t.Fatalf("changes = %#v", out.Changes)
+	}
+}
+
+func TestRebindHostParameterUnknownHostUntouched(t *testing.T) {
+	rb := paramRebinder()
+	in := paramExpressions("someone-elses.datawarehouse.fabric.microsoft.com")
+	got, outcome := substituteParamModel(t, rb, in)
+	if got != in || len(outcome.Changes) != 0 || len(outcome.Unresolved) != 0 {
+		t.Fatalf("unknown host must be untouched and unreported: %s %#v %#v", got, outcome.Changes, outcome.Unresolved)
+	}
+}
+
+// No same-named lakehouse in the target: the value stays, and the leftover scan
+// (not this pass) reports it exactly once.
+func TestRebindHostParameterNotInTargetLeavesLeftover(t *testing.T) {
+	rb := &Rebinder{
+		baseline: idx(IndexedItem{Name: "LH_OnlyDev", Type: "Lakehouse", GUID: gLHDev, WorkspaceID: gWSDev}),
+		target:   idx(), overrides: map[string]Override{},
+		wsMap: map[string]string{}, wsAmbiguous: map[string]bool{}, baselineWSNames: map[string]string{},
+		client: &fakeFabric{sqlByLH: map[string][2]string{gLHDev: {paramDevHost, "ep-dev"}}},
+	}
+	in := paramExpressions(paramDevHost)
+	got, outcome := substituteParamModel(t, rb, in)
+	if got != in || len(outcome.Changes) != 0 {
+		t.Fatalf("host with no target lakehouse must be left untouched: %s %#v", got, outcome.Changes)
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Location != LocationLeftover || outcome.Unresolved[0].GUID != paramDevHost {
+		t.Fatalf("want one leftover warning for the host: %#v", outcome.Unresolved)
+	}
+}
+
+func TestRebindHostParameterIdempotent(t *testing.T) {
+	rb := paramRebinder()
+	once, _ := rb.RebindSemanticModel([]byte(paramExpressions(paramDevHost)))
+	twice, outcome := rb.RebindSemanticModel(once)
+	if string(twice) != string(once) || len(outcome.Changes) != 0 {
+		t.Fatalf("second run must be a no-op: %s %#v", twice, outcome.Changes)
+	}
+}
+
+// Shared endpoint (both envs read the same host): nothing to rewrite.
+func TestRebindHostParameterSharedEndpointUntouched(t *testing.T) {
+	rb := paramRebinder()
+	rb.client = &fakeFabric{sqlByLH: map[string][2]string{
+		gLHDev: {paramDevHost, "ep-dev"},
+		gLHTst: {paramDevHost, "ep-dev"},
+	}}
+	in := paramExpressions(paramDevHost)
+	got, outcome := substituteParamModel(t, rb, in)
+	if got != in || len(outcome.Changes) != 0 || len(outcome.Unresolved) != 0 {
+		t.Fatalf("shared endpoint must be untouched: %s %#v %#v", got, outcome.Changes, outcome.Unresolved)
+	}
+}
+
+// Every lakehouse in a workspace shares one SQL endpoint host, so the host
+// alone can't say which lakehouse a parameter serves. The database name in
+// Sql.Database(SqlEndpoint, "lh_gold"), in the table parts, can. Here
+// LH_Bronze and LH_Gold share the DEV host but have different TEST hosts, so
+// picking the wrong owner would rewrite to the wrong endpoint.
+const (
+	gLHGoldDev  = "c0de0000-1111-4222-8333-777788889999"
+	gLHGoldTst  = "f00d0000-1111-4222-8333-777788889999"
+	goldTstHost = "ccc333-gold.datawarehouse.fabric.microsoft.com"
+)
+
+func sharedHostRebinder(targetGold bool) *Rebinder {
+	rb := pipelineRebinderGUIDs()
+	rb.baseline = idx(
+		IndexedItem{Name: "LH_Bronze", Type: "Lakehouse", GUID: gLHDev, WorkspaceID: gWSDev},
+		IndexedItem{Name: "LH_Gold", Type: "Lakehouse", GUID: gLHGoldDev, WorkspaceID: gWSDev},
+	)
+	tgt := []IndexedItem{{Name: "LH_Bronze", Type: "Lakehouse", GUID: gLHTst, WorkspaceID: gWSTst}}
+	if targetGold {
+		tgt = append(tgt, IndexedItem{Name: "LH_Gold", Type: "Lakehouse", GUID: gLHGoldTst, WorkspaceID: gWSTst})
+	}
+	rb.target = idx(tgt...)
+	rb.client = &fakeFabric{sqlByLH: map[string][2]string{
+		gLHDev:     {paramDevHost, "ep-dev"},
+		gLHGoldDev: {paramDevHost, "ep-gold-dev"},
+		gLHTst:     {paramTstHost, "ep-test"},
+		gLHGoldTst: {goldTstHost, "ep-gold-test"},
+	}}
+	return rb
+}
+
+const goldTable = "table Dato\n\tpartition Dato = m\n\t\tsource =\n\t\t\t\tlet\n\t\t\t\t    Source = Sql.Database(SqlEndpoint, \"lh_gold\")\n\t\t\t\tin\n\t\t\t\t    Source\n"
+
+func substituteSharedHostModel(t *testing.T, rb *Rebinder) (map[string][]byte, RebindOutcome) {
+	t.Helper()
+	item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", Parts: []Part{
+		{Path: "definition/expressions.tmdl", Content: []byte(paramExpressions(paramDevHost))},
+		{Path: "definition/tables/Dato.tmdl", Content: []byte(goldTable)},
+	}}
+	parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parts, outcome
+}
+
+func TestRebindHostParameterUsesDatabaseName(t *testing.T) {
+	parts, outcome := substituteSharedHostModel(t, sharedHostRebinder(true))
+	if got := string(parts["definition/expressions.tmdl"]); got != paramExpressions(goldTstHost) {
+		t.Fatalf("parameter must point at LH_Gold's target endpoint:\n%s", got)
+	}
+	if string(parts["definition/tables/Dato.tmdl"]) != goldTable {
+		t.Fatalf("table part must be untouched:\n%s", parts["definition/tables/Dato.tmdl"])
+	}
+	if len(outcome.Changes) != 1 || outcome.Changes[0] != (RebindChange{Kind: "SQL endpoint", Name: "LH_Gold", Old: paramDevHost, New: goldTstHost}) {
+		t.Fatalf("changes = %#v", outcome.Changes)
+	}
+	if len(outcome.Unresolved) != 0 {
+		t.Fatalf("unresolved = %#v", outcome.Unresolved)
+	}
+}
+
+// The database the parameter serves is missing in the target. Another
+// lakehouse sharing the baseline host does exist there, but its endpoint is
+// not what the model reads, so the value stays and the leftover scan warns.
+func TestRebindHostParameterDatabaseNotInTarget(t *testing.T) {
+	parts, outcome := substituteSharedHostModel(t, sharedHostRebinder(false))
+	if got := string(parts["definition/expressions.tmdl"]); got != paramExpressions(paramDevHost) {
+		t.Fatalf("parameter must stay when its database is missing in the target:\n%s", got)
+	}
+	if len(outcome.Changes) != 0 {
+		t.Fatalf("changes = %#v", outcome.Changes)
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].GUID != paramDevHost {
+		t.Fatalf("want one leftover warning for the host: %#v", outcome.Unresolved)
+	}
+}
+
+// One parameter serving several databases. A parameter holds one host, so it
+// can only be rewritten when every database it serves lands on the same target
+// endpoint (lakehouses in one workspace share it). If the target splits them
+// across endpoints, no single value is right: it stays and the leftover scan
+// warns.
+func TestRebindHostParameterSeveralDatabases(t *testing.T) {
+	const bronzeTable = "table Prosjekt\n\tpartition Prosjekt = m\n\t\tsource = Sql.Database(SqlEndpoint, \"LH_Bronze\")\n"
+	run := func(goldHost string) (string, RebindOutcome) {
+		rb := sharedHostRebinder(true)
+		rb.client.(*fakeFabric).sqlByLH[gLHGoldTst] = [2]string{goldHost, "ep-gold-test"}
+		item := LocalItem{Type: "SemanticModel", DisplayName: "SM_Sales", Parts: []Part{
+			{Path: "definition/expressions.tmdl", Content: []byte(paramExpressions(paramDevHost))},
+			{Path: "definition/tables/Dato.tmdl", Content: []byte(goldTable)},
+			{Path: "definition/tables/Prosjekt.tmdl", Content: []byte(bronzeTable)},
+		}}
+		parts, outcome, err := SubstituteParts(item, map[string]string{}, nil, rb, gWSTst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(parts["definition/expressions.tmdl"]), outcome
+	}
+
+	got, outcome := run(paramTstHost) // both on the same TEST endpoint
+	if got != paramExpressions(paramTstHost) {
+		t.Fatalf("shared target endpoint must be written:\n%s", got)
+	}
+	if len(outcome.Changes) != 1 || outcome.Changes[0].Name != "LH_Bronze, LH_Gold" || len(outcome.Unresolved) != 0 {
+		t.Fatalf("changes = %#v unresolved = %#v", outcome.Changes, outcome.Unresolved)
+	}
+
+	got, outcome = run(goldTstHost) // TEST splits them across endpoints
+	if got != paramExpressions(paramDevHost) || len(outcome.Changes) != 0 {
+		t.Fatalf("split target endpoints must leave the value: %s %#v", got, outcome.Changes)
+	}
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].GUID != paramDevHost {
+		t.Fatalf("want one leftover warning for the host: %#v", outcome.Unresolved)
+	}
+}

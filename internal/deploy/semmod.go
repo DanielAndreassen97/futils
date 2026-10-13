@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -175,14 +176,155 @@ func (rb *Rebinder) rebindSQLSources(s string, out *RebindOutcome) string {
 // RebindSemanticModel rewrites a Direct Lake semantic model part's data-source
 // connection from baseline to target. It handles both on-disk shapes: Direct
 // Lake on OneLake (workspace+lakehouse GUID URL) and Direct Lake on SQL
-// (Sql.Database host+endpoint-id). Only the values inside a matched connection
-// expression are rewritten. Content with neither shape is returned unchanged.
+// (Sql.Database host+endpoint-id), plus a SQL endpoint host held in an M
+// parameter that Sql.Database reads by name. Only the values inside a matched
+// connection expression are rewritten. Content with none of these shapes is
+// returned unchanged.
 func (rb *Rebinder) RebindSemanticModel(content []byte) ([]byte, RebindOutcome) {
+	return rb.rebindSemanticModel(content, nil)
+}
+
+// rebindSemanticModel is RebindSemanticModel with the model's other parts at
+// hand: a parameter lives in expressions.tmdl, but the Sql.Database calls that
+// say which database it serves sit in the table parts.
+func (rb *Rebinder) rebindSemanticModel(content []byte, parts []Part) ([]byte, RebindOutcome) {
 	var out RebindOutcome
 	s := string(content)
 	s = rb.rebindOneLakeSources(s, &out)
 	s = rb.rebindSQLSources(s, &out)
+	s = rb.rebindHostParameters(s, &out, parts)
 	return []byte(s), out
+}
+
+// paramExprRe matches a single-line TMDL M parameter expression, capturing its
+// name, its string-literal value and its meta record:
+// expression SqlEndpoint = "<host>" meta [IsParameterQuery=true, ...]
+// Anchored at line start, so /// descriptions and // comments that mention the
+// same text never match.
+var paramExprRe = regexp.MustCompile(`(?m)^[ \t]*expression[ \t]+('(?:[^']|'')*'|[^\s=]+)[ \t]*=[ \t]*"([^"]*)"[ \t]*meta[ \t]*\[([^\]]*)\]`)
+
+// isParamQueryRe tells an M parameter's meta record from any other meta.
+var isParamQueryRe = regexp.MustCompile(`(?i)\bIsParameterQuery\s*=\s*true\b`)
+
+// wholeHostRe is endpointHostRe anchored to the whole value.
+var wholeHostRe = regexp.MustCompile(`^` + endpointHostRe.String() + `$`)
+
+// sqlDbParamRe matches Sql.Database called with an M identifier (a parameter)
+// for the host and a literal database name, capturing both:
+// Sql.Database(SqlEndpoint, "LH_Gold") or Sql.Database(#"Sql Endpoint", "LH_Gold")
+var sqlDbParamRe = regexp.MustCompile(`Sql\.Database\(\s*(#"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*)\s*,\s*"([^"]+)"\s*\)`)
+
+// paramDatabases maps each parameter passed as Sql.Database's host, across all
+// of a model's parts, to the database names it is used with. Names that differ
+// only in case count once, since SQL database names ignore case.
+func paramDatabases(parts []Part) map[string][]string {
+	out := map[string][]string{}
+	seen := map[string]bool{}
+	for _, p := range parts {
+		for _, m := range sqlDbParamRe.FindAllStringSubmatch(string(p.Content), -1) {
+			param := m[1]
+			if strings.HasPrefix(param, "#") {
+				param = strings.ReplaceAll(param[2:len(param)-1], `""`, `"`)
+			}
+			key := param + "\x00" + strings.ToLower(m[2])
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out[param] = append(out[param], m[2])
+		}
+	}
+	for _, dbs := range out {
+		sort.Strings(dbs)
+	}
+	return out
+}
+
+// tmdlName strips TMDL's single-quote quoting from an object name.
+func tmdlName(name string) string {
+	if len(name) >= 2 && strings.HasPrefix(name, "'") && strings.HasSuffix(name, "'") {
+		return strings.ReplaceAll(name[1:len(name)-1], "''", "'")
+	}
+	return name
+}
+
+// targetHostForDatabases maps a baseline SQL endpoint host to the target host
+// of the lakehouses the model reads through it, named by Sql.Database's
+// database argument. Every lakehouse in a workspace shares one endpoint host,
+// so the host alone can't say which lakehouse is meant; the database names
+// can. ok is false when the host isn't a baseline endpoint, a database doesn't
+// resolve in the target, the databases resolve to different target hosts, or
+// the endpoint is shared; the leftover scan then reports what is left. label
+// names the resolved target lakehouses.
+func (rb *Rebinder) targetHostForDatabases(host string, dbs []string) (label, tgtHost string, ok bool) {
+	if _, ok := rb.baselineLakehouseByHost(host); !ok {
+		return "", "", false
+	}
+	var names []string
+	for _, db := range dbs {
+		tgt, found, _ := rb.resolveDBNameReason(db)
+		if !found {
+			return "", "", false
+		}
+		h, _, found := rb.targetEndpointFor(tgt)
+		if !found || (tgtHost != "" && h != tgtHost) {
+			return "", "", false
+		}
+		tgtHost = h
+		names = append(names, tgt.Name)
+	}
+	if tgtHost == host {
+		return "", "", false
+	}
+	return strings.Join(names, ", "), tgtHost, true
+}
+
+// rebindHostParameters rewrites a baseline SQL endpoint host held in an M
+// parameter (IsParameterQuery=true) whose whole value is the host. Tables then
+// read Sql.Database(SqlEndpoint, "LH_Gold"), which rebindSQLSources can't see
+// since the host isn't a literal there. The target host comes from the
+// databases the parameter is used with in parts (targetHostForDatabases); a
+// parameter no Sql.Database call uses falls back to the host's baseline owner,
+// like in a pipeline (targetHostFor). Only the parameter's value span is
+// touched; the same host anywhere else (descriptions, comments, other expressions) is left
+// alone, and an unresolvable host is left for the leftover scan to report.
+func (rb *Rebinder) rebindHostParameters(s string, out *RebindOutcome, parts []Part) string {
+	locs := paramExprRe.FindAllStringSubmatchIndex(s, -1)
+	if locs == nil {
+		return s
+	}
+	var dbsByParam map[string][]string // built on the first candidate only
+	seenChange := map[string]bool{}
+	var b strings.Builder
+	last := 0
+	for _, loc := range locs {
+		valStart, valEnd := loc[4], loc[5]
+		host := s[valStart:valEnd]
+		if !isParamQueryRe.MatchString(s[loc[6]:loc[7]]) || !wholeHostRe.MatchString(host) {
+			continue
+		}
+		if dbsByParam == nil {
+			dbsByParam = paramDatabases(parts)
+		}
+		var label, tgtHost string
+		var ok bool
+		if dbs := dbsByParam[tmdlName(s[loc[2]:loc[3]])]; len(dbs) > 0 {
+			label, tgtHost, ok = rb.targetHostForDatabases(host, dbs)
+		} else {
+			var owner IndexedItem
+			owner, tgtHost, ok = rb.targetHostFor(host)
+			label = owner.Name
+		}
+		if !ok {
+			continue
+		}
+		b.WriteString(s[last:valStart])
+		b.WriteString(tgtHost)
+		last = valEnd
+		recordChangePair(out, seenChange, "SQL endpoint", label, host, tgtHost)
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 // rebindOneLakeSources rewrites every Direct Lake on OneLake source URL in s by

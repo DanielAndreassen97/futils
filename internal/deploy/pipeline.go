@@ -20,8 +20,8 @@ var endpointHostRe = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9-]*\.datawarehouse
 //     (workspaces are named per-env, so items vote — see buildWorkspaceMap)
 //   - baseline item GUIDs, by name like every other pass
 //
-// SQL endpoint hosts are a later task's addition. Anything unrecognized in
-// either loop (unknown GUID, ambiguous workspace, a resolved endpoint owner
+// Bare SQL endpoint hosts rewrite too, via targetHostFor. Anything
+// unrecognized (unknown GUID, ambiguous workspace, a resolved endpoint owner
 // with no same-named lakehouse in the target) is left untouched: the
 // leftover scan — not this pass — owns every unresolved-reference warning,
 // so nothing is double-reported here.
@@ -44,20 +44,32 @@ func (rb *Rebinder) RebindPipeline(content []byte) ([]byte, RebindOutcome) {
 			continue
 		}
 		hostSeen[host] = true
-		owner, ok := rb.baselineLakehouseByHost(host)
-		if !ok {
-			continue // not a baseline endpoint host — leftover scan owns it
+		if owner, tgtHost, ok := rb.targetHostFor(host); ok {
+			recordChangePair(&out, pairSeen, "SQL endpoint", owner.Name, host, tgtHost)
 		}
-		tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
-		if !ok {
-			continue // no same-named lakehouse in the target — leftover scan owns it
-		}
-		tgtHost, _, ok := rb.targetEndpointFor(tgtLake)
-		if !ok || tgtHost == host {
-			continue
-		}
-		recordChangePair(&out, pairSeen, "SQL endpoint", owner.Name, host, tgtHost)
 	}
 
 	return []byte(applyChanges(string(content), out.Changes)), out
+}
+
+// targetHostFor maps a bare baseline SQL endpoint host to the endpoint host of
+// the same-named lakehouse in the target. ok is false whenever there is nothing
+// to rewrite: the host isn't a baseline endpoint, the target has no lakehouse
+// by that name, its endpoint can't be looked up, or both envs share the
+// endpoint. Callers leave the host as-is then and stay silent; the leftover
+// scan owns the warning.
+func (rb *Rebinder) targetHostFor(host string) (owner IndexedItem, tgtHost string, ok bool) {
+	owner, ok = rb.baselineLakehouseByHost(host)
+	if !ok {
+		return IndexedItem{}, "", false
+	}
+	tgtLake, ok := rb.target.ItemByName(owner.Name, "Lakehouse")
+	if !ok {
+		return IndexedItem{}, "", false
+	}
+	tgtHost, _, ok = rb.targetEndpointFor(tgtLake)
+	if !ok || tgtHost == host {
+		return IndexedItem{}, "", false
+	}
+	return owner, tgtHost, true
 }

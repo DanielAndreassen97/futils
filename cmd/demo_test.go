@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DanielAndreassen97/futils/internal/deploy"
 	"github.com/DanielAndreassen97/futils/internal/fabric"
 )
 
@@ -101,5 +102,58 @@ func TestDemoBulkItem(t *testing.T) {
 	content := fabric.DefinitionPart{Path: "/Backend/nb_x.Notebook/notebook-content.py"}
 	if _, _, ok := demoBulkItem(content); ok {
 		t.Fatal("non-.platform parts must not resolve to an item")
+	}
+}
+
+// TestDemoSQLModelsRebindClean runs the deploy's rebind and diff path DEV→TEST
+// on the demo's two Direct Lake on SQL models: the literal Sql.Database form
+// (Finance Model) and the host-in-an-M-parameter form (Budget Model). Both
+// differ between environments only in baked endpoint values, so after
+// rebinding each must compare as Unchanged with no leftover warning. If either
+// rebind regresses, a demo deploy shows a bogus Changed row and a baseline
+// warning instead of the story the demo is meant to tell.
+func TestDemoSQLModelsRebindClean(t *testing.T) {
+	api := newDemoClient()
+	var dev, test []fabric.Workspace
+	for _, ws := range demoWorkspaces() {
+		switch env, _, _ := demoEnvOfWS(ws.ID); env {
+		case "DEV":
+			dev = append(dev, ws)
+		case "TEST":
+			test = append(test, ws)
+		}
+	}
+	rb, err := deploy.NewRebinder(api, "tok", dev, test, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := demoRepoFiles()
+	for _, name := range []string{"Finance Model", "Budget Model"} {
+		prefix := "Frontend/" + name + ".SemanticModel/"
+		item := deploy.LocalItem{Type: "SemanticModel", DisplayName: name}
+		for _, p := range []string{"definition/expressions.tmdl", "definition/model.tmdl"} {
+			item.Parts = append(item.Parts, deploy.Part{Path: p, Content: []byte(repo[prefix+p])})
+		}
+		local, outcome, err := deploy.SubstituteParts(item, map[string]string{}, nil, rb, demoGUID("workspace", demoSemModWS("TEST")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(outcome.Unresolved) != 0 {
+			t.Errorf("%s: unresolved after rebind: %#v", name, outcome.Unresolved)
+		}
+		if len(outcome.Changes) == 0 {
+			t.Errorf("%s: no rebind change recorded", name)
+		}
+		// LH_Bronze and LH_Silver share the demo's endpoint host, so the
+		// change must name the lakehouse the model reads, not either owner.
+		for _, c := range outcome.Changes {
+			if c.Kind == "SQL endpoint" && c.Name != "LH_Silver" {
+				t.Errorf("%s: SQL endpoint change names %q, want LH_Silver", name, c.Name)
+			}
+		}
+		deployed := demoDefinition("TEST", fabric.Item{Type: "SemanticModel", DisplayName: name})
+		if diffs := deploy.DiffParts(local, deployed); len(diffs) != 0 {
+			t.Errorf("%s: compares as Changed after rebind: %#v", name, diffs)
+		}
 	}
 }
