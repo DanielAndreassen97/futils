@@ -216,6 +216,21 @@ func TestMultiSelectFilter_CtrlAToglesVisibleOnly(t *testing.T) {
 	}
 }
 
+// Windows consoles can take ctrl+a as "select all text" before it reaches
+// futils, so alt+a does the same job, and its "a" must not leak into the query.
+func TestMultiSelectFilter_AltATogglesVisible(t *testing.T) {
+	m := newTestModel([]string{"test-a", "test-b", "prod-a"}, nil)
+	m.filter = true
+	m = typeString(m, "test")
+	m = press(m, tea.KeyMsg(tea.Key{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true}))
+	if !m.items[0].checked || !m.items[1].checked || m.items[2].checked {
+		t.Fatalf("alt+a must check only visible rows: %+v", m.items)
+	}
+	if m.query != "test" {
+		t.Errorf("alt+a must not type into the filter: query = %q", m.query)
+	}
+}
+
 func TestMultiSelectFilter_EscClearsQueryThenBacks(t *testing.T) {
 	m := newTestModel([]string{"x"}, nil)
 	m.filter = true

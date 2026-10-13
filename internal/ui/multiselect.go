@@ -45,7 +45,8 @@ type checkboxModel struct {
 	goHome     bool
 	// filter enables the always-on type-to-filter mode: printable keys build a
 	// query, the list narrows to matching rows, and the single-letter shortcuts
-	// (a/j/k/g/G/b/q/m) are unavailable — arrows navigate, ctrl+a bulk-toggles.
+	// (a/j/k/g/G/b/q/m) are unavailable — arrows navigate, ctrl+a or alt+a
+	// bulk-toggles.
 	// The cursor then addresses a position in the FILTERED view, not items.
 	filter bool
 	query  string
@@ -112,7 +113,9 @@ func (m checkboxModel) updateFiltered(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			i := visible[m.cursor]
 			m.items[i].checked = !m.items[i].checked
 		}
-	case "ctrl+a":
+	case "ctrl+a", "alt+a":
+		// alt+a is there for Windows consoles, which take ctrl+a as "select
+		// all text" before it reaches the program.
 		// Toggle the VISIBLE rows only: check all matches, or clear them when
 		// they're already all checked. Bulk-excluded rows stay untouched.
 		allChecked := true
@@ -320,7 +323,7 @@ func (m checkboxModel) View() string {
 // earlier queries stay visible even when their rows are filtered out.
 func (m checkboxModel) viewFiltered() string {
 	var b strings.Builder
-	hint := "type to filter • space toggle • ctrl+a select visible • enter confirm • esc clear/back • ↑↓ navigate"
+	hint := "type to filter • space toggle • ctrl+a/alt+a select visible • enter confirm • esc clear/back • ↑↓ navigate"
 	fmt.Fprintf(&b, "  %s\n", m.title)
 	fmt.Fprintf(&b, "  %s\n", checkboxHintStyle.Render(hint))
 
@@ -431,7 +434,7 @@ func runCheckbox(model checkboxModel) (checkboxModel, error) {
 //	alt+↑/↓ pgup/pgdown   jump 5 rows
 //	home/end       first / last
 //	space          toggle cursor row
-//	ctrl+a         select all visible (or clear them if already all checked)
+//	ctrl+a, alt+a  select all visible (or clear them if already all checked)
 //	enter          confirm • esc clear filter, then go back • ctrl+c quit
 //
 // Returns ErrGoBack on esc, ErrQuit on ctrl+c.
