@@ -381,12 +381,13 @@ func phases(m map[string]int) func(string) int {
 	}
 }
 
-// Sequential mode is today's behaviour: one run per step, in list order —
-// except that phases, when set, still order the runs.
+// Sequential mode is the behaviour from before phases existed: one run per
+// step, in list order. Run order left over from parallel mode must not reorder
+// it, since sequential mode neither shows nor edits run order.
 func TestPlanPostDeploySequential(t *testing.T) {
 	runs := []postDeployRun{nb("A", "ws"), nb("B", "ws"), nb("C", "ws")}
 	got := stepShape(planPostDeploySteps(runs, phases(map[string]int{"A": 2}), false, "t"))
-	want := []string{":B", ":C", ":A"}
+	want := []string{":A", ":B", ":C"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("plan = %v, want %v", got, want)
 	}

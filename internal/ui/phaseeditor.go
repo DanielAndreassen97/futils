@@ -31,8 +31,10 @@ func newPhaseEditorModel(title string, names []string, phases []int) phaseEditor
 	p := make([]int, len(names))
 	for i := range p {
 		p[i] = 1
-		if i < len(phases) && phases[i] >= 1 && phases[i] <= maxPhase {
-			p[i] = phases[i]
+		if i < len(phases) && phases[i] > 1 {
+			// A hand-edited phase above the editor's range keeps its place
+			// at the end instead of jumping to the front.
+			p[i] = min(phases[i], maxPhase)
 		}
 	}
 	return phaseEditorModel{title: title, names: names, phases: p}

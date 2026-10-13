@@ -736,3 +736,16 @@ func TestDeployTogglesRoundTrip(t *testing.T) {
 		t.Fatalf("toggles dropped on load: %+v", c)
 	}
 }
+
+// A run order whose run is no longer registered is dropped on load, so it
+// can't silently re-attach if a run of that name is registered again later.
+func TestLoadDropsOrphanedRunOrder(t *testing.T) {
+	var c Customer
+	raw := `{"post_deploy_runs":["NB_A"],"post_deploy_run_order":{"NB_A":2,"NB_Gone":3}}`
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.PostDeployPhases, map[string]int{"NB_A": 2}) {
+		t.Fatalf("phases = %v, want only NB_A", c.PostDeployPhases)
+	}
+}

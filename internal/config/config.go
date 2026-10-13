@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -299,6 +300,14 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.DeployHistoryPath = aux.DeployHistoryPath
 	c.PostDeployRuns = aux.PostDeployRuns
 	c.PostDeployPhases = aux.PostDeployPhases
+	// A run order belongs to a registered run. One left behind by a path that
+	// dropped the run without its order would quietly re-attach if a run of
+	// that name were registered again, so it is dropped here.
+	for name := range c.PostDeployPhases {
+		if !slices.Contains(c.PostDeployRuns, name) {
+			delete(c.PostDeployPhases, name)
+		}
+	}
 	c.ParallelPostDeploy = aux.ParallelPostDeploy
 	c.SkipSchedules = aux.SkipSchedules
 	c.UseBulkDeploy = aux.UseBulkDeploy

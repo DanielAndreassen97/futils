@@ -83,9 +83,10 @@ type postDeployStep struct {
 // session; a sixth with the same tag would start a second session anyway.
 const maxHCGroupSize = 5
 
-// planPostDeploySteps orders runs by phase (stable, so list order breaks ties)
-// and cuts them into steps. Sequential: one run per step, as before phases
-// existed. Parallel: per phase and per workspace (a session cannot span
+// planPostDeploySteps cuts runs into steps. Sequential: one run per step in
+// list order, exactly as before phases existed; run order is a parallel-mode
+// setting and is neither shown nor applied here. Parallel: runs are ordered by
+// phase (stable, so list order breaks ties), then per phase and per workspace (a session cannot span
 // workspaces), notebooks are split into balanced groups of at most
 // maxHCGroupSize — balanced so 11 becomes 4+4+3 rather than leaving a lone
 // fifth-session notebook. A group of two or more shares one tag; a group of
@@ -93,16 +94,16 @@ const maxHCGroupSize = 5
 // Pipelines cannot share a session and run one at a time after the phase's
 // notebooks. tagPrefix must itself be a valid session tag.
 func planPostDeploySteps(runs []postDeployRun, phaseOf func(name string) int, parallel bool, tagPrefix string) []postDeployStep {
-	sorted := slices.Clone(runs)
-	slices.SortStableFunc(sorted, func(a, b postDeployRun) int { return phaseOf(a.Name) - phaseOf(b.Name) })
-
 	var steps []postDeployStep
 	if !parallel {
-		for _, r := range sorted {
-			steps = append(steps, postDeployStep{Phase: phaseOf(r.Name), Runs: []postDeployRun{r}})
+		for _, r := range runs {
+			steps = append(steps, postDeployStep{Phase: 1, Runs: []postDeployRun{r}})
 		}
 		return steps
 	}
+
+	sorted := slices.Clone(runs)
+	slices.SortStableFunc(sorted, func(a, b postDeployRun) int { return phaseOf(a.Name) - phaseOf(b.Name) })
 
 	for start := 0; start < len(sorted); {
 		phase := phaseOf(sorted[start].Name)

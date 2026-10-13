@@ -1188,18 +1188,7 @@ func RunNotebookHC(token, workspaceID, itemID, sessionTag string) (string, error
 		return "", fmt.Errorf("marshal run body: %w", err)
 	}
 	url := fmt.Sprintf("%s/v1/workspaces/%s/notebooks/%s/jobs/execute/instances?beta=false", baseURL, workspaceID, itemID)
-	resp, respBody, err := doPost(token, url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != 202 {
-		return "", fmt.Errorf("run notebook (high concurrency) %d: %s", resp.StatusCode, string(respBody))
-	}
-	loc := resp.Header.Get("Location")
-	if loc == "" {
-		return "", fmt.Errorf("run notebook (high concurrency): 202 missing Location header")
-	}
-	return loc, nil
+	return postJobInstance(token, url, "run notebook (high concurrency)", bytes.NewReader(payload))
 }
 
 // RunPipeline submits a data-pipeline job (jobType=Pipeline) and returns the
@@ -1240,16 +1229,22 @@ func submitJobInstance(token, workspaceID, itemID, jobType string, body io.Reade
 	}
 	url := fmt.Sprintf("%s/v1/workspaces/%s/items/%s/jobs/instances?jobType=%s",
 		baseURL, workspaceID, itemID, jobType)
+	return postJobInstance(token, url, "run "+jobType, body)
+}
+
+// postJobInstance posts a job submission to url and returns the job-instance
+// URL from the 202's Location header. label prefixes its errors.
+func postJobInstance(token, url, label string, body io.Reader) (string, error) {
 	resp, respBody, err := doPost(token, url, body)
 	if err != nil {
 		return "", err
 	}
 	if resp.StatusCode != 202 {
-		return "", fmt.Errorf("run %s %d: %s", jobType, resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("%s %d: %s", label, resp.StatusCode, string(respBody))
 	}
 	loc := resp.Header.Get("Location")
 	if loc == "" {
-		return "", fmt.Errorf("run %s: 202 missing Location header", jobType)
+		return "", fmt.Errorf("%s: 202 missing Location header", label)
 	}
 	return loc, nil
 }

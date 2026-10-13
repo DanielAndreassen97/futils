@@ -1425,12 +1425,12 @@ func editPostDeployRuns(configPath, customerName string) error {
 		return nil
 	}
 	assigned, err := assignPostDeployPhases(&customer)
-	if err != nil {
-		return err
-	}
-	if !assigned {
+	if errors.Is(err, ui.ErrGoBack) || (err == nil && !assigned) {
 		fmt.Println(infoStyle.Render("Saved post-deploy runs; run order left unchanged."))
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 		return fmt.Errorf("save post-deploy run order: %w", err)
@@ -1438,6 +1438,12 @@ func editPostDeployRuns(configPath, customerName string) error {
 	fmt.Println(infoStyle.Render("Saved post-deploy runs and run order."))
 	return nil
 }
+
+// Seams for the post-deploy mode and run-order prompts, swapped in tests.
+var (
+	postDeployModePicker  = ui.NumberMenu
+	postDeployPhaseEditor = ui.PhaseEditor
+)
 
 // togglePostDeployMode switches post-deploy runs between sequential and
 // parallel. Turning parallel on goes straight on to the phase editor, since
@@ -1457,7 +1463,7 @@ func togglePostDeployMode(configPath, customerName string) error {
 		}
 		return ""
 	}
-	chosen, err := ui.NumberMenu("How should post-deploy runs execute?", []ui.MenuOption{
+	chosen, err := postDeployModePicker("How should post-deploy runs execute?", []ui.MenuOption{
 		{Label: "Sequential" + current(false), Value: "sequential",
 			Description: "One job after another, each in its own Spark session. Always safe."},
 		{Label: "Parallel" + current(true), Value: "parallel",
@@ -1468,7 +1474,13 @@ func togglePostDeployMode(configPath, customerName string) error {
 	}
 	customer.ParallelPostDeploy = chosen == "parallel"
 	if customer.ParallelPostDeploy {
+		// Parallel without a run order runs every notebook at once, so
+		// backing out of the editor backs out of the switch too.
 		if _, err := assignPostDeployPhases(&customer); err != nil {
+			if errors.Is(err, ui.ErrGoBack) {
+				fmt.Println(infoStyle.Render("Post-deploy mode left unchanged."))
+				return nil
+			}
 			return err
 		}
 	}
@@ -1486,7 +1498,7 @@ func togglePostDeployMode(configPath, customerName string) error {
 // assignPostDeployPhases opens the phase editor over the customer's
 // registered runs and stores the result on customer (not saved). It reports
 // false, with the phases untouched, when there are fewer than two runs to
-// order or the editor was left with esc.
+// order; esc returns ui.ErrGoBack, also leaving them untouched.
 func assignPostDeployPhases(customer *config.Customer) (bool, error) {
 	if len(customer.PostDeployRuns) < 2 {
 		return false, nil
@@ -1495,10 +1507,7 @@ func assignPostDeployPhases(customer *config.Customer) (bool, error) {
 	for i, name := range customer.PostDeployRuns {
 		current[i] = customer.PostDeployPhase(name)
 	}
-	edited, err := ui.PhaseEditor("Post-deploy run order: same number = runs together, lower numbers first", customer.PostDeployRuns, current)
-	if errors.Is(err, ui.ErrGoBack) {
-		return false, nil
-	}
+	edited, err := postDeployPhaseEditor("Post-deploy run order: same number = runs together, lower numbers first", customer.PostDeployRuns, current)
 	if err != nil {
 		return false, err
 	}

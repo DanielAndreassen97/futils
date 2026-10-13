@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
+	"github.com/DanielAndreassen97/futils/internal/ui"
 )
 
 func TestRemoveOverride(t *testing.T) {
@@ -145,5 +147,44 @@ func TestCompactPhases(t *testing.T) {
 	// Everything in one phase, whatever its number, stores nothing.
 	if got := compactPhases([]string{"A", "B"}, []int{4, 4}); got != nil {
 		t.Fatalf("single phase = %v, want nil", got)
+	}
+}
+
+// Switching post-deploy runs to parallel opens the run-order editor. Backing
+// out of it must back out of the switch: parallel with no run order runs every
+// notebook at once, including ones that depend on each other.
+func TestTogglePostDeployModeEscKeepsSequential(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Config{Customers: map[string]config.Customer{
+		"Fabrikam": {PostDeployRuns: []string{"NB_Config", "NB_Load_A", "NB_Load_B"}},
+	}}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	origPick, origEdit := postDeployModePicker, postDeployPhaseEditor
+	t.Cleanup(func() { postDeployModePicker, postDeployPhaseEditor = origPick, origEdit })
+	postDeployModePicker = func(string, []ui.MenuOption) (string, error) { return "parallel", nil }
+
+	postDeployPhaseEditor = func(string, []string, []int) ([]int, error) { return nil, ui.ErrGoBack }
+	captureStdout(t, func() {
+		if err := togglePostDeployMode(path, "Fabrikam"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	got, _ := config.Load(path)
+	if c := got.Customers["Fabrikam"]; c.ParallelPostDeploy {
+		t.Fatalf("esc in the run-order editor must leave the mode sequential: %+v", c)
+	}
+
+	postDeployPhaseEditor = func(string, []string, []int) ([]int, error) { return []int{1, 2, 2}, nil }
+	captureStdout(t, func() {
+		if err := togglePostDeployMode(path, "Fabrikam"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	got, _ = config.Load(path)
+	c := got.Customers["Fabrikam"]
+	if !c.ParallelPostDeploy || c.PostDeployPhase("NB_Load_A") != 2 || c.PostDeployPhase("NB_Config") != 1 {
+		t.Fatalf("confirmed editor must save parallel with its run order: %+v", c)
 	}
 }

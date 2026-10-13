@@ -78,3 +78,12 @@ func TestPhaseEditorViewListsEveryRowWithItsPhase(t *testing.T) {
 		}
 	}
 }
+
+// A run order above the editor's 1-9 range (hand-edited config) stays last
+// instead of being reset to 1, which would run it first.
+func TestPhaseEditorCapsHighPhase(t *testing.T) {
+	m := newPhaseEditorModel("t", []string{"NB_Config", "NB_Smoke"}, []int{1, 12})
+	if m.phases[1] != maxPhase {
+		t.Fatalf("phase 12 = %d in the editor, want %d", m.phases[1], maxPhase)
+	}
+}
