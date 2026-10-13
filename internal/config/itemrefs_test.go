@@ -196,3 +196,29 @@ func TestRemoveItemRefsCountsABothMatchOnce(t *testing.T) {
 		t.Error("the substitution should have been dropped")
 	}
 }
+
+// A phase belongs to its post-deploy run: renaming the item must carry the
+// phase along, and removing it must not leave an orphan phase behind. Neither
+// counts as an extra reference.
+func TestItemRefsCarryPostDeployPhase(t *testing.T) {
+	cfg := itemRefFixture()
+	fab := cfg.Customers["Fabrikam"]
+	fab.PostDeployPhases = map[string]int{"nb_ingest": 2, "PL_refresh": 3}
+	cfg.Customers["Fabrikam"] = fab
+
+	if n := RenameItemRefs(&cfg, "nb_ingest", "nb_ingest_customers"); n != 6 {
+		t.Errorf("renamed %d, want 6", n)
+	}
+	want := map[string]int{"nb_ingest_customers": 2, "PL_refresh": 3}
+	if got := cfg.Customers["Fabrikam"].PostDeployPhases; !reflect.DeepEqual(got, want) {
+		t.Errorf("after rename phases = %v, want %v", got, want)
+	}
+
+	if n := RemoveItemRefs(&cfg, "nb_ingest_customers"); n != 6 {
+		t.Errorf("removed %d, want 6", n)
+	}
+	want = map[string]int{"PL_refresh": 3}
+	if got := cfg.Customers["Fabrikam"].PostDeployPhases; !reflect.DeepEqual(got, want) {
+		t.Errorf("after remove phases = %v, want %v", got, want)
+	}
+}

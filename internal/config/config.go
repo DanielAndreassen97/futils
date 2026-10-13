@@ -100,6 +100,16 @@ type Customer struct {
 	// a successful deploy. Only those actually deployed (created/updated) in a
 	// run are offered. List order = run order.
 	PostDeployRuns []string `json:"post_deploy_runs,omitempty"`
+	// PostDeployPhases assigns a post-deploy run to a phase: phases run in
+	// ascending order, and with ParallelPostDeploy the runs inside one phase
+	// run concurrently. A run without an entry is phase 1; only phases above 1
+	// are stored.
+	PostDeployPhases map[string]int `json:"post_deploy_phases,omitempty"`
+	// ParallelPostDeploy runs each phase's notebooks concurrently in a shared
+	// high-concurrency Spark session (groups of at most five). Only safe when
+	// the notebooks tolerate running at the same time. Default false = one
+	// run after another, exactly as before.
+	ParallelPostDeploy bool `json:"parallel_post_deploy,omitempty"`
 	// SkipSchedules excludes .schedules definition parts from compare and
 	// deploy, so schedules configured directly in a target environment (e.g.
 	// pipelines scheduled in TEST/PROD but not in DEV) survive a deploy.
@@ -270,6 +280,8 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		ExcludedItemTypes   []string            `json:"excluded_item_types,omitempty"`
 		DeployHistoryPath   string              `json:"deploy_history_path,omitempty"`
 		PostDeployRuns      []string            `json:"post_deploy_runs,omitempty"`
+		PostDeployPhases    map[string]int      `json:"post_deploy_phases,omitempty"`
+		ParallelPostDeploy  bool                `json:"parallel_post_deploy,omitempty"`
 		SkipSchedules       bool                `json:"skip_schedules,omitempty"`
 		UseBulkDeploy       bool                `json:"use_bulk_deploy,omitempty"`
 	}{}
@@ -286,6 +298,8 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.ExcludedItemTypes = aux.ExcludedItemTypes
 	c.DeployHistoryPath = aux.DeployHistoryPath
 	c.PostDeployRuns = aux.PostDeployRuns
+	c.PostDeployPhases = aux.PostDeployPhases
+	c.ParallelPostDeploy = aux.ParallelPostDeploy
 	c.SkipSchedules = aux.SkipSchedules
 	c.UseBulkDeploy = aux.UseBulkDeploy
 
@@ -466,4 +480,13 @@ func SetFavorites(path string, name string, favorites []NotebookFavorite) error 
 	customer.Favorites = favorites
 	cfg.Customers[name] = customer
 	return Save(path, cfg)
+}
+
+// PostDeployPhase returns the phase of a registered post-deploy run: its
+// stored phase, or 1 when it has none (or a nonsensical one below 1).
+func (c Customer) PostDeployPhase(name string) int {
+	if p := c.PostDeployPhases[name]; p > 1 {
+		return p
+	}
+	return 1
 }

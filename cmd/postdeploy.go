@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -67,10 +70,103 @@ func postDeployCandidates(registered []string, results []deploy.Result, wsNames 
 	return runs
 }
 
+// postDeployStep is one unit the runner submits and waits for before moving
+// on: a single run, or a group of notebooks submitted together that share a
+// high-concurrency Spark session through SessionTag.
+type postDeployStep struct {
+	Phase      int
+	Runs       []postDeployRun
+	SessionTag string // empty = one run on the regular endpoint
+}
+
+// maxHCGroupSize is how many notebooks Fabric packs into one high-concurrency
+// session; a sixth with the same tag would start a second session anyway.
+const maxHCGroupSize = 5
+
+// planPostDeploySteps orders runs by phase (stable, so list order breaks ties)
+// and cuts them into steps. Sequential: one run per step, as before phases
+// existed. Parallel: per phase and per workspace (a session cannot span
+// workspaces), notebooks are split into balanced groups of at most
+// maxHCGroupSize — balanced so 11 becomes 4+4+3 rather than leaving a lone
+// fifth-session notebook. A group of two or more shares one tag; a group of
+// one runs untagged, since high concurrency only pays off when runs overlap.
+// Pipelines cannot share a session and run one at a time after the phase's
+// notebooks. tagPrefix must itself be a valid session tag.
+func planPostDeploySteps(runs []postDeployRun, phaseOf func(name string) int, parallel bool, tagPrefix string) []postDeployStep {
+	sorted := slices.Clone(runs)
+	slices.SortStableFunc(sorted, func(a, b postDeployRun) int { return phaseOf(a.Name) - phaseOf(b.Name) })
+
+	var steps []postDeployStep
+	if !parallel {
+		for _, r := range sorted {
+			steps = append(steps, postDeployStep{Phase: phaseOf(r.Name), Runs: []postDeployRun{r}})
+		}
+		return steps
+	}
+
+	for start := 0; start < len(sorted); {
+		phase := phaseOf(sorted[start].Name)
+		end := start
+		for end < len(sorted) && phaseOf(sorted[end].Name) == phase {
+			end++
+		}
+		var wsOrder []string
+		notebooks := map[string][]postDeployRun{}
+		var pipelines []postDeployRun
+		for _, r := range sorted[start:end] {
+			if r.Type == "DataPipeline" {
+				pipelines = append(pipelines, r)
+				continue
+			}
+			if _, seen := notebooks[r.WorkspaceID]; !seen {
+				wsOrder = append(wsOrder, r.WorkspaceID)
+			}
+			notebooks[r.WorkspaceID] = append(notebooks[r.WorkspaceID], r)
+		}
+		group := 0
+		for _, ws := range wsOrder {
+			for _, g := range balancedGroups(notebooks[ws], maxHCGroupSize) {
+				step := postDeployStep{Phase: phase, Runs: g}
+				if len(g) > 1 {
+					group++
+					step.SessionTag = fmt.Sprintf("%s_p%dg%d", tagPrefix, phase, group)
+				}
+				steps = append(steps, step)
+			}
+		}
+		for _, p := range pipelines {
+			steps = append(steps, postDeployStep{Phase: phase, Runs: []postDeployRun{p}})
+		}
+		start = end
+	}
+	return steps
+}
+
+// balancedGroups splits runs into the fewest groups of at most size, as
+// evenly as possible, keeping order: 11 at size 5 -> 4, 4, 3.
+func balancedGroups(runs []postDeployRun, size int) [][]postDeployRun {
+	if len(runs) == 0 {
+		return nil
+	}
+	n := (len(runs) + size - 1) / size
+	base, extra := len(runs)/n, len(runs)%n
+	groups := make([][]postDeployRun, 0, n)
+	for i, at := 0, 0; i < n; i++ {
+		k := base
+		if i < extra {
+			k++
+		}
+		groups = append(groups, runs[at:at+k])
+		at += k
+	}
+	return groups
+}
+
 // jobRunner is the narrow slice of APIClient the post-deploy runner needs —
 // kept small so tests can fake it without stubbing the full client.
 type jobRunner interface {
 	RunNotebook(token, workspaceID, itemID string, inputs []fabric.JobInput, lakehouse *fabric.DefaultLakehouse) (string, error)
+	RunNotebookHC(token, workspaceID, itemID, sessionTag string) (string, error)
 	RunPipeline(token, workspaceID, itemID string, params map[string]any) (string, error)
 	GetJobInstance(token, instanceURL string) (fabric.JobInstanceStatus, error)
 }
@@ -91,60 +187,129 @@ type postDeployOutcome struct {
 // earlier run in the sequence failed.
 const postDeployStatusSkipped = "Skipped"
 
-// runPostDeployRuns executes runs sequentially — each notebook job is
-// submitted only after the previous one reached a terminal state — and stops
-// at the first failure; the remainder are marked Skipped. started/finished
-// are optional UI hooks (nil = silent); the runner itself never prints.
+// runPostDeployRuns executes runs sequentially — each job is submitted only
+// after the previous one reached a terminal state — and stops at the first
+// failure; the remainder are marked Skipped. It is runPostDeploySteps with one
+// run per step. started/finished are optional UI hooks (nil = silent); the
+// runner itself never prints.
 func runPostDeployRuns(client jobRunner, token string, runs []postDeployRun, started func(i, n int, r postDeployRun), finished func(o postDeployOutcome)) []postDeployOutcome {
-	outcomes := make([]postDeployOutcome, 0, len(runs))
-	failedName := ""
+	steps := make([]postDeployStep, len(runs))
 	for i, r := range runs {
+		steps[i] = postDeployStep{Phase: 1, Runs: []postDeployRun{r}}
+	}
+	var onStart func(i, n int, s postDeployStep)
+	if started != nil {
+		onStart = func(i, n int, s postDeployStep) { started(i, n, s.Runs[0]) }
+	}
+	return runPostDeploySteps(client, token, steps, onStart, finished)
+}
+
+// runPostDeploySteps executes steps one after another. The runs inside a step
+// are submitted together and polled concurrently, so a tagged group lands in
+// one shared Spark session; the step ends when every run in it is terminal.
+// A started step always finishes, but once any run has failed every later
+// step is marked Skipped without being submitted. Outcomes come back in plan
+// order; finished fires as each run completes (serialised, so hooks may
+// print), and once per skipped run.
+func runPostDeploySteps(client jobRunner, token string, steps []postDeployStep, started func(i, n int, s postDeployStep), finished func(o postDeployOutcome)) []postDeployOutcome {
+	var outcomes []postDeployOutcome
+	failedName := ""
+	for i, step := range steps {
 		if failedName != "" {
-			o := postDeployOutcome{Run: r, Status: postDeployStatusSkipped, SkippedAfter: failedName}
-			if finished != nil {
-				finished(o)
+			for _, r := range step.Runs {
+				o := postDeployOutcome{Run: r, Status: postDeployStatusSkipped, SkippedAfter: failedName}
+				if finished != nil {
+					finished(o)
+				}
+				outcomes = append(outcomes, o)
 			}
-			outcomes = append(outcomes, o)
 			continue
 		}
 		if started != nil {
-			started(i, len(runs), r)
+			started(i, len(steps), step)
 		}
-		begin := time.Now()
-		o := postDeployOutcome{Run: r}
-		var instanceURL string
-		var err error
-		if r.Type == "DataPipeline" {
-			instanceURL, err = client.RunPipeline(token, r.WorkspaceID, r.ItemID, nil)
-		} else {
-			instanceURL, err = client.RunNotebook(token, r.WorkspaceID, r.ItemID, nil, nil)
-		}
-		if err != nil {
-			o.Status, o.Err = fabric.JobStatusFailed, fmt.Errorf("submit job: %w", err)
-		} else {
-			status, perr := pollJob(client, token, instanceURL)
-			o.Status = status.Status
-			switch {
-			case perr != nil:
-				o.Status, o.Err = fabric.JobStatusFailed, perr
-			case status.Status != fabric.JobStatusCompleted:
-				if status.FailureReason != nil {
-					o.Err = fmt.Errorf("job %s: %v", status.Status, status.FailureReason)
-				} else {
-					o.Err = fmt.Errorf("job %s", status.Status)
+		results := make([]postDeployOutcome, len(step.Runs))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for k, r := range step.Runs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				o := runPostDeployJob(client, token, r, step.SessionTag)
+				mu.Lock()
+				defer mu.Unlock()
+				results[k] = o
+				if finished != nil {
+					finished(o)
 				}
+			}()
+		}
+		wg.Wait()
+		for _, o := range results {
+			if o.Err != nil && failedName == "" {
+				failedName = o.Run.Name
 			}
 		}
-		o.Duration = time.Since(begin).Round(time.Second)
-		if o.Err != nil {
-			failedName = r.Name
-		}
-		if finished != nil {
-			finished(o)
-		}
-		outcomes = append(outcomes, o)
+		outcomes = append(outcomes, results...)
 	}
 	return outcomes
+}
+
+// runPostDeployJob submits one run through the API that fits it — pipeline
+// job, high-concurrency notebook job when tagged, plain notebook job
+// otherwise — and polls it to a terminal state.
+func runPostDeployJob(client jobRunner, token string, r postDeployRun, sessionTag string) postDeployOutcome {
+	begin := time.Now()
+	o := postDeployOutcome{Run: r}
+	var instanceURL string
+	var err error
+	switch {
+	case r.Type == "DataPipeline":
+		instanceURL, err = client.RunPipeline(token, r.WorkspaceID, r.ItemID, nil)
+	case sessionTag != "":
+		instanceURL, err = client.RunNotebookHC(token, r.WorkspaceID, r.ItemID, sessionTag)
+	default:
+		instanceURL, err = client.RunNotebook(token, r.WorkspaceID, r.ItemID, nil, nil)
+	}
+	if err != nil {
+		o.Status, o.Err = fabric.JobStatusFailed, fmt.Errorf("submit job: %w", err)
+	} else {
+		status, perr := pollJob(client, token, instanceURL)
+		o.Status = status.Status
+		switch {
+		case perr != nil:
+			o.Status, o.Err = fabric.JobStatusFailed, perr
+		case status.Status != fabric.JobStatusCompleted:
+			if status.FailureReason != nil {
+				o.Err = fmt.Errorf("job %s: %v", status.Status, status.FailureReason)
+			} else {
+				o.Err = fmt.Errorf("job %s", status.Status)
+			}
+		}
+	}
+	o.Duration = time.Since(begin).Round(time.Second)
+	return o
+}
+
+// printPostDeployPlan shows a parallel plan before the confirm: one line per
+// step, so it is clear which notebooks will share a Spark session.
+func printPostDeployPlan(steps []postDeployStep) {
+	fmt.Println()
+	fmt.Println(infoStyle.Render("Post-deploy plan (parallel):"))
+	for i, s := range steps {
+		names := make([]string, len(s.Runs))
+		for k, r := range s.Runs {
+			names[k] = r.Name
+		}
+		kind := "alone"
+		if s.SessionTag != "" {
+			kind = fmt.Sprintf("together, shared Spark session (%d)", len(s.Runs))
+		} else if s.Runs[0].Type == "DataPipeline" {
+			kind = "alone, pipeline"
+		}
+		fmt.Printf("  %d. %s  %s\n", i+1, postDeployDimStyle.Render(fmt.Sprintf("phase %d · %s", s.Phase, kind)), strings.Join(names, ", "))
+	}
+	fmt.Println()
 }
 
 // postDeployDimStyle renders skipped-run lines muted, matching the hints.
@@ -161,8 +326,10 @@ func distinctWorkspaces(runs []postDeployRun) int {
 }
 
 // buildPostDeployPickItems renders candidates as pre-checked picker rows.
-// A workspace suffix is added only when the runs span >1 workspace.
-func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
+// A workspace suffix is added only when the runs span >1 workspace. phaseOf,
+// when non-nil (parallel mode), prefixes each row with its phase so the
+// picker shows what runs together.
+func buildPostDeployPickItems(runs []postDeployRun, phaseOf func(string) int) []ui.CheckItem {
 	if len(runs) == 0 {
 		return nil
 	}
@@ -170,6 +337,9 @@ func buildPostDeployPickItems(runs []postDeployRun) []ui.CheckItem {
 	items := make([]ui.CheckItem, len(runs))
 	for i, r := range runs {
 		label := r.Name
+		if phaseOf != nil {
+			label = fmt.Sprintf("[P%d] %s", phaseOf(r.Name), label)
+		}
 		if r.Type == "DataPipeline" {
 			label += "  [pipeline]"
 		}
@@ -197,7 +367,9 @@ func postDeployPickerTitle(runs []postDeployRun) string {
 
 // offerPostDeployRuns is the deploy-flow tail for post-deploy runs: intersect
 // the customer's registered notebooks with this run's successful deploys,
-// offer the (pre-checked) intersection, and run the picked ones sequentially.
+// offer the (pre-checked) intersection, and run the picked ones — one after
+// another, or in phases of shared-session groups when the customer has
+// parallel post-deploy on.
 // Everything here is best-effort — a declined picker, esc, or run failures
 // never fail the deploy itself. Returns the outcomes for the history report
 // (nil when nothing ran).
@@ -219,7 +391,11 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 		return nil
 	}
 
-	checked, err := ui.MultiSelectRich(postDeployPickerTitle(runs), buildPostDeployPickItems(runs))
+	var pickPhase func(string) int
+	if customer.ParallelPostDeploy {
+		pickPhase = customer.PostDeployPhase
+	}
+	checked, err := ui.MultiSelectRich(postDeployPickerTitle(runs), buildPostDeployPickItems(runs, pickPhase))
 	if err != nil {
 		return skip() // esc / quit
 	}
@@ -230,14 +406,32 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 	for i, k := range checked {
 		picked[i] = runs[k]
 	}
-	if ok, cerr := ui.Confirm(fmt.Sprintf("Run %d job(s)?", len(picked))); cerr != nil || !ok {
+	tagPrefix := fmt.Sprintf("futils_postdeploy_%d", time.Now().Unix())
+	steps := planPostDeploySteps(picked, customer.PostDeployPhase, customer.ParallelPostDeploy, tagPrefix)
+
+	question := fmt.Sprintf("Run %d job(s) one after another?", len(picked))
+	if customer.ParallelPostDeploy {
+		printPostDeployPlan(steps)
+		question = fmt.Sprintf("Run %d job(s) in %d step(s)?", len(picked), len(steps))
+	}
+	if ok, cerr := ui.Confirm(question); cerr != nil || !ok {
 		return skip()
 	}
 
+	// remaining counts the current step's runs still in flight, so the spinner
+	// keeps going between the completions of a parallel group.
 	var sp *ui.Spinner
-	outcomes := runPostDeployRuns(client, token, picked,
-		func(i, n int, r postDeployRun) {
-			sp = ui.NewSpinner(fmt.Sprintf("Running %d/%d: %s", i+1, n, r.Name))
+	var stepLabel string
+	remaining := 0
+	outcomes := runPostDeploySteps(client, token, steps,
+		func(i, n int, s postDeployStep) {
+			remaining = len(s.Runs)
+			if len(s.Runs) == 1 {
+				stepLabel = fmt.Sprintf("Running %d/%d: %s", i+1, n, s.Runs[0].Name)
+			} else {
+				stepLabel = fmt.Sprintf("Running %d/%d: phase %d, %d notebooks in one shared Spark session", i+1, n, s.Phase, len(s.Runs))
+			}
+			sp = ui.NewSpinner(stepLabel)
 			sp.Start()
 		},
 		func(o postDeployOutcome) {
@@ -252,6 +446,13 @@ func offerPostDeployRuns(client APIClient, token string, customer config.Custome
 				fmt.Println(errorStyle.Render(fmt.Sprintf("  ✗ %s — %v", o.Run.Name, o.Err)))
 			default:
 				fmt.Println(infoStyle.Render("  ✓ ") + fmt.Sprintf("%s ", o.Run.Name) + postDeployDimStyle.Render(fmt.Sprintf("— Completed in %s", o.Duration)))
+			}
+			if remaining > 0 {
+				remaining--
+				if remaining > 0 {
+					sp = ui.NewSpinner(fmt.Sprintf("%s (%d still running)", stepLabel, remaining))
+					sp.Start()
+				}
 			}
 		})
 

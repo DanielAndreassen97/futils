@@ -105,6 +105,11 @@ func RenameItemRefs(cfg *Config, oldName, newName string) int {
 				changed++
 			}
 		}
+		// The phase rides along with its run; it is not a reference of its own.
+		if p, ok := c.PostDeployPhases[oldName]; ok {
+			delete(c.PostDeployPhases, oldName)
+			c.PostDeployPhases[newName] = p
+		}
 		for i := range c.ReferenceOverrides {
 			if c.ReferenceOverrides[i].ItemName == oldName {
 				c.ReferenceOverrides[i].ItemName = newName
@@ -141,6 +146,7 @@ func RemoveItemRefs(cfg *Config, name string) int {
 		c.PostDeployRuns, n = removeMatching(c.PostDeployRuns,
 			func(run string) bool { return run == name })
 		removed += n
+		delete(c.PostDeployPhases, name)
 
 		c.ReferenceOverrides, n = removeMatching(c.ReferenceOverrides,
 			func(ov ReferenceOverride) bool { return ov.ItemName == name })

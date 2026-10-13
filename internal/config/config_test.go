@@ -621,6 +621,38 @@ func TestCustomerPostDeployRunsRoundTrip(t *testing.T) {
 	}
 }
 
+// The parallel post-deploy settings must survive the same round trip: losing
+// them on load would silently put a customer back on sequential runs.
+func TestCustomerParallelPostDeployRoundTrip(t *testing.T) {
+	in := Customer{
+		PostDeployRuns:     []string{"NB_Config", "NB_InsertScript_A"},
+		PostDeployPhases:   map[string]int{"NB_InsertScript_A": 2},
+		ParallelPostDeploy: true,
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var out Customer
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !out.ParallelPostDeploy || !reflect.DeepEqual(out.PostDeployPhases, in.PostDeployPhases) {
+		t.Fatalf("got parallel=%v phases=%v, want true %v", out.ParallelPostDeploy, out.PostDeployPhases, in.PostDeployPhases)
+	}
+}
+
+// Phase defaults to 1 for any run without an entry, so configs written before
+// phases existed keep their meaning.
+func TestPostDeployPhaseDefaultsToOne(t *testing.T) {
+	c := Customer{PostDeployPhases: map[string]int{"NB_B": 3, "NB_C": 0}}
+	for name, want := range map[string]int{"NB_A": 1, "NB_B": 3, "NB_C": 1} {
+		if got := c.PostDeployPhase(name); got != want {
+			t.Errorf("PostDeployPhase(%q) = %d, want %d", name, got, want)
+		}
+	}
+}
+
 // A per-mapping Repo must survive a Customer marshal→unmarshal round trip
 // (Deployments decode through the custom UnmarshalJSON's environments path).
 func TestDeployMappingRepoRoundTrip(t *testing.T) {
