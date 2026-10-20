@@ -112,7 +112,7 @@ type RebindOutcome struct {
 }
 
 // SharedShortcut is a OneLake shortcut deliberately deployed unchanged because
-// its target lives in a workspace outside both envs — e.g. a mirrored database
+// its target lives in a workspace outside every env — e.g. a mirrored database
 // in a shared ingest workspace that dev, test and prod all read from. Surfaced
 // as an info line so "kept as-is" is visible, not silent.
 type SharedShortcut struct {
@@ -120,6 +120,10 @@ type SharedShortcut struct {
 	Shortcut    string // the shortcut's name
 	ItemID      string
 	WorkspaceID string
+	// WorkspaceName is the target workspace's display name when the caller
+	// can see it, so a DEV workspace that was never registered on an env
+	// stands out by name instead of hiding behind a GUID.
+	WorkspaceName string
 }
 
 // ReportBinding is a resolved report→semantic-model binding, surfaced in the
@@ -182,6 +186,12 @@ type Rebinder struct {
 	wsMap           map[string]string // baseline workspace GUID -> target workspace GUID (consensus + seeds)
 	wsAmbiguous     map[string]bool   // baseline workspace GUID -> true when votes conflicted and no seed resolved it
 	baselineWSNames map[string]string // baseline workspace GUID -> display name (for summaries)
+
+	// envWS is every workspace GUID that belongs to one of the customer's
+	// environments; a shortcut into any other workspace is a shared target.
+	// Seeded with baseline+target in NewRebinder and widened by
+	// SetEnvWorkspaces before concurrent use, never mutated afterward.
+	envWS map[string]bool
 
 	substitutions []Substitution
 }
@@ -250,13 +260,28 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	}
 	wsMap, wsAmb := buildWorkspaceMap(b, t)
 	baseNames := make(map[string]string, len(baselineWS))
+	envWS := make(map[string]bool, len(baselineWS)+len(targetWS))
 	for _, w := range baselineWS {
 		baseNames[w.ID] = w.DisplayName
+		envWS[w.ID] = true
+	}
+	for _, w := range targetWS {
+		envWS[w.ID] = true
 	}
 	return &Rebinder{
 		client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames,
-		wsMap: wsMap, wsAmbiguous: wsAmb, baselineWSNames: baseNames,
+		wsMap: wsMap, wsAmbiguous: wsAmb, baselineWSNames: baseNames, envWS: envWS,
 	}, nil
+}
+
+// SetEnvWorkspaces adds workspace GUIDs that belong to one of the customer's
+// environments but sit outside this rebinder's two indices: the rest of a
+// mapping-isolated rebinder's envs, or a third env such as PROD. A shortcut
+// into any of them is a gap to report, never a shared target to keep.
+func (rb *Rebinder) SetEnvWorkspaces(ids []string) {
+	for _, id := range ids {
+		rb.envWS[id] = true
+	}
 }
 
 // RegisterTargetItem adds a just-created item to the target name index so later
@@ -427,7 +452,7 @@ func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []
 // never reads as a change.
 //
 // A target unknown to both envs whose workspaceId names a workspace outside
-// both envs is a SHARED target (e.g. a mirrored database in an ingest
+// every env of the customer (see SetEnvWorkspaces) is a SHARED target (e.g. a mirrored database in an ingest
 // workspace every env reads from): it is the same item everywhere, so it is
 // kept verbatim and listed in SharedShortcuts instead of nagging as
 // unresolved. The shortcut states its workspace explicitly, which is what
@@ -454,9 +479,7 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 		it, ok, reason := rb.resolveGUIDReason(itemID, "")
 		if !ok {
 			wsID, _ := ol["workspaceId"].(string)
-			_, inBaseline := rb.baselineWSNames[wsID]
-			_, inTarget := rb.targetWSNames[wsID]
-			if reason == ReasonNameUnknown && !isZeroOrEmptyGUID(wsID) && !inBaseline && !inTarget {
+			if reason == ReasonNameUnknown && !isZeroOrEmptyGUID(wsID) && !rb.envWS[wsID] {
 				name, _ := sc["name"].(string)
 				out.SharedShortcuts = append(out.SharedShortcuts, SharedShortcut{Lakehouse: lakehouse, Shortcut: name, ItemID: itemID, WorkspaceID: wsID})
 				continue

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -123,6 +124,24 @@ func TestPrintRebindSummaryShowsWhereUsed(t *testing.T) {
 	}
 	if !strings.Contains(out, "PL_1, PL_2, Permissions (SemanticModel)") {
 		t.Errorf("the items behind a count must still be listed, on their own line:\n%s", out)
+	}
+}
+
+// A workspace reference can sit in every notebook of a mapping. Fifty names
+// under one row would bury the summary, so the list stops after a few names
+// and points at the diff report, which lists them all.
+func TestWhereUsedCapsLongLists(t *testing.T) {
+	var items []deploy.ItemRef
+	for i := range 52 {
+		items = append(items, deploy.ItemRef{Name: fmt.Sprintf("NB_%02d", i), Type: "Notebook"})
+	}
+	inline, list := whereUsed(items)
+	if inline != "in 52 items" {
+		t.Errorf("inline = %q", inline)
+	}
+	want := "NB_00, NB_01, NB_02, NB_03, NB_04, NB_05 + 46 more (all in the diff report)"
+	if list != want {
+		t.Errorf("list = %q, want %q", list, want)
 	}
 }
 

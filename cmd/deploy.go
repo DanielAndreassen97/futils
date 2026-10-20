@@ -121,7 +121,7 @@ type deployGroup struct {
 	Unresolved     []deploy.UnresolvedRef
 	Changes        []deploy.RebindChange
 	ReportBindings []deploy.ReportBinding
-	// SharedShortcuts are OneLake shortcuts into workspaces outside both envs,
+	// SharedShortcuts are OneLake shortcuts into workspaces outside every env,
 	// deployed unchanged on purpose — listed so "kept" is visible.
 	SharedShortcuts []deploy.SharedShortcut
 	Diffs           []ItemDiff
@@ -498,7 +498,12 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					}
 					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
 					_, outcome := rb.RebindShortcuts(it.DisplayName, subbed)
-					g.SharedShortcuts = append(g.SharedShortcuts, outcome.SharedShortcuts...)
+					for _, sc := range outcome.SharedShortcuts {
+						if ws, ok := workspaceByID(workspaces, sc.WorkspaceID); ok {
+							sc.WorkspaceName = ws.DisplayName
+						}
+						g.SharedShortcuts = append(g.SharedShortcuts, sc)
+					}
 				}
 			}
 		}
@@ -1985,11 +1990,10 @@ func printReportBindings(groups []deployGroup) {
 	fmt.Println()
 }
 
-// printSharedShortcuts lists the OneLake shortcuts deployed unchanged because
-// their target sits in a workspace outside both envs — the same item in every
-// env. Shown so the user can confirm "kept as-is" was right, instead of the
-// shortcut silently vanishing from the rebind output. Silent when none.
-func printSharedShortcuts(groups []deployGroup) {
+// collectSharedShortcuts gathers every group's shared shortcut targets,
+// deduplicated by (lakehouse, shortcut). Shared by the terminal summary and
+// the HTML report, so they always show the same set.
+func collectSharedShortcuts(groups []deployGroup) []deploy.SharedShortcut {
 	var all []deploy.SharedShortcut
 	seen := map[string]bool{}
 	for _, g := range groups {
@@ -2002,6 +2006,24 @@ func printSharedShortcuts(groups []deployGroup) {
 			all = append(all, s)
 		}
 	}
+	return all
+}
+
+// sharedWorkspaceLabel names a shared shortcut's target workspace, falling
+// back to the compacted GUID when the workspace isn't visible to the caller.
+func sharedWorkspaceLabel(s deploy.SharedShortcut) string {
+	if s.WorkspaceName != "" {
+		return s.WorkspaceName
+	}
+	return compactValue(s.WorkspaceID)
+}
+
+// printSharedShortcuts lists the OneLake shortcuts deployed unchanged because
+// their target sits in a workspace outside both envs — the same item in every
+// env. Shown so the user can confirm "kept as-is" was right, instead of the
+// shortcut silently vanishing from the rebind output. Silent when none.
+func printSharedShortcuts(groups []deployGroup) {
+	all := collectSharedShortcuts(groups)
 	if len(all) == 0 {
 		return
 	}
@@ -2014,7 +2036,7 @@ func printSharedShortcuts(groups []deployGroup) {
 		labelW = max(labelW, utf8.RuneCountInString(labels[i]))
 	}
 	for i, s := range all {
-		fmt.Printf("  %s  %s  %s\n", summaryNameStyle.Render(padRight(labels[i], labelW)), compactValue(s.ItemID), summaryDimStyle.Render("(workspace "+compactValue(s.WorkspaceID)+")"))
+		fmt.Printf("  %s  %s  %s\n", summaryNameStyle.Render(padRight(labels[i], labelW)), compactValue(s.ItemID), summaryDimStyle.Render("(workspace "+sharedWorkspaceLabel(s)+")"))
 	}
 	fmt.Println()
 }

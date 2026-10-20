@@ -123,6 +123,7 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 		Environments: []config.Environment{
 			{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}},
 			{Alias: "TEST", Workspaces: []string{"DW - TEST - Data", "Front - TEST"}},
+			{Alias: "PROD", Workspaces: []string{"DW - PROD - Data"}},
 		},
 	}
 	workspaces := []fabric.Workspace{
@@ -130,6 +131,8 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 		{ID: "test-data", DisplayName: "DW - TEST - Data"},
 		{ID: "front-dev", DisplayName: "Front - DEV"},
 		{ID: "front-test", DisplayName: "Front - TEST"},
+		{ID: "prod-data", DisplayName: "DW - PROD - Data"},
+		{ID: "ingest", DisplayName: "DW - Shared - Ingest"},
 	}
 	api := &deployFakeAPI{items: map[string][]fabric.Item{
 		"dev-data":   {{ID: "back-dev-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
@@ -176,6 +179,24 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 	again, _ := rs.For(config.DeployMapping{Folder: "", Workspace: "Front - TEST", BaselineWorkspace: "Front - DEV"})
 	if again != iso {
 		t.Error("isolated rebinder must be cached per (baseline ws, target ws) pair")
+	}
+
+	// The isolated rebinder only indexes Front - DEV/TEST, but a shortcut into
+	// another env's workspace (DEV Data, PROD Data) still points at the
+	// customer's own env: it must warn, not be kept as a shared target. Only
+	// the workspace outside every env is shared.
+	shortcuts := []byte(`[
+	  {"name": "dev", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "dev-data", "itemId": "back-dev-lh", "path": "Tables/t"}}},
+	  {"name": "prod", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "prod-data", "itemId": "prod-lh", "path": "Tables/t"}}},
+	  {"name": "erp", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "ingest", "itemId": "mirror", "path": "Tables/dbo"}}}]`)
+	for name, rb := range map[string]*deploy.Rebinder{"isolated": iso, "shared": shared} {
+		_, sc := rb.RebindShortcuts("LH_Front", shortcuts)
+		if len(sc.SharedShortcuts) != 1 || sc.SharedShortcuts[0].Shortcut != "erp" {
+			t.Errorf("%s: only the ingest target is shared, got %+v", name, sc.SharedShortcuts)
+		}
+		if name == "isolated" && len(sc.Unresolved) != 2 {
+			t.Errorf("%s: DEV and PROD targets must surface as unresolved, got %+v", name, sc.Unresolved)
+		}
 	}
 }
 

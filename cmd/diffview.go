@@ -789,6 +789,19 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		b.WriteString(`</table></div>`)
 	}
 
+	// Shared shortcut targets: OneLake shortcuts kept as-is because their
+	// target sits in a workspace outside every env.
+	if shared := collectSharedShortcuts(groups); len(shared) > 0 {
+		fmt.Fprintf(&b, `<h2>Shared shortcut targets <span class="note">— outside every env, kept as-is · %d shortcut(s)</span></h2>`, len(shared))
+		b.WriteString(`<div class="panel"><table>`)
+		for _, sc := range shared {
+			b.WriteString(`<tr><td class="name">` + html.EscapeString(sc.Lakehouse+" › "+sc.Shortcut) + ` <span class="type">Shortcut</span></td>` +
+				`<td class="detail rb"><span class="rb-new">` + html.EscapeString(sc.ItemID) +
+				`</span> <span class="type">in ` + html.EscapeString(sharedWorkspaceLabel(sc)) + `</span></td></tr>`)
+		}
+		b.WriteString(`</table></div>`)
+	}
+
 	// Compare preview (no results yet): the Changed items' content diffs are
 	// the report's substance, so they get their own section.
 	if results == nil {

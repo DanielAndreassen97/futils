@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
 	"github.com/DanielAndreassen97/futils/internal/deploy"
@@ -846,6 +847,35 @@ func newDeployGroupsRebinder(t *testing.T, fake *deployFakeAPI) *deploy.Rebinder
 	return rb
 }
 
+// A new lakehouse's shared shortcut targets surface in the compare too, with
+// the workspace named from the tenant's list: the compare only content-diffs
+// existing items, and a brand-new lakehouse is exactly where a wrong "shared"
+// call would otherwise go unseen.
+func TestBuildDeployGroupsNamesSharedShortcutWorkspace(t *testing.T) {
+	fake := &deployFakeAPI{
+		workspaces: []fabric.Workspace{
+			{ID: "ws-dev", DisplayName: "DEV"}, {ID: "ws-tgt", DisplayName: "TGT"},
+			{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
+		},
+		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {}},
+	}
+	rb := newDeployGroupsRebinder(t, fake)
+	lh := deploy.LocalItem{Type: "Lakehouse", DisplayName: "LH_New", FolderPath: "Data",
+		Parts: []deploy.Part{{Path: "shortcuts.metadata.json", Content: []byte(`[{"name": "erp", "path": "/Tables",
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-ingest", "itemId": "mirror-erp", "path": "Tables/dbo"}}}]`)}}}
+	customer := config.Customer{RepoPath: "/repo"}
+	groups, err := buildDeployGroups(fake, "tok", customer,
+		[]config.DeployMapping{{Folder: "Data", Workspace: "TGT"}},
+		map[string][]deploy.LocalItem{customer.RepoPath: {lh}}, fake.workspaces, &rebinderSet{shared: rb}, nil)
+	if err != nil {
+		t.Fatalf("buildDeployGroups: %v", err)
+	}
+	got := groups[0].SharedShortcuts
+	if len(got) != 1 || got[0].Shortcut != "erp" || got[0].WorkspaceName != "DW - Shared - Ingest" {
+		t.Errorf("SharedShortcuts = %+v", got)
+	}
+}
+
 // TestBuildDeployGroupsReportUnresolvedCarriesItemName proves finding-cluster
 // fix: unresolved refs from the dedicated report-binding pass must carry the
 // report's name (printUnresolved shows "<guid> in <ItemName>"), and a custom
@@ -1558,6 +1588,29 @@ func TestPrintReportBindingsExplainsPathOrigin(t *testing.T) {
 	}
 	if strings.Count(out, "found by name — git points to the model's folder") != 1 {
 		t.Errorf("only the byPath binding gets the path note:\n%s", out)
+	}
+}
+
+// Shared shortcut targets are kept as-is, so the row has to make a wrong call
+// easy to spot: a DEV workspace that was never registered reads as
+// "DW - DEV - Data", not as an anonymous GUID.
+func TestPrintSharedShortcutsNamesWorkspace(t *testing.T) {
+	groups := []deployGroup{{SharedShortcuts: []deploy.SharedShortcut{
+		{Lakehouse: "LH_Silver", Shortcut: "erp", ItemID: "5a5a5a5a-1111-4000-8000-0000000e2b01",
+			WorkspaceID: "5a5a5a5a-0000-4000-8000-00000000e2b1", WorkspaceName: "DW - Shared - Ingest"},
+		{Lakehouse: "LH_Silver", Shortcut: "hidden", ItemID: "6b6b6b6b-1111-4000-8000-0000000e2b01",
+			WorkspaceID: "6b6b6b6b-0000-4000-8000-00000000e2b1"},
+	}}}
+	out := captureStdout(t, func() { printSharedShortcuts(groups) })
+	if !strings.Contains(out, "(workspace DW - Shared - Ingest)") {
+		t.Errorf("a visible workspace must be named:\n%s", out)
+	}
+	if !strings.Contains(out, "(workspace "+compactValue("6b6b6b6b-0000-4000-8000-00000000e2b1")+")") {
+		t.Errorf("an unseen workspace falls back to its GUID:\n%s", out)
+	}
+	report := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
+	if !strings.Contains(report, "Shared shortcut targets") || !strings.Contains(report, "LH_Silver › erp") || !strings.Contains(report, "in DW - Shared - Ingest") {
+		t.Errorf("the HTML report must list shared shortcut targets too:\n%s", report)
 	}
 }
 

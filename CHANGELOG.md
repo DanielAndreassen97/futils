@@ -8,23 +8,25 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
-- **Shared OneLake shortcut targets are no longer rebound to the wrong item.**
+- **Shared OneLake shortcut targets no longer surface as unresolved.**
   A lakehouse shortcut into a workspace outside every environment — e.g. a
   mirrored database in a shared ingest workspace that dev, test and prod all
-  read from — is the same target in every env. It used to surface as an
-  unresolved reference, and the deploy prompt steered toward "Map it to a
-  specific item". Because a reference override stores only a name and resolves
+  read from — is the same target in every env. It already deployed unchanged,
+  but it surfaced as an unresolved reference, and the deploy prompt steered
+  toward "Map it to a specific item". Because a reference override stores only a name and resolves
   it in the *target* env, mapping such a target could rebind the shortcut onto
   a same-named item there — even onto the lakehouse that owns the shortcut.
-  Now such a shortcut deploys byte-identical and is listed under a new
-  **Shared shortcut targets (kept as-is)** section of the compare. An explicit
-  reference override still wins.
+  Now such a shortcut is listed under a new **Shared shortcut targets (kept
+  as-is)** section of the compare and the HTML report, with the target
+  workspace's name. An explicit reference override still wins.
 
   Details:
   - The decision uses the shortcut's own `workspaceId`: the target is shared
-    when the item is unknown to both envs *and* its workspace belongs to
-    neither. A target inside a baseline workspace that can't be resolved is
-    still reported as unresolved.
+    when the item is unknown to both envs *and* its workspace is registered on
+    none of the customer's environments. A target inside any env's workspace
+    that can't be resolved is still reported as unresolved: one in another
+    baseline workspace than a mapping's own `BaselineWorkspace`, or one in a
+    PROD workspace during a DEV → TEST deploy.
   - Unresolved shortcut targets no longer claim to be a `Lakehouse`. The type
     comes from the index when known and is otherwise left empty, so the
     override picker lists every item type (mirrored databases, semantic models
@@ -34,8 +36,9 @@ All notable changes to this project are documented here. The format is based on
 
 - **Clearer rebind summary in the compare.**
   - Every rebind row says which item(s) carry the reference (`in
-    NB_LoadOrders`). More than two items show a count, with the names
-    listed on the line below. The HTML report lists them all.
+    NB_LoadOrders`). More than two items show a count, with up to six names
+    on the line below and `+ N more` after that. The HTML report lists them
+    all.
   - Item names without a type prefix (`NB_`, `PL_`, `LH_` …) get their type,
     e.g. `Permissions (SemanticModel)`.
   - The two values of an SQL endpoint rewrite are labelled `host` and

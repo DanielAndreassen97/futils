@@ -52,10 +52,26 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
+	rb.SetEnvWorkspaces(envWorkspaceIDs(customer, workspaces))
 	if customer.BaselineEnvironment != "" {
 		rb.SetWorkspaceSeeds(workspaceSeeds(baselineEnv, targetEnv, workspaces))
 	}
 	return rb, nil
+}
+
+// envWorkspaceIDs resolves every workspace registered on any of the customer's
+// environments, so a rebinder can tell an env's own workspace from one shared
+// by all of them. Names that don't resolve are skipped.
+func envWorkspaceIDs(customer config.Customer, workspaces []fabric.Workspace) []string {
+	var ids []string
+	for _, env := range customer.Environments {
+		for _, name := range env.AllWorkspaces() {
+			if ws, err := resolveWorkspaceByName(workspaces, name); err == nil {
+				ids = append(ids, ws.ID)
+			}
+		}
+	}
+	return ids
 }
 
 // workspaceSeeds pairs baseline→target workspace GUIDs through the deploy
@@ -153,6 +169,7 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
+	rb.SetEnvWorkspaces(envWorkspaceIDs(rs.customer, rs.workspaces))
 	rb.SetWorkspaceSeeds(map[string]string{baseWS[0].ID: targetWS[0].ID})
 	rs.cache[key] = rb
 	return rb, nil

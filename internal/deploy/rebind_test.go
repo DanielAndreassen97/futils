@@ -629,6 +629,26 @@ func TestRebindShortcutsSharedWorkspaceKeptAsIs(t *testing.T) {
 	}
 }
 
+// A workspace registered on another env (SetEnvWorkspaces) is the customer's
+// own, not shared: a shortcut into it that this rebinder can't resolve is a gap
+// to report. Without this, a mapping-isolated rebinder or a shortcut into PROD
+// would be kept as "shared" and deploy pointing at the wrong env.
+func TestRebindShortcutsEnvWorkspaceIsNotShared(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	prodWS := "9a9a9a9a-0000-4000-8000-0000000da7a1"
+	rb.SetEnvWorkspaces([]string{prodWS})
+	in := []byte(`[{"name": "s", "path": "/Tables",
+	  "target": {"type": "OneLake", "oneLake": {
+	    "workspaceId": "` + prodWS + `", "itemId": "9a9a9a9a-1111-4000-8000-00000b20e2e1", "path": "Tables/t"}}}]`)
+	_, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Silver"}, "shortcuts.metadata.json", in, "")
+	if len(outcome.SharedShortcuts) != 0 {
+		t.Errorf("a target in an env workspace must not be shared: %#v", outcome.SharedShortcuts)
+	}
+	if len(outcome.Unresolved) != 1 {
+		t.Errorf("a target in an env workspace must surface as unresolved: %#v", outcome.Unresolved)
+	}
+}
+
 // An explicit reference override still wins over the shared-workspace rule:
 // config is authoritative, so a user who maps a foreign target on purpose
 // gets the rewrite.
