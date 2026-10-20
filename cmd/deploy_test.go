@@ -1543,6 +1543,24 @@ func TestPrintReportBindingsRendersResolved(t *testing.T) {
 	}
 }
 
+// A report whose git reference was a relative byPath has no baseline GUID to
+// show on the left of an arrow — the row says what the arrow means instead.
+func TestPrintReportBindingsExplainsPathOrigin(t *testing.T) {
+	groups := []deployGroup{{
+		ReportBindings: []deploy.ReportBinding{
+			{Report: "Ops", Model: "DataplatformOperations", Workspace: "AG - DP - TEST", FromPath: true},
+			{Report: "Other", Model: "HR", Workspace: "AG - DP - TEST"},
+		},
+	}}
+	out := captureStdout(t, func() { printReportBindings(groups) })
+	if !strings.Contains(out, "report → semantic model") {
+		t.Errorf("header must say what the arrow means:\n%s", out)
+	}
+	if strings.Count(out, "found by name — git points to the model's folder") != 1 {
+		t.Errorf("only the byPath binding gets the path note:\n%s", out)
+	}
+}
+
 func TestPrintReportBindingsSilentWhenEmpty(t *testing.T) {
 	out := captureStdout(t, func() { printReportBindings(nil) })
 	if out != "" {

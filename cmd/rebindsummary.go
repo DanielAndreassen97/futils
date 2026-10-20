@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -113,18 +114,24 @@ func printRebindGroup(changes []deploy.RebindChange) {
 	fmt.Println()
 	fmt.Println(header)
 
-	type row struct{ name, old, new string }
+	type row struct{ name, field, old, new, where, list string }
 	rows := make([]row, 0, len(changes))
-	nameW, oldW := 0, 0
+	nameW, fieldW, oldW, newW := 0, 0, 0, 0
 	for _, c := range changes {
 		o, n := c.Old, c.New
 		if suffix != "" && strings.HasSuffix(o, suffix) && strings.HasSuffix(n, suffix) {
 			o, n = strings.TrimSuffix(o, suffix), strings.TrimSuffix(n, suffix)
 		}
-		r := row{name: c.Name, old: compactValue(o), new: compactValue(n)}
+		r := row{name: c.Name, field: endpointField(c), old: compactValue(o), new: compactValue(n)}
+		r.where, r.list = whereUsed(c.Items)
+		if c.Old == deploy.ThisWorkspaceGUID {
+			r.old = "(this workspace)"
+		}
 		rows = append(rows, r)
 		nameW = max(nameW, utf8.RuneCountInString(r.name))
+		fieldW = max(fieldW, utf8.RuneCountInString(r.field))
 		oldW = max(oldW, utf8.RuneCountInString(r.old))
+		newW = max(newW, utf8.RuneCountInString(r.new))
 	}
 	last := ""
 	for _, r := range rows {
@@ -134,10 +141,64 @@ func printRebindGroup(changes []deploy.RebindChange) {
 		} else {
 			last = r.name
 		}
-		fmt.Printf("    %s  %s  %s  %s\n",
-			summaryNameStyle.Render(padRight(name, nameW)),
-			summaryDimStyle.Render(padRight(r.old, oldW)),
-			summaryArrowStyle.Render("→"),
-			r.new)
+		line := "    " + summaryNameStyle.Render(padRight(name, nameW))
+		if fieldW > 0 {
+			line += "  " + summaryDimStyle.Render(padRight(r.field, fieldW))
+		}
+		line += "  " + summaryDimStyle.Render(padRight(r.old, oldW)) + "  " + summaryArrowStyle.Render("→") + "  "
+		if r.where != "" {
+			line += padRight(r.new, newW) + "  " + summaryDimStyle.Render(r.where)
+		} else {
+			line += r.new
+		}
+		fmt.Println(line)
+		if r.list != "" {
+			fmt.Println(summaryDimStyle.Render(wrapIndented(r.list, 6)))
+		}
 	}
+}
+
+// endpointField names which half of an SQL endpoint a change rewrites:
+// Sql.Database(host, database) carries the server host and, in place of a
+// database name, often the endpoint's id — two anonymous rows otherwise.
+func endpointField(c deploy.RebindChange) string {
+	if c.Kind != "SQL endpoint" {
+		return ""
+	}
+	if hostSuffix(c.Old) != "" {
+		return "host"
+	}
+	return "endpoint id"
+}
+
+// whereUsed renders which items carry a reference. Up to two fit inline;
+// more would push the row off-screen, so the row gets a count and the names
+// go on their own wrapped line beneath it (list).
+func whereUsed(items []deploy.ItemRef) (inline, list string) {
+	labels := make([]string, len(items))
+	for i, it := range items {
+		labels[i] = itemLabel(it)
+	}
+	switch {
+	case len(labels) == 0:
+		return "", ""
+	case len(labels) <= 2:
+		return "in " + strings.Join(labels, ", "), ""
+	default:
+		return fmt.Sprintf("in %d items", len(labels)), strings.Join(labels, ", ")
+	}
+}
+
+// typePrefix matches the naming convention that already carries an item's
+// type (NB_, PL_, LH_, SM_ …).
+var typePrefix = regexp.MustCompile(`^[A-Z]{2,4}_`)
+
+// itemLabel names an item for the summary, adding its type when the name
+// doesn't already imply it — "Permissions" beside NB_ rows reads as a
+// notebook otherwise.
+func itemLabel(it deploy.ItemRef) string {
+	if it.Type == "" || typePrefix.MatchString(it.Name) {
+		return it.Name
+	}
+	return it.Name + " (" + it.Type + ")"
 }

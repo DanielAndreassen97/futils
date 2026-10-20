@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -644,7 +645,7 @@ func TestRebindHostParameterRewritten(t *testing.T) {
 	if got != paramExpressions(paramTstHost) {
 		t.Fatalf("parameter host not rewritten:\n%s", got)
 	}
-	if len(outcome.Changes) != 1 || outcome.Changes[0] != (RebindChange{Kind: "SQL endpoint", Name: "LH_Bronze", Old: paramDevHost, New: paramTstHost}) {
+	if len(outcome.Changes) != 1 || !reflect.DeepEqual(outcome.Changes[0], RebindChange{Kind: "SQL endpoint", Name: "LH_Bronze", Old: paramDevHost, New: paramTstHost, Items: []ItemRef{{Name: "SM_Sales", Type: "SemanticModel"}}}) {
 		t.Fatalf("changes = %#v", outcome.Changes)
 	}
 	if len(outcome.Unresolved) != 0 {
@@ -777,7 +778,7 @@ func TestRebindHostParameterUsesDatabaseName(t *testing.T) {
 	if string(parts["definition/tables/Dato.tmdl"]) != goldTable {
 		t.Fatalf("table part must be untouched:\n%s", parts["definition/tables/Dato.tmdl"])
 	}
-	if len(outcome.Changes) != 1 || outcome.Changes[0] != (RebindChange{Kind: "SQL endpoint", Name: "LH_Gold", Old: paramDevHost, New: goldTstHost}) {
+	if len(outcome.Changes) != 1 || !reflect.DeepEqual(outcome.Changes[0], RebindChange{Kind: "SQL endpoint", Name: "LH_Gold", Old: paramDevHost, New: goldTstHost, Items: []ItemRef{{Name: "SM_Sales", Type: "SemanticModel"}}}) {
 		t.Fatalf("changes = %#v", outcome.Changes)
 	}
 	if len(outcome.Unresolved) != 0 {

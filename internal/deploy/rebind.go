@@ -87,15 +87,39 @@ type RebindChange struct {
 	Old  string
 	New  string
 	Form string // copied from the rule that produced this change; "" for non-substitution kinds
+	// Items are the items whose content carries the reference — stamped by
+	// SubstituteParts, merged across items by the summary, so a row can say
+	// where the rewrite lands.
+	Items []ItemRef
+}
+
+// ItemRef names an item a rebind was found in. The type rides along because
+// names alone are ambiguous in a summary: "Permissions" may be a report or a
+// semantic model.
+type ItemRef struct {
+	Name string
+	Type string
 }
 
 // RebindOutcome bundles what a rebind pass produced: the applied changes (for
 // the summary, deduped by Old within a pass) and the references it could not
 // resolve (surfaced to the user).
 type RebindOutcome struct {
-	Changes        []RebindChange
-	Unresolved     []UnresolvedRef
-	ReportBindings []ReportBinding
+	Changes         []RebindChange
+	Unresolved      []UnresolvedRef
+	ReportBindings  []ReportBinding
+	SharedShortcuts []SharedShortcut
+}
+
+// SharedShortcut is a OneLake shortcut deliberately deployed unchanged because
+// its target lives in a workspace outside both envs — e.g. a mirrored database
+// in a shared ingest workspace that dev, test and prod all read from. Surfaced
+// as an info line so "kept as-is" is visible, not silent.
+type SharedShortcut struct {
+	Lakehouse   string // the lakehouse that owns the shortcut
+	Shortcut    string // the shortcut's name
+	ItemID      string
+	WorkspaceID string
 }
 
 // ReportBinding is a resolved report→semantic-model binding, surfaced in the
@@ -105,6 +129,10 @@ type ReportBinding struct {
 	Report    string // report display name
 	Model     string // resolved semantic-model name
 	Workspace string // target workspace the model lives in
+	// FromPath marks a binding converted from a relative byPath reference:
+	// git held a folder path, not a model GUID, so there is no baseline value
+	// to show — the summary says so instead.
+	FromPath bool
 }
 
 // Substitution is a futils-native find→replace rule, the engine-side mirror of
@@ -367,7 +395,7 @@ func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []
 		return rb.RebindReportConnection(item, content)
 	}
 	if item.Type == "Lakehouse" && path.Base(partPath) == "shortcuts.metadata.json" {
-		return rb.RebindShortcuts(content)
+		return rb.RebindShortcuts(item.DisplayName, content)
 	}
 	if item.Type == "DataPipeline" {
 		return rb.RebindPipeline(content)
@@ -397,7 +425,16 @@ func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []
 // something actually changed — an untouched file stays byte-identical — and the
 // diff view normalizes JSON before comparing, so the formatting round-trip
 // never reads as a change.
-func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
+//
+// A target unknown to both envs whose workspaceId names a workspace outside
+// both envs is a SHARED target (e.g. a mirrored database in an ingest
+// workspace every env reads from): it is the same item everywhere, so it is
+// kept verbatim and listed in SharedShortcuts instead of nagging as
+// unresolved. The shortcut states its workspace explicitly, which is what
+// makes this safe to decide without guessing. Overrides still take precedence.
+//
+// lakehouse is the owning lakehouse's display name, used to label the summary.
+func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, RebindOutcome) {
 	shortcuts, ok := decodeShortcuts(content)
 	if !ok {
 		return content, RebindOutcome{} // not the array shape we rewrite — leave it
@@ -416,11 +453,28 @@ func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
 		}
 		it, ok, reason := rb.resolveGUIDReason(itemID, "")
 		if !ok {
-			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: "Lakehouse", Location: "shortcut target", Reason: reason})
+			wsID, _ := ol["workspaceId"].(string)
+			_, inBaseline := rb.baselineWSNames[wsID]
+			_, inTarget := rb.targetWSNames[wsID]
+			if reason == ReasonNameUnknown && !isZeroOrEmptyGUID(wsID) && !inBaseline && !inTarget {
+				name, _ := sc["name"].(string)
+				out.SharedShortcuts = append(out.SharedShortcuts, SharedShortcut{Lakehouse: lakehouse, Shortcut: name, ItemID: itemID, WorkspaceID: wsID})
+				continue
+			}
+			// The type is only known when something indexed the GUID. A guessed
+			// "Lakehouse" made the override picker hide the real target (a
+			// mirrored database, a semantic model's OneLake tables, ...).
+			itemType := ""
+			if ov, has := rb.overrides[itemID]; has {
+				itemType = ov.ItemType
+			} else if base, known := rb.baseline.ItemByGUID(itemID); known {
+				itemType = base.Type
+			}
+			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: itemType, Location: "shortcut target", Reason: reason})
 			continue
 		}
 		if itemID != it.GUID {
-			recordChangePair(&out, seen, "Shortcut", it.Name, itemID, it.GUID)
+			recordChangePair(&out, seen, "Shortcut", fmt.Sprintf("%s (%s)", it.Name, it.Type), itemID, it.GUID)
 			ol["itemId"] = it.GUID
 			changed = true
 		}
@@ -441,7 +495,7 @@ func (rb *Rebinder) RebindShortcuts(content []byte) ([]byte, RebindOutcome) {
 	if err != nil {
 		// Can't happen for a tree json just decoded, but never publish a file
 		// the recorded changes weren't applied to.
-		return content, RebindOutcome{Unresolved: out.Unresolved}
+		return content, RebindOutcome{Unresolved: out.Unresolved, SharedShortcuts: out.SharedShortcuts}
 	}
 	return rewritten, out
 }
@@ -768,7 +822,7 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 			})
 			return content, out
 		}
-		return rb.bindReportTo(pbir, content, item, it, &out), out
+		return rb.bindReportTo(pbir, content, item, it, true, &out), out
 	}
 
 	// Extract the baseline model GUID and a name candidate from whichever
@@ -796,14 +850,14 @@ func (rb *Rebinder) RebindReportConnection(item LocalItem, content []byte) ([]by
 		return content, out
 	}
 
-	return rb.bindReportTo(pbir, content, item, it, &out), out
+	return rb.bindReportTo(pbir, content, item, it, false, &out), out
 }
 
 // bindReportTo replaces pbir's datasetReference with the canonical
 // byConnection form (connectionString null, pbiModelDatabaseName = the target
 // model's GUID) and records the binding on out. Returns content unchanged on a
 // marshal failure so a report is never published half-rewritten.
-func (rb *Rebinder) bindReportTo(pbir map[string]json.RawMessage, content []byte, item LocalItem, it IndexedItem, out *RebindOutcome) []byte {
+func (rb *Rebinder) bindReportTo(pbir map[string]json.RawMessage, content []byte, item LocalItem, it IndexedItem, fromPath bool, out *RebindOutcome) []byte {
 	canonical, err := json.Marshal(canonicalByConnection{
 		ByConnection: canonicalByConnectionInner{
 			PbiModelVirtualServerName: "sobe_wowvirtualserver",
@@ -822,7 +876,7 @@ func (rb *Rebinder) bindReportTo(pbir map[string]json.RawMessage, content []byte
 		return content
 	}
 	out.ReportBindings = append(out.ReportBindings, ReportBinding{
-		Report: item.DisplayName, Model: it.Name, Workspace: rb.workspaceName(it.WorkspaceID),
+		Report: item.DisplayName, Model: it.Name, Workspace: rb.workspaceName(it.WorkspaceID), FromPath: fromPath,
 	})
 	return rewritten
 }

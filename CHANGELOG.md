@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Shared OneLake shortcut targets are no longer rebound to the wrong item.**
+  A lakehouse shortcut into a workspace outside every environment — e.g. a
+  mirrored database in a shared ingest workspace that dev, test and prod all
+  read from — is the same target in every env. It used to surface as an
+  unresolved reference, and the deploy prompt steered toward "Map it to a
+  specific item". Because a reference override stores only a name and resolves
+  it in the *target* env, mapping such a target could rebind the shortcut onto
+  a same-named item there — even onto the lakehouse that owns the shortcut.
+  Now such a shortcut deploys byte-identical and is listed under a new
+  **Shared shortcut targets (kept as-is)** section of the compare. An explicit
+  reference override still wins.
+
+  Details:
+  - The decision uses the shortcut's own `workspaceId`: the target is shared
+    when the item is unknown to both envs *and* its workspace belongs to
+    neither. A target inside a baseline workspace that can't be resolved is
+    still reported as unresolved.
+  - Unresolved shortcut targets no longer claim to be a `Lakehouse`. The type
+    comes from the index when known and is otherwise left empty, so the
+    override picker lists every item type (mirrored databases, semantic models
+    with OneLake integration, …) instead of hiding the real target.
+
+### Changed
+
+- **Clearer rebind summary in the compare.**
+  - Every rebind row says which item(s) carry the reference (`in
+    DataplatformOperations`). More than two items show a count, with the names
+    listed on the line below. The HTML report lists them all.
+  - Item names without a type prefix (`NB_`, `PL_`, `LH_` …) get their type,
+    e.g. `Permissions (SemanticModel)`.
+  - The two values of an SQL endpoint rewrite are labelled `host` and
+    `endpoint id`.
+  - The all-zeros workspace GUID — Fabric's git placeholder for "the workspace
+    this item lives in" — reads `(this workspace)` instead of
+    `00000000…0000`.
+  - Shortcut rows name the target and its type (`Report for … (SemanticModel)`)
+    rather than only the target's name, which made a semantic model's OneLake
+    tables look like a stray report.
+  - Report bindings explain the arrow ("report → semantic model it binds to in
+    the target") and mark bindings resolved from a git folder path (`byPath`),
+    which have no baseline GUID to show.
+
 ## [0.3.0] - 2026-06-04
 
 ### Added

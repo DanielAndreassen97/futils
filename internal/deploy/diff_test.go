@@ -158,6 +158,27 @@ func TestSubstitutePartsAppliesRebindToNotebookPart(t *testing.T) {
 	}
 }
 
+// Every change SubstituteParts reports is stamped with the item it was found
+// in, so the summary can say where a rewrite lands.
+func TestSubstitutePartsTagsChangesWithItemName(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	nb := rebindNotebook(devConfigLH, devConfigWS, "LH_ConfigLog", devSilverLH)
+	item := LocalItem{Type: "Notebook", DisplayName: "NB_Config",
+		Parts: []Part{{Path: "notebook-content.py", Content: nb}}}
+	_, outcome, err := SubstituteParts(item, map[string]string{}, newResolverFixture(), rb, "")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(outcome.Changes) == 0 {
+		t.Fatal("expected changes")
+	}
+	for _, c := range outcome.Changes {
+		if len(c.Items) != 1 || c.Items[0] != (ItemRef{Name: "NB_Config", Type: "Notebook"}) {
+			t.Errorf("change %+v not tagged with NB_Config", c)
+		}
+	}
+}
+
 func TestSubstitutePartsTagsUnresolvedWithItemName(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	unknown := "99999999-9999-9999-9999-999999999999"
