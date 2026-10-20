@@ -121,7 +121,10 @@ type deployGroup struct {
 	Unresolved     []deploy.UnresolvedRef
 	Changes        []deploy.RebindChange
 	ReportBindings []deploy.ReportBinding
-	Diffs          []ItemDiff
+	// SharedShortcuts are OneLake shortcuts into workspaces outside both envs,
+	// deployed unchanged on purpose — listed so "kept" is visible.
+	SharedShortcuts []deploy.SharedShortcut
+	Diffs           []ItemDiff
 	// rb is the rebinder this group's mapping resolves references through — the
 	// shared env-level one, or the mapping's isolated one when it sets a
 	// BaselineWorkspace. Nil when rebinding is disabled.
@@ -309,6 +312,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	printGroupedCompare(groups)
 	printRebindSummary(groups)
 	printReportBindings(groups)
+	printSharedShortcuts(groups)
 	printUnresolved(groups, customer.BaselineEnvironment, alias)
 
 	hasDiffs := false
@@ -478,6 +482,23 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					}
 					g.Unresolved = append(g.Unresolved, unres...)
 					break // definition.pbir is the only part that carries the binding
+				}
+			}
+			// Shared shortcut targets are collected here, not in the compare,
+			// for the same reason as report bindings: the compare only sees
+			// existing items, and a new lakehouse's shared shortcuts are just
+			// as worth showing. Index lookups only — no API calls.
+			for _, it := range items {
+				if it.Type != "Lakehouse" {
+					continue
+				}
+				for _, part := range it.Parts {
+					if path.Base(part.Path) != "shortcuts.metadata.json" {
+						continue
+					}
+					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
+					_, outcome := rb.RebindShortcuts(it.DisplayName, subbed)
+					g.SharedShortcuts = append(g.SharedShortcuts, outcome.SharedShortcuts...)
 				}
 			}
 		}
@@ -1806,19 +1827,28 @@ func printGroupedCompare(groups []deployGroup) {
 // by (Kind, Old, New) across the whole run and sorted by (Kind, Name) so an
 // item whose rewrite spans several values — a SQL endpoint rebinds both its
 // host and its id — groups as ONE reference. Shared by the terminal summary
-// and the HTML report, so they always show the same set.
+// and the HTML report, so they always show the same set. Items merge across
+// the duplicates, so a row names every item that carries the reference.
 func collectRebindChanges(groups []deployGroup) []deploy.RebindChange {
 	type key struct{ kind, old, new string }
-	seen := map[key]bool{}
+	index := map[key]int{}
 	var ordered []deploy.RebindChange
 	for _, g := range groups {
 		for _, c := range g.Changes {
 			k := key{c.Kind, c.Old, c.New}
-			if seen[k] {
-				continue
+			items := c.Items
+			i, seen := index[k]
+			if !seen {
+				i = len(ordered)
+				index[k] = i
+				c.Items = nil // rebuilt below from every occurrence, in first-seen order
+				ordered = append(ordered, c)
 			}
-			seen[k] = true
-			ordered = append(ordered, c)
+			for _, it := range items {
+				if !slices.Contains(ordered[i].Items, it) {
+					ordered[i].Items = append(ordered[i].Items, it)
+				}
+			}
 		}
 	}
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -1938,13 +1968,53 @@ func printReportBindings(groups []deployGroup) {
 		return
 	}
 	fmt.Println()
-	fmt.Println(infoStyle.Render("Report bindings:"))
+	// Unlike the rebind rows above, the arrow here is "binds to", not
+	// "old → new": a byPath reference has no baseline GUID to show at all.
+	fmt.Println(infoStyle.Render("Report bindings") + " " + summaryDimStyle.Render("report → semantic model it binds to in the target"))
 	nameW := 0
 	for _, b := range all {
 		nameW = max(nameW, utf8.RuneCountInString(b.Report))
 	}
 	for _, b := range all {
-		fmt.Printf("  %s  %s  %s  %s\n", summaryNameStyle.Render(padRight(b.Report, nameW)), summaryArrowStyle.Render("→"), b.Model, summaryDimStyle.Render("("+b.Workspace+")"))
+		note := "(" + b.Workspace + ")"
+		if b.FromPath {
+			note += " · found by name — git points to the model's folder"
+		}
+		fmt.Printf("  %s  %s  %s  %s\n", summaryNameStyle.Render(padRight(b.Report, nameW)), summaryArrowStyle.Render("→"), b.Model, summaryDimStyle.Render(note))
+	}
+	fmt.Println()
+}
+
+// printSharedShortcuts lists the OneLake shortcuts deployed unchanged because
+// their target sits in a workspace outside both envs — the same item in every
+// env. Shown so the user can confirm "kept as-is" was right, instead of the
+// shortcut silently vanishing from the rebind output. Silent when none.
+func printSharedShortcuts(groups []deployGroup) {
+	var all []deploy.SharedShortcut
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, s := range g.SharedShortcuts {
+			k := s.Lakehouse + "\x00" + s.Shortcut
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			all = append(all, s)
+		}
+	}
+	if len(all) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println(infoStyle.Render("Shared shortcut targets (outside every env — kept as-is):"))
+	labels := make([]string, len(all))
+	labelW := 0
+	for i, s := range all {
+		labels[i] = s.Lakehouse + " › " + s.Shortcut
+		labelW = max(labelW, utf8.RuneCountInString(labels[i]))
+	}
+	for i, s := range all {
+		fmt.Printf("  %s  %s  %s\n", summaryNameStyle.Render(padRight(labels[i], labelW)), compactValue(s.ItemID), summaryDimStyle.Render("(workspace "+compactValue(s.WorkspaceID)+")"))
 	}
 	fmt.Println()
 }
@@ -1977,7 +2047,7 @@ func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
 				if u.Reason == deploy.ReasonLeftover {
 					continue
 				}
-				fmt.Printf("  %s in %s — looks like a %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, u.ItemType, u.Location, reasonText(u.Reason), countSuffix(u.Count))
+				fmt.Printf("  %s in %s — looks like %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, unresolvedKind(u.ItemType), u.Location, reasonText(u.Reason), countSuffix(u.Count))
 			}
 		}
 		var hints []string
@@ -2047,6 +2117,17 @@ func countSuffix(n int) string {
 	return ""
 }
 
+// unresolvedKind renders an UnresolvedRef's item type for "looks like …". The
+// type is empty when nothing indexed the GUID (e.g. a shortcut target in an
+// unregistered workspace) — printing a guessed type there once steered users
+// to map a mirrored database onto a lakehouse.
+func unresolvedKind(itemType string) string {
+	if itemType == "" {
+		return "an item of unknown type"
+	}
+	return "a " + itemType
+}
+
 // reasonText renders an UnresolvedRef reason code as a short human hint, so the
 // user can tell a baseline-index miss from a target-side failure without
 // guessing.
@@ -2094,7 +2175,7 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef) error {
 	changed := false
 	for _, ref := range refs {
-		fmt.Printf("\n%s in %s — looks like a %s (%s): %s%s\n", shortGUID(ref.GUID), ref.ItemName, ref.ItemType, ref.Location, reasonText(ref.Reason), countSuffix(ref.Count))
+		fmt.Printf("\n%s in %s — looks like %s (%s): %s%s\n", shortGUID(ref.GUID), ref.ItemName, unresolvedKind(ref.ItemType), ref.Location, reasonText(ref.Reason), countSuffix(ref.Count))
 		choice, err := ui.NumberMenu("How do you want to resolve it?", refActionOptions(ref))
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {

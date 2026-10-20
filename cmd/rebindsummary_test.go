@@ -98,3 +98,74 @@ func TestPrintRebindSummarySingularHeadline(t *testing.T) {
 		t.Errorf("singular headline:\n%s", out)
 	}
 }
+
+// Each rebind row says which item(s) carry the reference — the summary groups
+// by WHAT a value is, so without this a user can't tell where an SQL endpoint
+// rewrite lands. Duplicates across items merge into one row naming them all.
+func TestPrintRebindSummaryShowsWhereUsed(t *testing.T) {
+	groups := []deployGroup{
+		{Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Name: "LH_Gold", Old: "dev-lh", New: "test-lh", Items: []deploy.ItemRef{{Name: "NB_A", Type: "Notebook"}}},
+		}},
+		{Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Name: "LH_Gold", Old: "dev-lh", New: "test-lh", Items: []deploy.ItemRef{{Name: "NB_B", Type: "Notebook"}}},
+			{Kind: "Workspace", Name: "WS", Old: "dev-ws", New: "test-ws", Items: []deploy.ItemRef{
+				{Name: "PL_1", Type: "DataPipeline"}, {Name: "PL_2", Type: "DataPipeline"}, {Name: "Permissions", Type: "SemanticModel"},
+			}},
+		}},
+	}
+	out := captureStdout(t, func() { printRebindSummary(groups) })
+	if !strings.Contains(out, "in NB_A, NB_B") {
+		t.Errorf("merged duplicate must name both items:\n%s", out)
+	}
+	if !strings.Contains(out, "in 3 items") {
+		t.Errorf("more than two items lead with a count:\n%s", out)
+	}
+	if !strings.Contains(out, "PL_1, PL_2, Permissions (SemanticModel)") {
+		t.Errorf("the items behind a count must still be listed, on their own line:\n%s", out)
+	}
+}
+
+// Items named with a type prefix (NB_, PL_, LH_ …) read on their own; anything
+// else gets its type, so a semantic model called "Permissions" isn't mistaken
+// for a notebook next to NB_ rows.
+func TestItemLabelAddsTypeOnlyWithoutPrefix(t *testing.T) {
+	cases := map[deploy.ItemRef]string{
+		{Name: "NB_LoadOrders", Type: "Notebook"}:        "NB_LoadOrders",
+		{Name: "PL_NotifyTeams", Type: "DataPipeline"}:   "PL_NotifyTeams",
+		{Name: "Permissions", Type: "SemanticModel"}:     "Permissions (SemanticModel)",
+		{Name: "Sales-FullModel", Type: "SemanticModel"}: "Sales-FullModel (SemanticModel)",
+		{Name: "Report for X", Type: "SemanticModel"}:    "Report for X (SemanticModel)",
+	}
+	for in, want := range cases {
+		if got := itemLabel(in); got != want {
+			t.Errorf("itemLabel(%+v) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// An SQL endpoint is rewritten as two values (server host + database id);
+// each row says which one it is, instead of two anonymous rows.
+func TestPrintRebindSummaryLabelsSQLEndpointParts(t *testing.T) {
+	dom := ".datawarehouse.fabric.microsoft.com"
+	groups := []deployGroup{{Changes: []deploy.RebindChange{
+		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + dom, New: "zyxwvutsrqponmlkjihgfedcba" + dom},
+		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "5e1d0000-1111-4000-8000-0000000000e1", New: "5e1d0000-2222-4000-8000-0000000000e2"},
+	}}}
+	out := captureStdout(t, func() { printRebindSummary(groups) })
+	if !strings.Contains(out, "host") || !strings.Contains(out, "endpoint id") {
+		t.Errorf("SQL endpoint rows must be labelled host / endpoint id:\n%s", out)
+	}
+}
+
+// The all-zeros GUID is Fabric's "this workspace" placeholder, not a real
+// workspace — the row must say so rather than print 00000000…0000.
+func TestPrintRebindSummaryNamesZeroWorkspacePlaceholder(t *testing.T) {
+	groups := []deployGroup{{Changes: []deploy.RebindChange{
+		{Kind: "Workspace", Name: "DW - TEST - Data", Old: "00000000-0000-0000-0000-000000000000", New: "7e577e57-0000-4000-8000-0000000da7a1"},
+	}}}
+	out := captureStdout(t, func() { printRebindSummary(groups) })
+	if strings.Contains(out, "00000000…0000") || !strings.Contains(out, "(this workspace)") {
+		t.Errorf("zero GUID must render as the placeholder it is:\n%s", out)
+	}
+}

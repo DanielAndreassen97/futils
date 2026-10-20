@@ -446,6 +446,9 @@ func TestRebindReportConnectionByPathConverts(t *testing.T) {
 	if len(outcome.ReportBindings) != 1 || outcome.ReportBindings[0].Model != "HR" {
 		t.Fatalf("want one HR ReportBinding, got %+v", outcome.ReportBindings)
 	}
+	if !outcome.ReportBindings[0].FromPath {
+		t.Errorf("a byPath binding must be marked FromPath: %+v", outcome.ReportBindings[0])
+	}
 	if len(outcome.Unresolved) != 0 {
 		t.Errorf("resolvable byPath must not surface unresolved refs: %+v", outcome.Unresolved)
 	}
@@ -576,20 +579,92 @@ func TestRebindShortcutsOneLakeTargets(t *testing.T) {
 	}
 }
 
-// A OneLake shortcut whose target item resolves in neither env is left
-// unchanged and surfaced as unresolved.
+// A OneLake shortcut into a BASELINE workspace whose target item resolves in
+// neither env is left unchanged and surfaced as unresolved — the item belongs
+// to the baseline env, so it is a real gap. Its type is unknown (the baseline
+// index has no entry), so ItemType must stay empty rather than claim
+// "Lakehouse": the override picker filters by it.
 func TestRebindShortcutsUnresolved(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	unknown := "99999999-9999-9999-9999-999999999999"
 	shortcuts := []byte(`[{"name": "x", "path": "Tables",
 	  "target": {"type": "OneLake", "oneLake": {
-	    "workspaceId": "` + devConfigWS + `", "itemId": "` + unknown + `", "path": "Tables/x"}}}]`)
+	    "workspaceId": "dev-config", "itemId": "` + unknown + `", "path": "Tables/x"}}}]`)
 	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH"}, "shortcuts.metadata.json", shortcuts, "")
 	if !strings.Contains(string(out), unknown) {
 		t.Error("unresolved shortcut target should be left unchanged")
 	}
 	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].Location != "shortcut target" {
 		t.Fatalf("unresolved = %#v", outcome.Unresolved)
+	}
+	if outcome.Unresolved[0].ItemType != "" {
+		t.Errorf("unknown target type must be empty, got %q", outcome.Unresolved[0].ItemType)
+	}
+	if len(outcome.SharedShortcuts) != 0 {
+		t.Errorf("baseline-workspace target must not be reported as shared: %#v", outcome.SharedShortcuts)
+	}
+}
+
+// A shortcut into a workspace outside both envs (e.g. a mirrored database in a
+// shared ingest workspace every env reads from) is the same target in every
+// env: it must deploy byte-identical, not be reported as unresolved, and be
+// listed as a shared target so the user sees it was deliberately kept.
+func TestRebindShortcutsSharedWorkspaceKeptAsIs(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	mirror := "5a5a5a5a-1111-4000-8000-0000000e2b01"
+	sharedWS := "5a5a5a5a-0000-4000-8000-00000000e2b1"
+	in := []byte(`[{"name": "ERP_Live", "path": "/Tables",
+	  "target": {"type": "OneLake", "oneLake": {
+	    "workspaceId": "` + sharedWS + `", "itemId": "` + mirror + `", "path": "Tables/dbo"}}}]`)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Silver"}, "shortcuts.metadata.json", in, "test-data")
+	if string(out) != string(in) {
+		t.Errorf("shared target must deploy byte-identical:\n%s", out)
+	}
+	if len(outcome.Unresolved) != 0 || len(outcome.Changes) != 0 {
+		t.Errorf("shared target must be neither unresolved nor rewritten: %#v / %#v", outcome.Unresolved, outcome.Changes)
+	}
+	want := SharedShortcut{Lakehouse: "LH_Silver", Shortcut: "ERP_Live", ItemID: mirror, WorkspaceID: sharedWS}
+	if len(outcome.SharedShortcuts) != 1 || outcome.SharedShortcuts[0] != want {
+		t.Errorf("SharedShortcuts = %#v, want [%#v]", outcome.SharedShortcuts, want)
+	}
+}
+
+// An explicit reference override still wins over the shared-workspace rule:
+// config is authoritative, so a user who maps a foreign target on purpose
+// gets the rewrite.
+func TestRebindShortcutsOverrideBeatsSharedWorkspace(t *testing.T) {
+	foreign := "5a5a5a5a-1111-4000-8000-0000000e2b01"
+	rb := newRebindFixture(t, map[string]Override{foreign: {ItemType: "Lakehouse", ItemName: "LH_Silver"}})
+	in := []byte(`[{"name": "s", "path": "/Tables",
+	  "target": {"type": "OneLake", "oneLake": {
+	    "workspaceId": "5a5a5a5a-0000-4000-8000-00000000e2b1", "itemId": "` + foreign + `", "path": "Tables/dbo"}}}]`)
+	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Bronze"}, "shortcuts.metadata.json", in, "")
+	if got := parseShortcutTargets(t, out)["s"]; got != [2]string{"test-data", "test-silver-lh"} {
+		t.Errorf("override must still rewrite the target, got %v", got)
+	}
+	if len(outcome.SharedShortcuts) != 0 {
+		t.Errorf("an overridden target is not shared: %#v", outcome.SharedShortcuts)
+	}
+}
+
+// The summary row for a rewritten shortcut must say what kind of item it
+// points at — the bare target name made a semantic model's OneLake tables look
+// like a stray report. The owning lakehouse is NOT in the name: the summary's
+// "in <item>" column already names it, and repeating it read as noise.
+func TestRebindShortcutsChangeNamesOwnerAndType(t *testing.T) {
+	rb := newRebindFixture(t, nil)
+	in := []byte(`[{"name": "s", "path": "Tables",
+	  "target": {"type": "OneLake", "oneLake": {
+	    "workspaceId": "dev-semmod", "itemId": "` + devHRModel + `", "path": "Tables/t"}}}]`)
+	_, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_ConfigLog"}, "shortcuts.metadata.json", in, "")
+	var name string
+	for _, c := range outcome.Changes {
+		if c.Kind == "Shortcut" {
+			name = c.Name
+		}
+	}
+	if name != "HR (SemanticModel)" {
+		t.Errorf("shortcut change name = %q", name)
 	}
 }
 

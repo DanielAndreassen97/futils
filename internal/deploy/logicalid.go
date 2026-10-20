@@ -5,6 +5,11 @@ import "strings"
 // placeholderGUID is fabric's reserved "unset logicalId" value; never replaced.
 const placeholderGUID = "00000000-0000-0000-0000-000000000000"
 
+// ThisWorkspaceGUID is placeholderGUID as the summary sees it: behind a
+// workspace key, Fabric's git export writes it for "the workspace this item
+// lives in", so the summary names it instead of printing zeros.
+const ThisWorkspaceGUID = placeholderGUID
+
 // ReplaceLogicalIds rewrites every known source logicalId in content with its
 // deployed target GUID. This is how cross-item references (e.g. a report
 // pointing at a semantic model's logicalId) are repointed at the items that

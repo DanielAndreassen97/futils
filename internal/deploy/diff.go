@@ -47,6 +47,7 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 			rebound, partOutcome := rb.RebindPart(subbed, part.Path, content, targetWS)
 			content = rebound
 			outcome.Changes = append(outcome.Changes, partOutcome.Changes...)
+			outcome.SharedShortcuts = append(outcome.SharedShortcuts, partOutcome.SharedShortcuts...)
 			for _, u := range partOutcome.Unresolved {
 				u.ItemName = item.DisplayName
 				outcome.AddUnresolved(u)
@@ -58,6 +59,9 @@ func SubstituteParts(item LocalItem, idMap map[string]string, resolver *Resolver
 			}
 		}
 		out[part.Path] = content
+	}
+	for i := range outcome.Changes {
+		outcome.Changes[i].Items = []ItemRef{{Name: item.DisplayName, Type: item.Type}}
 	}
 	return out, outcome, nil
 }

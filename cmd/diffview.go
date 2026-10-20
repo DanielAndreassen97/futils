@@ -711,9 +711,17 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					nameCell = html.EscapeString(c.Name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
 					lastKind, lastName = c.Kind, c.Name
 				}
+				where := ""
+				if len(c.Items) > 0 {
+					labels := make([]string, len(c.Items))
+					for i, it := range c.Items {
+						labels[i] = itemLabel(it)
+					}
+					where = ` <span class="type">in ` + html.EscapeString(strings.Join(labels, ", ")) + `</span>`
+				}
 				b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
 					`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
-					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span></td></tr>`)
+					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span>` + where + `</td></tr>`)
 			}
 			b.WriteString(`</table></div>`)
 		}
@@ -767,12 +775,16 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 
 	// Report bindings: which semantic model each report binds to in the target.
 	if binds := collectReportBindings(groups); len(binds) > 0 {
-		fmt.Fprintf(&b, `<h2>Report bindings <span class="note">— report → semantic model · %d binding(s)</span></h2>`, len(binds))
+		fmt.Fprintf(&b, `<h2>Report bindings <span class="note">— report → semantic model it binds to in the target · %d binding(s)</span></h2>`, len(binds))
 		b.WriteString(`<div class="panel"><table>`)
 		for _, rb := range binds {
+			pathNote := ""
+			if rb.FromPath {
+				pathNote = " · found by name — git points to the model's folder"
+			}
 			b.WriteString(`<tr><td class="name">` + html.EscapeString(rb.Report) + ` <span class="type">Report</span></td>` +
 				`<td class="detail rb"><span class="rb-arrow" style="padding-left:0">→</span><span class="rb-new">` + html.EscapeString(rb.Model) +
-				`</span> <span class="type">in ` + html.EscapeString(rb.Workspace) + `</span></td></tr>`)
+				`</span> <span class="type">in ` + html.EscapeString(rb.Workspace) + pathNote + `</span></td></tr>`)
 		}
 		b.WriteString(`</table></div>`)
 	}
