@@ -261,7 +261,7 @@ func currentValueBox(label, value string) string {
 }
 
 // baselineSuffix renders a mapping's isolated baseline workspace for display —
-// " [baseline: AG - Front - DEV]" — and nothing when the mapping inherits the
+// " [baseline: DW - DEV - Frontend]" — and nothing when the mapping inherits the
 // baseline environment.
 func baselineSuffix(m config.DeployMapping) string {
 	if m.BaselineWorkspace == "" {

@@ -23,7 +23,7 @@ func TestSharedHostSuffixOnlyWhenEveryChangeAgrees(t *testing.T) {
 	dom := ".datawarehouse.fabric.microsoft.com"
 	same := []deploy.RebindChange{
 		{Old: "AAAAAAAAAAAAAAAAAAAA" + dom, New: "bbbbbbbbbbbbbbbbbbbb" + dom},
-		{Old: "ad46c76a-9c2b-4985-bc3c-c8869c466f06", New: "a33b563a-07f6-48e7-b7cd-7e146dbb9566"}, // GUID rows don't veto
+		{Old: "5e1d0000-1111-4000-8000-0000000000e1", New: "5e1d0000-2222-4000-8000-0000000000e2"}, // GUID rows don't veto
 	}
 	if got := sharedHostSuffix(same); got != dom {
 		t.Errorf("expected shared suffix %q, got %q", dom, got)
@@ -48,7 +48,7 @@ func TestPrintRebindSummaryCompactLayout(t *testing.T) {
 		{Kind: "Lakehouse", Name: "LH_Bronze", Old: "a1b2c3d4-1111-4222-8333-444455556666", New: "f0e1d2c3-1111-4222-8333-444455556666"},
 		{Kind: "Lakehouse", Name: "LH_ConfigLog", Old: "b2c3d4e5-1111-4222-8333-444455556666", New: "e1f2a3b4-1111-4222-8333-444455556666"},
 		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + dom, New: "zyxwvutsrqponmlkjihgfedcba" + dom},
-		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "ad46c76a-9c2b-4985-bc3c-c8869c466f06", New: "a33b563a-07f6-48e7-b7cd-7e146dbb9566"},
+		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "5e1d0000-1111-4000-8000-0000000000e1", New: "5e1d0000-2222-4000-8000-0000000000e2"},
 		{Kind: "Workspace", Name: "DW - TEST - Data", Old: "534b9b92-abdc-4fa2-94cc-0b7d50e8d60d", New: "7c3c0fc8-6943-422c-9a0d-79e9a0d28b57"},
 	}}}
 	out := captureStdout(t, func() { printRebindSummary(groups) })
