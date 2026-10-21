@@ -572,6 +572,11 @@ func addWorkspaceToEnv(configPath string, client APIClient, customerName, alias 
 	return nil
 }
 
+// commonWorkspacesExplainer says what marking a workspace common does. Shown at
+// the top of the sub-menu and in the Info box, so the choice is made knowing
+// that nothing in these workspaces is ever rebound.
+const commonWorkspacesExplainer = "A common workspace is one every environment reads from, e.g. a shared ingest workspace with a mirrored database. References to items in it (shortcuts, a notebook's lakehouse, pipeline activities) are never auto-rebound to TEST or PROD: they deploy unchanged, pointing at the same item in every environment. Only add a workspace that really is the same for all environments; a DEV workspace belongs on DEV instead."
+
 // manageCommonWorkspaces is the sub-menu for the customer's common workspaces:
 // pick one to remove it, or add a workspace that isn't on any env yet.
 func manageCommonWorkspaces(configPath string, client APIClient, customerName string) error {
@@ -584,15 +589,21 @@ func manageCommonWorkspaces(configPath string, client APIClient, customerName st
 		if !ok {
 			return fmt.Errorf("customer %q disappeared from config", customerName)
 		}
+		fmt.Println()
+		fmt.Println(contextBanner("Common workspaces", fmt.Sprintf("%s · %d workspace%s", customerName, len(customer.CommonWorkspaces), pluralS(len(customer.CommonWorkspaces)))))
+		fmt.Println(wrapIndented(summaryDimStyle.Render(commonWorkspacesExplainer), 3))
+		fmt.Println()
 		options := make([]ui.MenuOption, 0, len(customer.CommonWorkspaces)+3)
 		if len(customer.CommonWorkspaces) > 0 {
 			options = append(options, ui.MenuOption{Label: "Common workspaces", IsHeader: true})
 			for _, ws := range customer.CommonWorkspaces {
-				options = append(options, ui.MenuOption{Label: ws, Value: "rm:" + ws, Description: "Select to remove it from the common workspaces."})
+				options = append(options, ui.MenuOption{Label: ws, Value: "rm:" + ws,
+					Description: "Select to remove it from the common workspaces.",
+					Info:        "Removing it makes references into this workspace unresolved again on the next deploy, where you can mark it common again or register it on an environment."})
 			}
 		}
 		options = append(options,
-			ui.MenuOption{Label: "Add workspace", Value: "add", Description: "Pick a workspace that isn't on any environment."},
+			ui.MenuOption{Label: "Add workspace", Value: "add", Description: "Pick a workspace that isn't on any environment.", Info: commonWorkspacesExplainer},
 			ui.MenuOption{Label: "Back", Value: editActionBack},
 		)
 		choice, err := ui.NumberMenu("Common workspaces", options)
