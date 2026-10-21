@@ -126,27 +126,31 @@ func seedDemo(dir string) (string, error) {
 // writeDemoConfig renders the Fabrikam customer: DEV is the baseline, TEST and
 // PROD carry folder→workspace deployment mappings matching the seeded repo.
 func writeDemoConfig(path, repo string) error {
+	cfg := config.Config{Customers: map[string]config.Customer{"Fabrikam": demoCustomer(repo)}}
+	return config.Save(path, cfg)
+}
+
+// demoCustomer is the seeded Fabrikam customer. The Raw and shared Ingest
+// workspaces are left off on purpose, so a first deploy asks about both.
+func demoCustomer(repo string) config.Customer {
 	mappings := func(env string) []config.DeployMapping {
 		return []config.DeployMapping{
 			{Folder: "Backend", Workspace: demoConfigWS(env)},
 			{Folder: "Frontend", Workspace: demoSemModWS(env)},
 		}
 	}
-	cfg := config.Config{Customers: map[string]config.Customer{
-		"Fabrikam": {
-			Environments: []config.Environment{
-				{Alias: "DEV", Workspaces: []string{demoConfigWS("DEV"), demoSemModWS("DEV")}},
-				{Alias: "TEST", Workspaces: []string{demoConfigWS("TEST"), demoSemModWS("TEST")}, Deployments: mappings("TEST")},
-				{Alias: "PROD", Workspaces: []string{demoConfigWS("PROD"), demoSemModWS("PROD")}, Deployments: mappings("PROD")},
-			},
-			RepoPath:            repo,
-			BaselineEnvironment: "DEV",
-			DeployHistoryPath:   "deploy-history",
-			PostDeployRuns:      []string{"nb_ingest_sales", "PL_refresh_sales"},
-			Favorites: []config.NotebookFavorite{
-				{Name: "nb_ingest_sales", Parameters: []string{"run_date", "full_reload"}},
-			},
+	return config.Customer{
+		Environments: []config.Environment{
+			{Alias: "DEV", Workspaces: []string{demoConfigWS("DEV"), demoSemModWS("DEV")}},
+			{Alias: "TEST", Workspaces: []string{demoConfigWS("TEST"), demoSemModWS("TEST")}, Deployments: mappings("TEST")},
+			{Alias: "PROD", Workspaces: []string{demoConfigWS("PROD"), demoSemModWS("PROD")}, Deployments: mappings("PROD")},
 		},
-	}}
-	return config.Save(path, cfg)
+		RepoPath:            repo,
+		BaselineEnvironment: "DEV",
+		DeployHistoryPath:   "deploy-history",
+		PostDeployRuns:      []string{"nb_ingest_sales", "PL_refresh_sales"},
+		Favorites: []config.NotebookFavorite{
+			{Name: "nb_ingest_sales", Parameters: []string{"run_date", "full_reload"}},
+		},
+	}
 }

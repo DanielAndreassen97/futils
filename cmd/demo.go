@@ -55,6 +55,16 @@ func demoGUID(parts ...string) string {
 func demoConfigWS(env string) string { return "DW - " + env + " - Config" }
 func demoSemModWS(env string) string { return "DW - " + env + " - SemMod" }
 
+// demoRawWS is a per-env landing workspace the seeded config deliberately
+// leaves off every environment, so a deploy shows the "workspace on no
+// environment" question for a workspace that belongs to an env.
+func demoRawWS(env string) string { return "DW - " + env + " - Raw" }
+
+// demoIngestWS is the one ingest workspace every env reads from (a mirrored
+// ERP database). Also left out of the seeded config: it is the demo's common
+// workspace to discover.
+const demoIngestWS = "DW - Shared - Ingest"
+
 // demoSQLHost is the fake SQL analytics endpoint host for an environment,
 // shaped like the real ones (opaque hash subdomain).
 func demoSQLHost(env string) string {
@@ -66,7 +76,7 @@ func demoSQLHost(env string) string {
 func demoWorkspaces() []fabric.Workspace {
 	var out []fabric.Workspace
 	for _, env := range demoEnvs {
-		for _, name := range []string{demoConfigWS(env), demoSemModWS(env)} {
+		for _, name := range []string{demoConfigWS(env), demoSemModWS(env), demoRawWS(env)} {
 			// CapacityID matters to the workspace picker: without it every demo
 			// workspace would be classified as a Pro workspace.
 			out = append(out, fabric.Workspace{
@@ -77,11 +87,14 @@ func demoWorkspaces() []fabric.Workspace {
 			})
 		}
 	}
-	return out
+	return append(out, fabric.Workspace{
+		ID: demoGUID("workspace", demoIngestWS), DisplayName: demoIngestWS, Type: "Workspace", CapacityID: demoCapacityID,
+	})
 }
 
 // demoEnvOfWS resolves a workspace ID back to its environment and kind
-// ("Config"/"SemMod"). ok=false for unknown IDs.
+// ("Config"/"SemMod"/"Raw"). ok=false for unknown IDs, including the shared
+// ingest workspace, which belongs to no env.
 func demoEnvOfWS(wsID string) (env, kind string, ok bool) {
 	for _, e := range demoEnvs {
 		if wsID == demoGUID("workspace", demoConfigWS(e)) {
@@ -90,8 +103,18 @@ func demoEnvOfWS(wsID string) (env, kind string, ok bool) {
 		if wsID == demoGUID("workspace", demoSemModWS(e)) {
 			return e, "SemMod", true
 		}
+		if wsID == demoGUID("workspace", demoRawWS(e)) {
+			return e, "Raw", true
+		}
 	}
 	return "", "", false
+}
+
+// demoMirrorERP is the mirrored ERP database in the shared ingest workspace:
+// one item, one GUID, read by every env.
+func demoMirrorERP() fabric.Item {
+	wsID := demoGUID("workspace", demoIngestWS)
+	return fabric.Item{ID: demoGUID("item", "MirroredDatabase", "MIR_ERP"), DisplayName: "MIR_ERP", Type: "MirroredDatabase", WorkspaceID: wsID}
 }
 
 func demoItemGUID(itemType, name, env string) string {
@@ -104,6 +127,9 @@ func demoItemGUID(itemType, name, env string) string {
 // lakehouses — like the real API — which also feeds the baseline name index the
 // endpoint GUIDs that Direct-Lake-on-SQL models bake into expressions.
 func demoItems(wsID string) ([]fabric.Item, bool) {
+	if wsID == demoGUID("workspace", demoIngestWS) {
+		return []fabric.Item{demoMirrorERP()}, true
+	}
 	env, kind, ok := demoEnvOfWS(wsID)
 	if !ok {
 		return nil, false
@@ -113,6 +139,9 @@ func demoItems(wsID string) ([]fabric.Item, bool) {
 	}
 	sqlEndpoint := func(name string) fabric.Item {
 		return fabric.Item{ID: demoGUID("sqlendpoint", name, env), DisplayName: name, Type: "SQLEndpoint", WorkspaceID: wsID}
+	}
+	if kind == "Raw" {
+		return []fabric.Item{mk("LH_Raw", "Lakehouse")}, true
 	}
 	if kind == "Config" {
 		items := []fabric.Item{
@@ -445,6 +474,30 @@ func demoShortcutsAt(env string, current bool) string {
         "workspaceId": "` + demoGUID("workspace", demoConfigWS(env)) + `",
         "itemId": "` + demoItemGUID("Lakehouse", "LH_Silver", env) + `",
         "path": "` + subpath + `"
+      }
+    }
+  },
+  {
+    "name": "erp_orders",
+    "path": "Tables",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "workspaceId": "` + demoMirrorERP().WorkspaceID + `",
+        "itemId": "` + demoMirrorERP().ID + `",
+        "path": "Tables/dbo/orders"
+      }
+    }
+  },
+  {
+    "name": "raw_events",
+    "path": "Tables",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "workspaceId": "` + demoGUID("workspace", demoRawWS(env)) + `",
+        "itemId": "` + demoItemGUID("Lakehouse", "LH_Raw", env) + `",
+        "path": "Tables/events"
       }
     }
   },

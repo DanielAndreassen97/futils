@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -847,19 +848,22 @@ func newDeployGroupsRebinder(t *testing.T, fake *deployFakeAPI) *deploy.Rebinder
 	return rb
 }
 
-// A new lakehouse's shared shortcut targets surface in the compare too, with
-// the workspace named from the tenant's list: the compare only content-diffs
-// existing items, and a brand-new lakehouse is exactly where a wrong "shared"
-// call would otherwise go unseen.
-func TestBuildDeployGroupsNamesSharedShortcutWorkspace(t *testing.T) {
+// A new lakehouse's common shortcut targets surface in the compare too: the
+// compare only content-diffs existing items, and a brand-new lakehouse's
+// "kept as-is" shortcuts are just as worth showing.
+func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 	fake := &deployFakeAPI{
 		workspaces: []fabric.Workspace{
 			{ID: "ws-dev", DisplayName: "DEV"}, {ID: "ws-tgt", DisplayName: "TGT"},
 			{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
 		},
-		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {}},
+		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {},
+			"ws-ingest": {{ID: "mirror-erp", DisplayName: "MIR_ERP", Type: "MirroredDatabase"}}},
 	}
 	rb := newDeployGroupsRebinder(t, fake)
+	if err := rb.SetCommonWorkspaces(fake.workspaces[2:]); err != nil {
+		t.Fatal(err)
+	}
 	lh := deploy.LocalItem{Type: "Lakehouse", DisplayName: "LH_New", FolderPath: "Data",
 		Parts: []deploy.Part{{Path: "shortcuts.metadata.json", Content: []byte(`[{"name": "erp", "path": "/Tables",
 		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-ingest", "itemId": "mirror-erp", "path": "Tables/dbo"}}}]`)}}}
@@ -870,9 +874,9 @@ func TestBuildDeployGroupsNamesSharedShortcutWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}
-	got := groups[0].SharedShortcuts
+	got := groups[0].CommonShortcuts
 	if len(got) != 1 || got[0].Shortcut != "erp" || got[0].WorkspaceName != "DW - Shared - Ingest" {
-		t.Errorf("SharedShortcuts = %+v", got)
+		t.Errorf("CommonShortcuts = %+v", got)
 	}
 }
 
@@ -1003,7 +1007,7 @@ func TestPrintUnresolvedListsRefs(t *testing.T) {
 			{GUID: "0b0b0b0b-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Lakehouse", Location: "known_lakehouses", ItemName: "NB_Config"},
 		},
 	}}
-	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST", nil) })
 	if !strings.Contains(out, "NB_Config") || !strings.Contains(out, "0b0b0b0b") {
 		t.Errorf("unresolved output missing context:\n%s", out)
 	}
@@ -1013,7 +1017,7 @@ func TestPrintUnresolvedListsRefs(t *testing.T) {
 }
 
 func TestPrintUnresolvedSilentWhenNone(t *testing.T) {
-	out := captureStdout(t, func() { printUnresolved([]deployGroup{{Folder: "Backend"}}, "DEV", "TEST") })
+	out := captureStdout(t, func() { printUnresolved([]deployGroup{{Folder: "Backend"}}, "DEV", "TEST", nil) })
 	if strings.TrimSpace(out) != "" {
 		t.Errorf("expected no output when nothing unresolved, got:\n%s", out)
 	}
@@ -1028,7 +1032,7 @@ func TestPrintUnresolvedLeftoverSection(t *testing.T) {
 				Reason: deploy.ReasonLeftover, Hint: `workspace "DW - DEV - Data"; in the target this is e1e10000-1111-4222-8333-444455556666`},
 		},
 	}}
-	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST", nil) })
 	if !strings.Contains(out, "leftover baseline reference") {
 		t.Errorf("leftover output missing its own section header:\n%s", out)
 	}
@@ -1048,7 +1052,7 @@ func TestPrintUnresolvedCountsExcludeLeftovers(t *testing.T) {
 			{GUID: "1c1c1c1c-aaaa-bbbb-cccc-ddddeeeeffff", ItemType: "Workspace", Location: "p", ItemName: "NB_Config", Reason: deploy.ReasonLeftover, Hint: "workspace X"},
 		},
 	}}
-	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST", nil) })
 	if !strings.Contains(out, "1 unresolved reference(s)") {
 		t.Errorf("leftover ref must not inflate the unresolved heading count:\n%s", out)
 	}
@@ -1070,7 +1074,7 @@ func TestPrintUnresolvedNoDoubleBlankLineBetweenSections(t *testing.T) {
 				Reason: deploy.ReasonLeftover, Hint: "workspace X"},
 		},
 	}}
-	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST") })
+	out := captureStdout(t, func() { printUnresolved(groups, "DEV", "TEST", nil) })
 	if strings.Contains(out, "\n\n\n") {
 		t.Errorf("expected exactly one blank line between the unresolved and leftover sections:\n%q", out)
 	}
@@ -1591,26 +1595,75 @@ func TestPrintReportBindingsExplainsPathOrigin(t *testing.T) {
 	}
 }
 
-// Shared shortcut targets are kept as-is, so the row has to make a wrong call
-// easy to spot: a DEV workspace that was never registered reads as
-// "DW - DEV - Data", not as an anonymous GUID.
-func TestPrintSharedShortcutsNamesWorkspace(t *testing.T) {
-	groups := []deployGroup{{SharedShortcuts: []deploy.SharedShortcut{
-		{Lakehouse: "LH_Silver", Shortcut: "erp", ItemID: "5a5a5a5a-1111-4000-8000-0000000e2b01",
-			WorkspaceID: "5a5a5a5a-0000-4000-8000-00000000e2b1", WorkspaceName: "DW - Shared - Ingest"},
-		{Lakehouse: "LH_Silver", Shortcut: "hidden", ItemID: "6b6b6b6b-1111-4000-8000-0000000e2b01",
-			WorkspaceID: "6b6b6b6b-0000-4000-8000-00000000e2b1"},
+// Common shortcut targets are kept as-is, so each row names what it points at
+// and in which common workspace, letting the user confirm "kept" was right.
+// The HTML report lists the same set.
+func TestPrintCommonShortcuts(t *testing.T) {
+	groups := []deployGroup{{CommonShortcuts: []deploy.CommonShortcut{
+		{Lakehouse: "LH_Silver", Shortcut: "erp", Target: "MIR_ERP", TargetType: "MirroredDatabase", WorkspaceName: "DW - Shared - Ingest"},
+		{Lakehouse: "LH_Silver", Shortcut: "erp", Target: "MIR_ERP", TargetType: "MirroredDatabase", WorkspaceName: "DW - Shared - Ingest"},
 	}}}
-	out := captureStdout(t, func() { printSharedShortcuts(groups) })
-	if !strings.Contains(out, "(workspace DW - Shared - Ingest)") {
-		t.Errorf("a visible workspace must be named:\n%s", out)
+	out := captureStdout(t, func() { printCommonShortcuts(groups) })
+	if !strings.Contains(out, "LH_Silver › erp") || !strings.Contains(out, "MIR_ERP") || !strings.Contains(out, "(DW - Shared - Ingest)") {
+		t.Errorf("common shortcut row must name target and workspace:\n%s", out)
 	}
-	if !strings.Contains(out, "(workspace "+compactValue("6b6b6b6b-0000-4000-8000-00000000e2b1")+")") {
-		t.Errorf("an unseen workspace falls back to its GUID:\n%s", out)
+	if strings.Count(out, "LH_Silver › erp") != 1 {
+		t.Errorf("duplicates across groups must collapse:\n%s", out)
 	}
 	report := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
-	if !strings.Contains(report, "Shared shortcut targets") || !strings.Contains(report, "LH_Silver › erp") || !strings.Contains(report, "in DW - Shared - Ingest") {
-		t.Errorf("the HTML report must list shared shortcut targets too:\n%s", report)
+	if !strings.Contains(report, "Common workspace references") || !strings.Contains(report, "in DW - Shared - Ingest") {
+		t.Errorf("the HTML report must list common shortcut targets too:\n%s", report)
+	}
+}
+
+// References into a workspace on no environment are grouped per workspace,
+// apart from the other unresolved references: the fix is one answer per
+// workspace (common, or register it), not one per GUID. A workspace that is on
+// an env, or that the caller can't see, keeps its refs in the normal list.
+func TestUnregisteredWorkspacesGroupedApart(t *testing.T) {
+	customer := config.Customer{
+		Environments:     []config.Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}}},
+		CommonWorkspaces: []string{"DW - Shared - Old"},
+	}
+	workspaces := []fabric.Workspace{
+		{ID: "ws-data", DisplayName: "DW - DEV - Data"},
+		{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
+		{ID: "ws-old", DisplayName: "DW - Shared - Old"},
+	}
+	groups := []deployGroup{{Unresolved: []deploy.UnresolvedRef{
+		{GUID: "11111111-1111-1111-1111-111111111111", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-ingest"},
+		{GUID: "22222222-2222-2222-2222-222222222222", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-data"},
+		{GUID: "33333333-3333-3333-3333-333333333333", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-hidden"},
+	}}}
+	unregistered := unregisteredWorkspaces(groups, customer, workspaces)
+	if len(unregistered) != 1 || unregistered["ws-ingest"] != "DW - Shared - Ingest" {
+		t.Fatalf("unregistered = %v", unregistered)
+	}
+	out := captureStdout(t, func() {
+		printUnregisteredWorkspaces(groups, unregistered)
+		printUnresolved(groups, "DEV", "TEST", unregistered)
+	})
+	if !strings.Contains(out, "1 reference(s) into workspaces that aren't on any environment") || !strings.Contains(out, "DW - Shared - Ingest") {
+		t.Errorf("missing per-workspace group:\n%s", out)
+	}
+	if !strings.Contains(out, "2 unresolved reference(s)") || strings.Contains(out, "11111111") {
+		t.Errorf("the grouped ref must not repeat in the unresolved list:\n%s", out)
+	}
+}
+
+// Answering "common" for a workspace adds it once, without touching the
+// caller's slice: the deploy re-reads config, and a shared backing array would
+// leak the edit into a customer value the caller still holds.
+func TestAddCommonWorkspaceIdempotent(t *testing.T) {
+	orig := config.Customer{CommonWorkspaces: make([]string, 1, 4)}
+	orig.CommonWorkspaces[0] = "DW - Shared - A"
+	c := addCommonWorkspace(orig, "DW - Shared - B")
+	c = addCommonWorkspace(c, "DW - Shared - B")
+	if !slices.Equal(c.CommonWorkspaces, []string{"DW - Shared - A", "DW - Shared - B"}) {
+		t.Errorf("CommonWorkspaces = %v", c.CommonWorkspaces)
+	}
+	if len(orig.CommonWorkspaces) != 1 || orig.CommonWorkspaces[:2][1] != "" {
+		t.Errorf("caller's slice was modified: %v", orig.CommonWorkspaces[:2])
 	}
 }
 

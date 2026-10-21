@@ -708,7 +708,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			for _, c := range auto {
 				nameCell := ""
 				if c.Kind != lastKind || c.Name != lastName {
-					nameCell = html.EscapeString(c.Name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
+					nameCell = html.EscapeString(changeName(c)) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
 					lastKind, lastName = c.Kind, c.Name
 				}
 				where := ""
@@ -719,8 +719,12 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					}
 					where = ` <span class="type">in ` + html.EscapeString(strings.Join(labels, ", ")) + `</span>`
 				}
+				field := ""
+				if f := endpointField(c); f != "" {
+					field = `<span class="type">` + f + `</span> `
+				}
 				b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
-					`<td class="detail rb"><span class="rb-old">` + html.EscapeString(c.Old) +
+					`<td class="detail rb">` + field + `<span class="rb-old">` + html.EscapeString(changeOld(c)) +
 					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span>` + where + `</td></tr>`)
 			}
 			b.WriteString(`</table></div>`)
@@ -789,15 +793,15 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		b.WriteString(`</table></div>`)
 	}
 
-	// Shared shortcut targets: OneLake shortcuts kept as-is because their
-	// target sits in a workspace outside every env.
-	if shared := collectSharedShortcuts(groups); len(shared) > 0 {
-		fmt.Fprintf(&b, `<h2>Shared shortcut targets <span class="note">— outside every env, kept as-is · %d shortcut(s)</span></h2>`, len(shared))
+	// Common workspace references: OneLake shortcuts kept as-is because their
+	// target sits in one of the customer's common workspaces.
+	if common := collectCommonShortcuts(groups); len(common) > 0 {
+		fmt.Fprintf(&b, `<h2>Common workspace references <span class="note">— kept as-is · %d shortcut(s)</span></h2>`, len(common))
 		b.WriteString(`<div class="panel"><table>`)
-		for _, sc := range shared {
+		for _, sc := range common {
 			b.WriteString(`<tr><td class="name">` + html.EscapeString(sc.Lakehouse+" › "+sc.Shortcut) + ` <span class="type">Shortcut</span></td>` +
-				`<td class="detail rb"><span class="rb-new">` + html.EscapeString(sc.ItemID) +
-				`</span> <span class="type">in ` + html.EscapeString(sharedWorkspaceLabel(sc)) + `</span></td></tr>`)
+				`<td class="detail rb"><span class="rb-new">` + html.EscapeString(itemLabel(deploy.ItemRef{Name: sc.Target, Type: sc.TargetType})) +
+				`</span> <span class="type">in ` + html.EscapeString(sc.WorkspaceName) + `</span></td></tr>`)
 		}
 		b.WriteString(`</table></div>`)
 	}

@@ -39,7 +39,7 @@ func TestDemoTenantCoherent(t *testing.T) {
 	known := map[string]bool{}
 	for _, ws := range demoWorkspaces() {
 		env, _, ok := demoEnvOfWS(ws.ID)
-		if !ok {
+		if !ok && ws.DisplayName != demoIngestWS { // the shared ingest workspace belongs to no env
 			t.Fatalf("workspace %s has no env mapping", ws.DisplayName)
 		}
 		items, ok := demoItems(ws.ID)
@@ -155,5 +155,58 @@ func TestDemoSQLModelsRebindClean(t *testing.T) {
 		if diffs := deploy.DiffParts(local, deployed); len(diffs) != 0 {
 			t.Errorf("%s: compares as Changed after rebind: %#v", name, diffs)
 		}
+	}
+}
+
+// TestDemoCommonWorkspaceStory runs the demo's shortcut story through the real
+// rebinder. LH_Bronze has one shortcut into the shared ingest workspace (common
+// to every env) and one into DEV's Raw workspace (an env workspace nobody
+// registered). Seeded as-is, both are unresolved and grouped per workspace, so
+// the deploy asks once for each. After the two answers (Ingest is common, Raw
+// goes on DEV and TEST) the mirror is kept as-is and raw_events rebinds to
+// TEST. If this breaks, `futils demo` no longer shows the flow it exists to
+// show.
+func TestDemoCommonWorkspaceStory(t *testing.T) {
+	api := newDemoClient()
+	workspaces := demoWorkspaces()
+	shortcuts := []byte(demoShortcuts("DEV"))
+
+	before := demoCustomer("/repo")
+	rb, err := buildRebinder(api, "tok", before, "TEST", workspaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, outcome := rb.RebindShortcuts("LH_Bronze", shortcuts)
+	groups := []deployGroup{{Unresolved: outcome.Unresolved}}
+	unregistered := unregisteredWorkspaces(groups, before, workspaces)
+	want := map[string]string{
+		demoGUID("workspace", demoIngestWS):     demoIngestWS,
+		demoGUID("workspace", demoRawWS("DEV")): demoRawWS("DEV"),
+	}
+	if len(unregistered) != len(want) {
+		t.Fatalf("unregistered = %v, want %v", unregistered, want)
+	}
+	for id, name := range want {
+		if unregistered[id] != name {
+			t.Errorf("unregistered[%s] = %q, want %q", id, unregistered[id], name)
+		}
+	}
+
+	after := addCommonWorkspace(before, demoIngestWS)
+	after = applyRefAction(after, deploy.UnresolvedRef{}, RefAction{Kind: refActionRegister, EnvAlias: "DEV", Workspace: demoRawWS("DEV")})
+	after = applyRefAction(after, deploy.UnresolvedRef{}, RefAction{Kind: refActionRegister, EnvAlias: "TEST", Workspace: demoRawWS("TEST")})
+	rb, err = buildRebinder(api, "tok", after, "TEST", workspaces)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, outcome := rb.RebindShortcuts("LH_Bronze", shortcuts)
+	if len(outcome.Unresolved) != 0 {
+		t.Errorf("after both answers nothing is unresolved: %+v", outcome.Unresolved)
+	}
+	if len(outcome.CommonShortcuts) != 1 || outcome.CommonShortcuts[0].Shortcut != "erp_orders" {
+		t.Errorf("CommonShortcuts = %+v", outcome.CommonShortcuts)
+	}
+	if !strings.Contains(string(out), demoItemGUID("Lakehouse", "LH_Raw", "TEST")) || !strings.Contains(string(out), demoMirrorERP().ID) {
+		t.Errorf("raw_events must rebind to TEST and erp_orders stay on the mirror:\n%s", out)
 	}
 }

@@ -14,7 +14,20 @@ const (
 	devConfigWS = "22222222-2222-2222-2222-222222222222"
 	devSilverLH = "33333333-3333-3333-3333-333333333333"
 	devHRModel  = "ffff1111-2222-3333-4444-555566667777"
+
+	// Items in the fixture's "ingest" workspace, which is on no env.
+	commonMirror = "5a5a5a5a-1111-4000-8000-0000000e2b01"
+	commonLH     = "5a5a5a5a-2222-4000-8000-0000000e2b02"
 )
+
+// withCommonIngest marks the fixture's "ingest" workspace as common.
+func withCommonIngest(t *testing.T, rb *Rebinder) *Rebinder {
+	t.Helper()
+	if err := rb.SetCommonWorkspaces([]fabric.Workspace{{ID: "ingest", DisplayName: "DW - Shared - Ingest"}}); err != nil {
+		t.Fatalf("SetCommonWorkspaces: %v", err)
+	}
+	return rb
+}
 
 func rebindNotebook(defaultLH, defaultWS, defaultName, knownID string) []byte {
 	return []byte(`# Fabric notebook source
@@ -48,8 +61,13 @@ func newRebindFixture(t *testing.T, overrides map[string]Override) *Rebinder {
 			{ID: "test-config", DisplayName: "DW - TEST - Config"},
 			{ID: "test-data", DisplayName: "DW - TEST - Data"},
 			{ID: "test-semmod", DisplayName: "DW - TEST - SemMod"},
+			{ID: "ingest", DisplayName: "DW - Shared - Ingest"},
 		},
 		itemsByWS: map[string][]fabric.Item{
+			"ingest": {
+				{ID: commonMirror, DisplayName: "MIR_ERP", Type: "MirroredDatabase"},
+				{ID: commonLH, DisplayName: "LH_Common", Type: "Lakehouse"},
+			},
 			"dev-config":  {{ID: devConfigLH, DisplayName: "LH_ConfigLog", Type: "Lakehouse"}},
 			"dev-data":    {{ID: devSilverLH, DisplayName: "LH_Silver", Type: "Lakehouse"}},
 			"dev-semmod":  {{ID: devHRModel, DisplayName: "HR", Type: "SemanticModel"}},
@@ -600,91 +618,104 @@ func TestRebindShortcutsUnresolved(t *testing.T) {
 	if outcome.Unresolved[0].ItemType != "" {
 		t.Errorf("unknown target type must be empty, got %q", outcome.Unresolved[0].ItemType)
 	}
-	if len(outcome.SharedShortcuts) != 0 {
-		t.Errorf("baseline-workspace target must not be reported as shared: %#v", outcome.SharedShortcuts)
+	if outcome.Unresolved[0].WorkspaceID != "dev-config" {
+		t.Errorf("unresolved shortcut must carry its workspace, got %q", outcome.Unresolved[0].WorkspaceID)
 	}
 }
 
-// A shortcut into a workspace outside both envs (e.g. a mirrored database in a
-// shared ingest workspace every env reads from) is the same target in every
-// env: it must deploy byte-identical, not be reported as unresolved, and be
-// listed as a shared target so the user sees it was deliberately kept.
-func TestRebindShortcutsSharedWorkspaceKeptAsIs(t *testing.T) {
-	rb := newRebindFixture(t, nil)
-	mirror := "5a5a5a5a-1111-4000-8000-0000000e2b01"
-	sharedWS := "5a5a5a5a-0000-4000-8000-00000000e2b1"
+// A shortcut into a common workspace (e.g. a mirrored database in a shared
+// ingest workspace every env reads from) is the same target in every env: it
+// must deploy byte-identical, not be reported as unresolved, and be listed so
+// the user sees it was deliberately kept.
+func TestRebindShortcutsCommonWorkspaceKeptAsIs(t *testing.T) {
+	rb := withCommonIngest(t, newRebindFixture(t, nil))
 	in := []byte(`[{"name": "ERP_Live", "path": "/Tables",
 	  "target": {"type": "OneLake", "oneLake": {
-	    "workspaceId": "` + sharedWS + `", "itemId": "` + mirror + `", "path": "Tables/dbo"}}}]`)
+	    "workspaceId": "ingest", "itemId": "` + commonMirror + `", "path": "Tables/dbo"}}}]`)
 	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Silver"}, "shortcuts.metadata.json", in, "test-data")
 	if string(out) != string(in) {
-		t.Errorf("shared target must deploy byte-identical:\n%s", out)
+		t.Errorf("common target must deploy byte-identical:\n%s", out)
 	}
 	if len(outcome.Unresolved) != 0 || len(outcome.Changes) != 0 {
-		t.Errorf("shared target must be neither unresolved nor rewritten: %#v / %#v", outcome.Unresolved, outcome.Changes)
+		t.Errorf("common target must be neither unresolved nor rewritten: %#v / %#v", outcome.Unresolved, outcome.Changes)
 	}
-	want := SharedShortcut{Lakehouse: "LH_Silver", Shortcut: "ERP_Live", ItemID: mirror, WorkspaceID: sharedWS}
-	if len(outcome.SharedShortcuts) != 1 || outcome.SharedShortcuts[0] != want {
-		t.Errorf("SharedShortcuts = %#v, want [%#v]", outcome.SharedShortcuts, want)
+	want := CommonShortcut{Lakehouse: "LH_Silver", Shortcut: "ERP_Live", Target: "MIR_ERP", TargetType: "MirroredDatabase", WorkspaceName: "DW - Shared - Ingest"}
+	if len(outcome.CommonShortcuts) != 1 || outcome.CommonShortcuts[0] != want {
+		t.Errorf("CommonShortcuts = %#v, want [%#v]", outcome.CommonShortcuts, want)
 	}
 }
 
-// A workspace registered on another env (SetEnvWorkspaces) is the customer's
-// own, not shared: a shortcut into it that this rebinder can't resolve is a gap
-// to report. Without this, a mapping-isolated rebinder or a shortcut into PROD
-// would be kept as "shared" and deploy pointing at the wrong env.
-func TestRebindShortcutsEnvWorkspaceIsNotShared(t *testing.T) {
+// Without the common list, the same shortcut is unresolved and names its
+// workspace. futils can't tell a workspace every env shares from a DEV
+// workspace nobody registered, so it must never guess "shared": a wrong guess
+// deploys TEST pointing at DEV data without a word.
+func TestRebindShortcutsUnknownWorkspaceStaysUnresolved(t *testing.T) {
 	rb := newRebindFixture(t, nil)
-	prodWS := "9a9a9a9a-0000-4000-8000-0000000da7a1"
-	rb.SetEnvWorkspaces([]string{prodWS})
-	in := []byte(`[{"name": "s", "path": "/Tables",
+	in := []byte(`[{"name": "ERP_Live", "path": "/Tables",
 	  "target": {"type": "OneLake", "oneLake": {
-	    "workspaceId": "` + prodWS + `", "itemId": "9a9a9a9a-1111-4000-8000-00000b20e2e1", "path": "Tables/t"}}}]`)
+	    "workspaceId": "ingest", "itemId": "` + commonMirror + `", "path": "Tables/dbo"}}}]`)
 	_, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Silver"}, "shortcuts.metadata.json", in, "")
-	if len(outcome.SharedShortcuts) != 0 {
-		t.Errorf("a target in an env workspace must not be shared: %#v", outcome.SharedShortcuts)
+	if len(outcome.CommonShortcuts) != 0 {
+		t.Errorf("an unlisted workspace is not common: %#v", outcome.CommonShortcuts)
 	}
-	if len(outcome.Unresolved) != 1 {
-		t.Errorf("a target in an env workspace must surface as unresolved: %#v", outcome.Unresolved)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].WorkspaceID != "ingest" {
+		t.Errorf("want one unresolved ref naming workspace ingest, got %#v", outcome.Unresolved)
 	}
 }
 
-// An explicit reference override still wins over the shared-workspace rule:
-// config is authoritative, so a user who maps a foreign target on purpose
-// gets the rewrite.
-func TestRebindShortcutsOverrideBeatsSharedWorkspace(t *testing.T) {
-	foreign := "5a5a5a5a-1111-4000-8000-0000000e2b01"
-	rb := newRebindFixture(t, map[string]Override{foreign: {ItemType: "Lakehouse", ItemName: "LH_Silver"}})
+// An explicit reference override still wins over the common workspace:
+// config is authoritative, so a user who maps a target on purpose gets the
+// rewrite.
+func TestRebindShortcutsOverrideBeatsCommonWorkspace(t *testing.T) {
+	rb := withCommonIngest(t, newRebindFixture(t, map[string]Override{commonMirror: {ItemType: "Lakehouse", ItemName: "LH_Silver"}}))
 	in := []byte(`[{"name": "s", "path": "/Tables",
 	  "target": {"type": "OneLake", "oneLake": {
-	    "workspaceId": "5a5a5a5a-0000-4000-8000-00000000e2b1", "itemId": "` + foreign + `", "path": "Tables/dbo"}}}]`)
+	    "workspaceId": "ingest", "itemId": "` + commonMirror + `", "path": "Tables/dbo"}}}]`)
 	out, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_Bronze"}, "shortcuts.metadata.json", in, "")
 	if got := parseShortcutTargets(t, out)["s"]; got != [2]string{"test-data", "test-silver-lh"} {
 		t.Errorf("override must still rewrite the target, got %v", got)
 	}
-	if len(outcome.SharedShortcuts) != 0 {
-		t.Errorf("an overridden target is not shared: %#v", outcome.SharedShortcuts)
+	if len(outcome.CommonShortcuts) != 0 {
+		t.Errorf("an overridden target is not kept as common: %#v", outcome.CommonShortcuts)
+	}
+}
+
+// Common applies to every reference kind, not just shortcuts: a notebook whose
+// default lakehouse lives in a common workspace keeps it, even though the
+// name-first lookup would otherwise search the target for "LH_Common" and fail.
+// Without the common list it stays unresolved and names the workspace.
+func TestRebindNotebookDefaultLakehouseInCommonWorkspace(t *testing.T) {
+	nb := rebindNotebook(commonLH, "ingest", "LH_Common", commonLH)
+
+	out, outcome := withCommonIngest(t, newRebindFixture(t, nil)).RebindNotebookLakehouses(nb)
+	if string(out) != string(nb) || len(outcome.Unresolved) != 0 || len(outcome.Changes) != 0 {
+		t.Errorf("common default lakehouse must stay as-is: unresolved=%#v changes=%#v", outcome.Unresolved, outcome.Changes)
+	}
+
+	_, outcome = newRebindFixture(t, nil).RebindNotebookLakehouses(nb)
+	if len(outcome.Unresolved) == 0 || outcome.Unresolved[0].WorkspaceID != "ingest" {
+		t.Errorf("without the common list the default lakehouse is unresolved in ingest: %#v", outcome.Unresolved)
 	}
 }
 
 // The summary row for a rewritten shortcut must say what kind of item it
 // points at — the bare target name made a semantic model's OneLake tables look
-// like a stray report. The owning lakehouse is NOT in the name: the summary's
-// "in <item>" column already names it, and repeating it read as noise.
-func TestRebindShortcutsChangeNamesOwnerAndType(t *testing.T) {
+// like a stray report. The type rides in TargetType, not the name, so the cmd
+// layer formats it with the same rule as every other row.
+func TestRebindShortcutsChangeCarriesTargetType(t *testing.T) {
 	rb := newRebindFixture(t, nil)
 	in := []byte(`[{"name": "s", "path": "Tables",
 	  "target": {"type": "OneLake", "oneLake": {
 	    "workspaceId": "dev-semmod", "itemId": "` + devHRModel + `", "path": "Tables/t"}}}]`)
 	_, outcome := rb.RebindPart(LocalItem{Type: "Lakehouse", DisplayName: "LH_ConfigLog"}, "shortcuts.metadata.json", in, "")
-	var name string
+	var got RebindChange
 	for _, c := range outcome.Changes {
 		if c.Kind == "Shortcut" {
-			name = c.Name
+			got = c
 		}
 	}
-	if name != "HR (SemanticModel)" {
-		t.Errorf("shortcut change name = %q", name)
+	if got.Name != "HR" || got.TargetType != "SemanticModel" {
+		t.Errorf("shortcut change = %+v", got)
 	}
 }
 

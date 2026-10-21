@@ -36,6 +36,11 @@ type UnresolvedRef struct {
 	// Hint is an optional human explanation: what the value is, and the
 	// target-side value when known. Only ReasonLeftover refs set it.
 	Hint string
+	// WorkspaceID is the workspace the reference itself names, when it names
+	// one (a shortcut's workspaceId, a notebook's default lakehouse
+	// workspace). Lets the deploy ask once per unknown workspace whether it
+	// is common or belongs to an environment.
+	WorkspaceID string
 }
 
 const (
@@ -87,6 +92,9 @@ type RebindChange struct {
 	Old  string
 	New  string
 	Form string // copied from the rule that produced this change; "" for non-substitution kinds
+	// TargetType is the type of the item the reference points at, when the
+	// kind alone doesn't say it (a shortcut can target any OneLake item).
+	TargetType string
 	// Items are the items whose content carries the reference — stamped by
 	// SubstituteParts, merged across items by the summary, so a row can say
 	// where the rewrite lands.
@@ -108,22 +116,19 @@ type RebindOutcome struct {
 	Changes         []RebindChange
 	Unresolved      []UnresolvedRef
 	ReportBindings  []ReportBinding
-	SharedShortcuts []SharedShortcut
+	CommonShortcuts []CommonShortcut
 }
 
-// SharedShortcut is a OneLake shortcut deliberately deployed unchanged because
-// its target lives in a workspace outside every env — e.g. a mirrored database
+// CommonShortcut is a OneLake shortcut deployed unchanged because its target
+// lives in one of the customer's common workspaces — e.g. a mirrored database
 // in a shared ingest workspace that dev, test and prod all read from. Surfaced
 // as an info line so "kept as-is" is visible, not silent.
-type SharedShortcut struct {
-	Lakehouse   string // the lakehouse that owns the shortcut
-	Shortcut    string // the shortcut's name
-	ItemID      string
-	WorkspaceID string
-	// WorkspaceName is the target workspace's display name when the caller
-	// can see it, so a DEV workspace that was never registered on an env
-	// stands out by name instead of hiding behind a GUID.
-	WorkspaceName string
+type CommonShortcut struct {
+	Lakehouse     string // the lakehouse that owns the shortcut
+	Shortcut      string // the shortcut's name
+	Target        string // the target item's display name
+	TargetType    string
+	WorkspaceName string // the common workspace's display name
 }
 
 // ReportBinding is a resolved report→semantic-model binding, surfaced in the
@@ -187,11 +192,12 @@ type Rebinder struct {
 	wsAmbiguous     map[string]bool   // baseline workspace GUID -> true when votes conflicted and no seed resolved it
 	baselineWSNames map[string]string // baseline workspace GUID -> display name (for summaries)
 
-	// envWS is every workspace GUID that belongs to one of the customer's
-	// environments; a shortcut into any other workspace is a shared target.
-	// Seeded with baseline+target in NewRebinder and widened by
-	// SetEnvWorkspaces before concurrent use, never mutated afterward.
-	envWS map[string]bool
+	// common indexes the customer's common workspaces: an item found there is
+	// the same in every env and resolves to itself. commonWSNames maps their
+	// GUIDs to display names. Both are set by SetCommonWorkspaces before
+	// concurrent use and never mutated afterward; nil when there are none.
+	common        *NameIndex
+	commonWSNames map[string]string
 
 	substitutions []Substitution
 }
@@ -260,28 +266,43 @@ func NewRebinder(client FabricClient, token string, baselineWS, targetWS []fabri
 	}
 	wsMap, wsAmb := buildWorkspaceMap(b, t)
 	baseNames := make(map[string]string, len(baselineWS))
-	envWS := make(map[string]bool, len(baselineWS)+len(targetWS))
 	for _, w := range baselineWS {
 		baseNames[w.ID] = w.DisplayName
-		envWS[w.ID] = true
-	}
-	for _, w := range targetWS {
-		envWS[w.ID] = true
 	}
 	return &Rebinder{
 		client: client, token: token, baseline: b, target: t, overrides: overrides, targetWSNames: wsNames,
-		wsMap: wsMap, wsAmbiguous: wsAmb, baselineWSNames: baseNames, envWS: envWS,
+		wsMap: wsMap, wsAmbiguous: wsAmb, baselineWSNames: baseNames,
 	}, nil
 }
 
-// SetEnvWorkspaces adds workspace GUIDs that belong to one of the customer's
-// environments but sit outside this rebinder's two indices: the rest of a
-// mapping-isolated rebinder's envs, or a third env such as PROD. A shortcut
-// into any of them is a gap to report, never a shared target to keep.
-func (rb *Rebinder) SetEnvWorkspaces(ids []string) {
-	for _, id := range ids {
-		rb.envWS[id] = true
+// SetCommonWorkspaces indexes the customer's common workspaces: workspaces
+// every env reads from, like a shared ingest workspace. A reference to an
+// item in one of them is the same in every env, so it resolves to itself and
+// deploys unchanged. Only an explicit list makes this safe: an unknown
+// workspace may just as well be a DEV workspace nobody registered, and that
+// must stay a warning.
+func (rb *Rebinder) SetCommonWorkspaces(workspaces []fabric.Workspace) error {
+	if len(workspaces) == 0 {
+		return nil
 	}
+	idx, err := BuildNameIndex(rb.client, rb.token, workspaces)
+	if err != nil {
+		return err
+	}
+	rb.common = idx
+	rb.commonWSNames = make(map[string]string, len(workspaces))
+	for _, w := range workspaces {
+		rb.commonWSNames[w.ID] = w.DisplayName
+	}
+	return nil
+}
+
+// commonItem returns the common-workspace item with this GUID, if any.
+func (rb *Rebinder) commonItem(guid string) (IndexedItem, bool) {
+	if rb.common == nil {
+		return IndexedItem{}, false
+	}
+	return rb.common.ItemByGUID(guid)
 }
 
 // RegisterTargetItem adds a just-created item to the target name index so later
@@ -320,6 +341,9 @@ func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, boo
 	if ov, ok := rb.overrides[guid]; ok {
 		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
 		return it, st == LookupFound, reasonForStatus(st)
+	}
+	if it, ok := rb.commonItem(guid); ok {
+		return it, true, "" // common to every env: the reference stays as-is
 	}
 	base, ok := rb.baseline.ItemByGUID(guid)
 	if !ok {
@@ -369,17 +393,19 @@ func addChange(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV 
 // single old value can legitimately resolve to two different new values within
 // one pass (e.g. two SQL/OneLake sources sharing a baseline host or workspace
 // GUID that resolve to different targets): deduping by old alone would silently
-// drop the second, distinct rewrite from the display.
-func recordChangePair(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV string) {
+// drop the second, distinct rewrite from the display. Reports whether it
+// recorded a change, so a caller can annotate the one it just added.
+func recordChangePair(out *RebindOutcome, seen map[string]bool, kind, name, oldV, newV string) bool {
 	if oldV == "" || oldV == newV {
-		return
+		return false
 	}
 	key := oldV + "\x00" + newV
 	if seen[key] {
-		return
+		return false
 	}
 	seen[key] = true
 	out.Changes = append(out.Changes, RebindChange{Kind: kind, Name: name, Old: oldV, New: newV})
+	return true
 }
 
 // applyChanges string-replaces every recorded rewrite in s. Replacing a value no
@@ -451,12 +477,10 @@ func (rb *Rebinder) rebindPartByType(item LocalItem, partPath string, content []
 // diff view normalizes JSON before comparing, so the formatting round-trip
 // never reads as a change.
 //
-// A target unknown to both envs whose workspaceId names a workspace outside
-// every env of the customer (see SetEnvWorkspaces) is a SHARED target (e.g. a mirrored database in an ingest
-// workspace every env reads from): it is the same item everywhere, so it is
-// kept verbatim and listed in SharedShortcuts instead of nagging as
-// unresolved. The shortcut states its workspace explicitly, which is what
-// makes this safe to decide without guessing. Overrides still take precedence.
+// A target in one of the customer's common workspaces (SetCommonWorkspaces)
+// resolves to itself, deploys unchanged and is listed in CommonShortcuts. An
+// unresolved target carries the shortcut's workspaceId, so the deploy can ask
+// once per unknown workspace whether it is common or belongs to an env.
 //
 // lakehouse is the owning lakehouse's display name, used to label the summary.
 func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, RebindOutcome) {
@@ -477,12 +501,18 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 			continue // self-reference Fabric maps to the current lakehouse
 		}
 		it, ok, reason := rb.resolveGUIDReason(itemID, "")
+		if ok {
+			if wsName, common := rb.commonWSNames[it.WorkspaceID]; common {
+				name, _ := sc["name"].(string)
+				out.CommonShortcuts = append(out.CommonShortcuts, CommonShortcut{
+					Lakehouse: lakehouse, Shortcut: name, Target: it.Name, TargetType: it.Type, WorkspaceName: wsName,
+				})
+			}
+		}
 		if !ok {
 			wsID, _ := ol["workspaceId"].(string)
-			if reason == ReasonNameUnknown && !isZeroOrEmptyGUID(wsID) && !rb.envWS[wsID] {
-				name, _ := sc["name"].(string)
-				out.SharedShortcuts = append(out.SharedShortcuts, SharedShortcut{Lakehouse: lakehouse, Shortcut: name, ItemID: itemID, WorkspaceID: wsID})
-				continue
+			if isZeroOrEmptyGUID(wsID) {
+				wsID = ""
 			}
 			// The type is only known when something indexed the GUID. A guessed
 			// "Lakehouse" made the override picker hide the real target (a
@@ -493,11 +523,13 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 			} else if base, known := rb.baseline.ItemByGUID(itemID); known {
 				itemType = base.Type
 			}
-			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: itemType, Location: "shortcut target", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: itemType, Location: "shortcut target", Reason: reason, WorkspaceID: wsID})
 			continue
 		}
 		if itemID != it.GUID {
-			recordChangePair(&out, seen, "Shortcut", fmt.Sprintf("%s (%s)", it.Name, it.Type), itemID, it.GUID)
+			if recordChangePair(&out, seen, "Shortcut", it.Name, itemID, it.GUID) {
+				out.Changes[len(out.Changes)-1].TargetType = it.Type
+			}
 			ol["itemId"] = it.GUID
 			changed = true
 		}
@@ -518,7 +550,7 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 	if err != nil {
 		// Can't happen for a tree json just decoded, but never publish a file
 		// the recorded changes weren't applied to.
-		return content, RebindOutcome{Unresolved: out.Unresolved, SharedShortcuts: out.SharedShortcuts}
+		return content, RebindOutcome{Unresolved: out.Unresolved, CommonShortcuts: out.CommonShortcuts}
 	}
 	return rewritten, out
 }
@@ -572,7 +604,8 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		var it IndexedItem
 		var resolved bool
 		var reason string
-		if _, hasOverride := rb.overrides[lh.DefaultLakehouse]; !hasOverride && lh.DefaultLakehouseName != "" {
+		_, isCommon := rb.commonItem(lh.DefaultLakehouse)
+		if _, hasOverride := rb.overrides[lh.DefaultLakehouse]; !hasOverride && !isCommon && lh.DefaultLakehouseName != "" {
 			var st LookupStatus
 			it, st = rb.target.LookupName(lh.DefaultLakehouseName, "Lakehouse")
 			resolved = st == LookupFound
@@ -588,7 +621,11 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 				addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			out.AddUnresolved(UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason})
+			wsID := lh.DefaultLakehouseWorkspaceID
+			if isZeroOrEmptyGUID(wsID) {
+				wsID = ""
+			}
+			out.AddUnresolved(UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason, WorkspaceID: wsID})
 		}
 	}
 	for _, k := range lh.KnownLakehouses {

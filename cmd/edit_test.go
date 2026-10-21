@@ -3,6 +3,7 @@ package cmd
 import (
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/DanielAndreassen97/futils/internal/config"
@@ -186,5 +187,27 @@ func TestTogglePostDeployModeEscKeepsSequential(t *testing.T) {
 	c := got.Customers["Fabrikam"]
 	if !c.ParallelPostDeploy || c.PostDeployPhase("NB_Load_A") != 2 || c.PostDeployPhase("NB_Config") != 1 {
 		t.Fatalf("confirmed editor must save parallel with its run order: %+v", c)
+	}
+}
+
+// A workspace is either common or on an environment, never both: a common
+// workspace on DEV would make its references rebind by name in one deploy and
+// stay as-is in the next. So the "add workspace" pickers hide common ones, and
+// the common picker hides env ones.
+func TestAvailableWorkspaceNamesHidesCommonAndEnvWorkspaces(t *testing.T) {
+	api := newDemoClient()
+	customer := demoCustomer("/repo")
+	customer.CommonWorkspaces = []string{demoIngestWS}
+	names, err := availableWorkspaceNames(api, "tok", customer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{demoIngestWS, demoConfigWS("DEV")} {
+		if slices.Contains(names, hidden) {
+			t.Errorf("%q must not be offered: %v", hidden, names)
+		}
+	}
+	if !slices.Contains(names, demoRawWS("DEV")) {
+		t.Errorf("an unattached workspace must be offered: %v", names)
 	}
 }

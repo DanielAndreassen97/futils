@@ -32,6 +32,7 @@ const (
 	editActionPostDeploy     = "__post_deploy_runs"
 	editActionPostDeployMode = "__post_deploy_mode"
 	editActionFavorites      = "__favorites"
+	editActionCommonWS       = "__common_ws"
 	envActionAddWS           = "__add_ws"
 	envActionRemoveWS        = "__remove_ws"
 	envActionRenameAlias     = "__rename_alias"
@@ -104,6 +105,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 				if errors.Is(err, ui.ErrGoBack) {
 					continue
 				}
+				return err
+			}
+		case action == editActionCommonWS:
+			if err := manageCommonWorkspaces(configPath, client, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
 		case action == editActionRefOverrides:
@@ -225,6 +230,10 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	if customer.UseBulkDeploy {
 		bulkBadge = "ON"
 	}
+	commonBadge := "NONE"
+	if n := len(customer.CommonWorkspaces); n > 0 {
+		commonBadge = fmt.Sprint(n)
+	}
 
 	// Grouped under section headers so the menu scans as three concerns:
 	// the environments themselves, one-time deploy configuration, and what
@@ -246,6 +255,13 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Value:       editActionAddEnv,
 			Description: "Create a named environment (DEV, TEST, PROD…) and pick the workspaces it spans.",
 			Info:        "An environment is a named set of Fabric workspaces (e.g. DEV = 'DW - DEV - Config' + 'DW - DEV - SemMod'). Deploys target an environment, and auto-rebind resolves references against its full workspace set — so include reference-only workspaces too (e.g. a Data workspace you never deploy to directly).",
+		},
+		ui.MenuOption{
+			Label:       "Common workspaces",
+			Value:       editActionCommonWS,
+			Badge:       commonBadge,
+			Description: "Workspaces every environment reads from, e.g. a shared ingest workspace. References into them deploy unchanged.",
+			Info:        "Some workspaces belong to no environment because every environment uses the same one: a shared ingest workspace holding a mirrored database, say. Shortcuts, notebooks and pipelines in DEV, TEST and PROD all point at the same item there, so a deploy must keep those references as they are. List such workspaces here. A workspace that is on no environment and not listed here is treated as a mistake instead (often a DEV workspace nobody registered), and the deploy warns about references into it.",
 		},
 
 		ui.MenuOption{Label: "Deploy setup", IsHeader: true},
@@ -556,6 +572,63 @@ func addWorkspaceToEnv(configPath string, client APIClient, customerName, alias 
 	return nil
 }
 
+// manageCommonWorkspaces is the sub-menu for the customer's common workspaces:
+// pick one to remove it, or add a workspace that isn't on any env yet.
+func manageCommonWorkspaces(configPath string, client APIClient, customerName string) error {
+	for {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		customer, ok := cfg.Customers[customerName]
+		if !ok {
+			return fmt.Errorf("customer %q disappeared from config", customerName)
+		}
+		options := make([]ui.MenuOption, 0, len(customer.CommonWorkspaces)+3)
+		if len(customer.CommonWorkspaces) > 0 {
+			options = append(options, ui.MenuOption{Label: "Common workspaces", IsHeader: true})
+			for _, ws := range customer.CommonWorkspaces {
+				options = append(options, ui.MenuOption{Label: ws, Value: "rm:" + ws, Description: "Select to remove it from the common workspaces."})
+			}
+		}
+		options = append(options,
+			ui.MenuOption{Label: "Add workspace", Value: "add", Description: "Pick a workspace that isn't on any environment."},
+			ui.MenuOption{Label: "Back", Value: editActionBack},
+		)
+		choice, err := ui.NumberMenu("Common workspaces", options)
+		if err != nil || choice == editActionBack {
+			return err
+		}
+		if name, ok := strings.CutPrefix(choice, "rm:"); ok {
+			confirmed, err := ui.Confirm(fmt.Sprintf("Remove %q from the common workspaces? References into it will be reported as unresolved again.", name))
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				continue
+			}
+			customer.CommonWorkspaces = slices.DeleteFunc(slices.Clone(customer.CommonWorkspaces), func(w string) bool { return w == name })
+		} else {
+			fmt.Println(infoStyle.Render("Authenticating..."))
+			token, err := client.GetAccessToken(customerName)
+			if err != nil {
+				return fmt.Errorf("authentication failed: %w", err)
+			}
+			name, err := pickAvailableWorkspace(client, token, customer)
+			if err != nil {
+				if errors.Is(err, ui.ErrGoBack) {
+					continue
+				}
+				return err
+			}
+			customer = addCommonWorkspace(customer, name)
+		}
+		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+			return fmt.Errorf("save customer: %w", err)
+		}
+	}
+}
+
 // removeWorkspaceFromEnv lets the user drop a workspace from an env.
 // Removing the last workspace leaves the env empty — run/refresh will
 // surface a clear error at runtime rather than silently succeeding.
@@ -672,6 +745,9 @@ func availableWorkspaceNames(client APIClient, token string, customer config.Cus
 		for _, ws := range e.Workspaces {
 			used[ws] = true
 		}
+	}
+	for _, ws := range customer.CommonWorkspaces {
+		used[ws] = true // a workspace is either common or on an env, never both
 	}
 	available := make([]string, 0, len(workspaces))
 	for _, ws := range workspaces {

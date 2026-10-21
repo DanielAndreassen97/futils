@@ -121,9 +121,9 @@ type deployGroup struct {
 	Unresolved     []deploy.UnresolvedRef
 	Changes        []deploy.RebindChange
 	ReportBindings []deploy.ReportBinding
-	// SharedShortcuts are OneLake shortcuts into workspaces outside every env,
-	// deployed unchanged on purpose — listed so "kept" is visible.
-	SharedShortcuts []deploy.SharedShortcut
+	// CommonShortcuts are OneLake shortcuts into the customer's common
+	// workspaces, deployed unchanged on purpose — listed so "kept" is visible.
+	CommonShortcuts []deploy.CommonShortcut
 	Diffs           []ItemDiff
 	// rb is the rebinder this group's mapping resolves references through — the
 	// shared env-level one, or the mapping's isolated one when it sets a
@@ -312,8 +312,10 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	printGroupedCompare(groups)
 	printRebindSummary(groups)
 	printReportBindings(groups)
-	printSharedShortcuts(groups)
-	printUnresolved(groups, customer.BaselineEnvironment, alias)
+	printCommonShortcuts(groups)
+	unregistered := unregisteredWorkspaces(groups, customer, workspaces)
+	printUnregisteredWorkspaces(groups, unregistered)
+	printUnresolved(groups, customer.BaselineEnvironment, alias, unregistered)
 
 	hasDiffs := false
 	for _, g := range groups {
@@ -352,7 +354,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	}
 	if len(unresolved) > 0 {
 		if ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved))); cerr == nil && ok {
-			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved); merr != nil {
+			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved, unregistered); merr != nil {
 				fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
 			} else {
 				// Mapping changed config; the user re-runs deploy to pick it up.
@@ -484,9 +486,9 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					break // definition.pbir is the only part that carries the binding
 				}
 			}
-			// Shared shortcut targets are collected here, not in the compare,
+			// Common shortcut targets are collected here, not in the compare,
 			// for the same reason as report bindings: the compare only sees
-			// existing items, and a new lakehouse's shared shortcuts are just
+			// existing items, and a new lakehouse's common shortcuts are just
 			// as worth showing. Index lookups only — no API calls.
 			for _, it := range items {
 				if it.Type != "Lakehouse" {
@@ -498,12 +500,7 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					}
 					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
 					_, outcome := rb.RebindShortcuts(it.DisplayName, subbed)
-					for _, sc := range outcome.SharedShortcuts {
-						if ws, ok := workspaceByID(workspaces, sc.WorkspaceID); ok {
-							sc.WorkspaceName = ws.DisplayName
-						}
-						g.SharedShortcuts = append(g.SharedShortcuts, sc)
-					}
+					g.CommonShortcuts = append(g.CommonShortcuts, outcome.CommonShortcuts...)
 				}
 			}
 		}
@@ -1990,45 +1987,35 @@ func printReportBindings(groups []deployGroup) {
 	fmt.Println()
 }
 
-// collectSharedShortcuts gathers every group's shared shortcut targets,
-// deduplicated by (lakehouse, shortcut). Shared by the terminal summary and
-// the HTML report, so they always show the same set.
-func collectSharedShortcuts(groups []deployGroup) []deploy.SharedShortcut {
-	var all []deploy.SharedShortcut
-	seen := map[string]bool{}
+// collectCommonShortcuts gathers every group's common shortcut targets,
+// deduplicated across groups. Shared by the terminal summary and the HTML
+// report, so they always show the same set.
+func collectCommonShortcuts(groups []deployGroup) []deploy.CommonShortcut {
+	var all []deploy.CommonShortcut
+	seen := map[deploy.CommonShortcut]bool{}
 	for _, g := range groups {
-		for _, s := range g.SharedShortcuts {
-			k := s.Lakehouse + "\x00" + s.Shortcut
-			if seen[k] {
+		for _, s := range g.CommonShortcuts {
+			if seen[s] {
 				continue
 			}
-			seen[k] = true
+			seen[s] = true
 			all = append(all, s)
 		}
 	}
 	return all
 }
 
-// sharedWorkspaceLabel names a shared shortcut's target workspace, falling
-// back to the compacted GUID when the workspace isn't visible to the caller.
-func sharedWorkspaceLabel(s deploy.SharedShortcut) string {
-	if s.WorkspaceName != "" {
-		return s.WorkspaceName
-	}
-	return compactValue(s.WorkspaceID)
-}
-
-// printSharedShortcuts lists the OneLake shortcuts deployed unchanged because
-// their target sits in a workspace outside both envs — the same item in every
-// env. Shown so the user can confirm "kept as-is" was right, instead of the
-// shortcut silently vanishing from the rebind output. Silent when none.
-func printSharedShortcuts(groups []deployGroup) {
-	all := collectSharedShortcuts(groups)
+// printCommonShortcuts lists the OneLake shortcuts deployed unchanged because
+// their target sits in one of the customer's common workspaces. Shown so the
+// user can confirm "kept as-is" was right, instead of the shortcut silently
+// vanishing from the rebind output. Silent when none.
+func printCommonShortcuts(groups []deployGroup) {
+	all := collectCommonShortcuts(groups)
 	if len(all) == 0 {
 		return
 	}
 	fmt.Println()
-	fmt.Println(infoStyle.Render("Shared shortcut targets (outside every env — kept as-is):"))
+	fmt.Println(infoStyle.Render("Common workspace references (kept as-is):"))
 	labels := make([]string, len(all))
 	labelW := 0
 	for i, s := range all {
@@ -2036,9 +2023,80 @@ func printSharedShortcuts(groups []deployGroup) {
 		labelW = max(labelW, utf8.RuneCountInString(labels[i]))
 	}
 	for i, s := range all {
-		fmt.Printf("  %s  %s  %s\n", summaryNameStyle.Render(padRight(labels[i], labelW)), compactValue(s.ItemID), summaryDimStyle.Render("(workspace "+sharedWorkspaceLabel(s)+")"))
+		target := itemLabel(deploy.ItemRef{Name: s.Target, Type: s.TargetType})
+		fmt.Printf("  %s  %s  %s\n", summaryNameStyle.Render(padRight(labels[i], labelW)), target, summaryDimStyle.Render("("+s.WorkspaceName+")"))
 	}
 	fmt.Println()
+}
+
+// unregisteredWorkspaces finds the workspaces that unresolved references name
+// but that sit on no environment and aren't common. futils can't tell a
+// workspace every env shares from a DEV workspace nobody registered, so the
+// deploy asks once per workspace instead of once per reference. Only
+// workspaces the caller can see qualify: answering needs the name. Returns
+// workspace GUID -> display name; nil when there are none.
+func unregisteredWorkspaces(groups []deployGroup, customer config.Customer, workspaces []fabric.Workspace) map[string]string {
+	known := map[string]bool{}
+	for _, e := range customer.Environments {
+		for _, name := range e.AllWorkspaces() {
+			known[name] = true
+		}
+	}
+	for _, name := range customer.CommonWorkspaces {
+		known[name] = true
+	}
+	var out map[string]string
+	for _, g := range groups {
+		for _, u := range g.Unresolved {
+			if u.WorkspaceID == "" || u.Reason == deploy.ReasonLeftover {
+				continue
+			}
+			ws, ok := workspaceByID(workspaces, u.WorkspaceID)
+			if !ok || known[ws.DisplayName] {
+				continue
+			}
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[ws.ID] = ws.DisplayName
+		}
+	}
+	return out
+}
+
+// printUnregisteredWorkspaces lists, per workspace, the unresolved references
+// that point into a workspace on no environment. Printed apart from the other
+// unresolved references because the fix is one answer per workspace: common
+// to every env, or registered on one. Silent when there are none.
+func printUnregisteredWorkspaces(groups []deployGroup, unregistered map[string]string) {
+	if len(unregistered) == 0 {
+		return
+	}
+	byWS := map[string][]string{}
+	total := 0
+	for _, g := range groups {
+		for _, u := range g.Unresolved {
+			if _, ok := unregistered[u.WorkspaceID]; !ok || u.Reason == deploy.ReasonLeftover {
+				continue
+			}
+			byWS[u.WorkspaceID] = append(byWS[u.WorkspaceID], fmt.Sprintf("%s (%s)", u.ItemName, u.Location))
+			total++
+		}
+	}
+	ids := make([]string, 0, len(byWS))
+	nameW := 0
+	for id := range byWS {
+		ids = append(ids, id)
+		nameW = max(nameW, utf8.RuneCountInString(unregistered[id]))
+	}
+	sort.Slice(ids, func(i, j int) bool { return unregistered[ids[i]] < unregistered[ids[j]] })
+	fmt.Println()
+	fmt.Println(warningStyle.Render(fmt.Sprintf("%d reference(s) into workspaces that aren't on any environment — left as-is:", total)))
+	for _, id := range ids {
+		refs := byWS[id]
+		fmt.Printf("  %s  %s\n", summaryNameStyle.Render(padRight(unregistered[id], nameW)), summaryDimStyle.Render(fmt.Sprintf("%d reference(s): ", len(refs)))+strings.Join(refs, ", "))
+	}
+	fmt.Println(wrapIndented(infoStyle.Render("Is it shared by every environment? Mark it common. Does it belong to one? Register it there. Answer when asked to map the references below, or under Edit customer."), 2))
 }
 
 // printUnresolved lists reference GUIDs the rebinder could not translate, with
@@ -2048,13 +2106,19 @@ func printSharedShortcuts(groups []deployGroup) {
 // reference-only Data workspace) missing from the baseline or target
 // environment's workspace list, which no amount of overrides fixes properly.
 // Silent when everything resolved.
-func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
+//
+// References into an unregistered workspace (see unregisteredWorkspaces) are
+// left to printUnregisteredWorkspaces.
+func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string, unregistered map[string]string) {
 	var total, leftoverTotal int
 	reasons := map[string]bool{}
 	for _, g := range groups {
 		for _, u := range g.Unresolved {
 			if u.Reason == deploy.ReasonLeftover {
 				leftoverTotal++
+				continue
+			}
+			if _, ok := unregistered[u.WorkspaceID]; ok {
 				continue
 			}
 			total++
@@ -2066,7 +2130,7 @@ func printUnresolved(groups []deployGroup, baselineAlias, targetAlias string) {
 		fmt.Println(warningStyle.Render(fmt.Sprintf("%d unresolved reference(s) — left as-is. Register an override (Edit customer) to map them by name:", total)))
 		for _, g := range groups {
 			for _, u := range g.Unresolved {
-				if u.Reason == deploy.ReasonLeftover {
+				if _, ok := unregistered[u.WorkspaceID]; ok || u.Reason == deploy.ReasonLeftover {
 					continue
 				}
 				fmt.Printf("  %s in %s — looks like %s (%s): %s%s\n", shortGUID(u.GUID), u.ItemName, unresolvedKind(u.ItemType), u.Location, reasonText(u.Reason), countSuffix(u.Count))
@@ -2194,9 +2258,20 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 // mapUnresolvedInteractive walks the user through each unresolved reference,
 // offering register / override / ignore / skip, and persists the chosen
 // mutations. Returns after saving; the user re-runs the deploy to apply.
-func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef) error {
-	changed := false
+func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string) error {
+	customer, answered, err := askUnregisteredWorkspaces(customer, refs, unregistered)
+	stopped := errors.Is(err, ui.ErrGoBack)
+	if err != nil && !stopped {
+		return err
+	}
+	changed := len(answered) > 0
 	for _, ref := range refs {
+		if stopped {
+			break // esc ends the whole flow; what was answered is still saved
+		}
+		if answered[ref.WorkspaceID] {
+			continue // settled for its whole workspace above
+		}
 		fmt.Printf("\n%s in %s — looks like %s (%s): %s%s\n", shortGUID(ref.GUID), ref.ItemName, unresolvedKind(ref.ItemType), ref.Location, reasonText(ref.Reason), countSuffix(ref.Count))
 		choice, err := ui.NumberMenu("How do you want to resolve it?", refActionOptions(ref))
 		if err != nil {
@@ -2243,6 +2318,75 @@ func mapUnresolvedInteractive(client APIClient, token, configPath, customerName 
 	return nil
 }
 
+// Choices for a workspace that unresolved references point into but that is
+// on no environment.
+const (
+	wsActionCommon   = "common"
+	wsActionRegister = "register"
+	wsActionSkip     = "skip"
+)
+
+// askUnregisteredWorkspaces asks once per unregistered workspace whether it is
+// common to every environment or belongs to one, and applies the answer to
+// customer. Asking per workspace, not per reference, means twenty shortcuts
+// into one mirrored database take one answer. Returns the updated customer
+// and the workspace GUIDs that got an answer, whose references the per-GUID
+// loop then skips. ui.ErrGoBack (esc) comes back with the answers so far.
+func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string) (config.Customer, map[string]bool, error) {
+	byWS := map[string][]string{}
+	var order []string
+	for _, r := range refs {
+		if _, ok := unregistered[r.WorkspaceID]; !ok {
+			continue
+		}
+		if _, seen := byWS[r.WorkspaceID]; !seen {
+			order = append(order, r.WorkspaceID)
+		}
+		byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], fmt.Sprintf("%s (%s)", r.ItemName, r.Location))
+	}
+	answered := map[string]bool{}
+	opts := []ui.MenuOption{
+		{Label: "Common: shared by every environment, keep references into it as-is", Value: wsActionCommon},
+		{Label: "Belongs to an environment: register it (resolve by name)", Value: wsActionRegister},
+		{Label: "Skip for now", Value: wsActionSkip},
+	}
+	for _, id := range order {
+		name := unregistered[id]
+		fmt.Printf("\n%s %s\n", warningStyle.Render(name+" isn't on any environment"),
+			summaryDimStyle.Render(fmt.Sprintf("(%d reference(s): %s)", len(byWS[id]), strings.Join(byWS[id], ", "))))
+		choice, err := ui.NumberMenu("What is it?", opts)
+		if err != nil {
+			return customer, answered, err
+		}
+		switch choice {
+		case wsActionCommon:
+			customer = addCommonWorkspace(customer, name)
+		case wsActionRegister:
+			env, err := pickEnvAlias(customer)
+			if err != nil {
+				if errors.Is(err, ui.ErrGoBack) {
+					continue
+				}
+				return customer, answered, err
+			}
+			customer = applyRefAction(customer, deploy.UnresolvedRef{}, RefAction{Kind: refActionRegister, EnvAlias: env, Workspace: name})
+		default:
+			continue
+		}
+		answered[id] = true
+	}
+	return customer, answered, nil
+}
+
+// addCommonWorkspace appends name to the customer's common workspaces,
+// idempotently. Pure — no I/O.
+func addCommonWorkspace(c config.Customer, name string) config.Customer {
+	if !c.IsCommonWorkspace(name) {
+		c.CommonWorkspaces = append(slices.Clone(c.CommonWorkspaces), name)
+	}
+	return c
+}
+
 // pickWorkspaceAndEnv lets the user pick any visible workspace and which env to
 // register it on, for the "register reference workspace" action.
 func pickWorkspaceAndEnv(client APIClient, token string, customer config.Customer) (workspace, envAlias string, err error) {
@@ -2258,15 +2402,21 @@ func pickWorkspaceAndEnv(client APIClient, token string, customer config.Custome
 	if err != nil {
 		return "", "", err
 	}
-	envOpts := make([]ui.MenuOption, len(customer.Environments))
-	for i, e := range customer.Environments {
-		envOpts[i] = ui.MenuOption{Label: e.Alias, Value: e.Alias}
-	}
-	envAlias, err = ui.NumberMenu("Register it on which environment?", envOpts)
+	envAlias, err = pickEnvAlias(customer)
 	if err != nil {
 		return "", "", err
 	}
 	return workspace, envAlias, nil
+}
+
+// pickEnvAlias asks which of the customer's environments to register a
+// workspace on.
+func pickEnvAlias(customer config.Customer) (string, error) {
+	envOpts := make([]ui.MenuOption, len(customer.Environments))
+	for i, e := range customer.Environments {
+		envOpts[i] = ui.MenuOption{Label: e.Alias, Value: e.Alias}
+	}
+	return ui.NumberMenu("Register it on which environment?", envOpts)
 }
 
 // pickTargetItem lets the user pick a target workspace then an item of the

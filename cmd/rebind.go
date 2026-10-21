@@ -52,26 +52,24 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
-	rb.SetEnvWorkspaces(envWorkspaceIDs(customer, workspaces))
+	if err := setCommonWorkspaces(rb, customer, workspaces); err != nil {
+		return nil, err
+	}
 	if customer.BaselineEnvironment != "" {
 		rb.SetWorkspaceSeeds(workspaceSeeds(baselineEnv, targetEnv, workspaces))
 	}
 	return rb, nil
 }
 
-// envWorkspaceIDs resolves every workspace registered on any of the customer's
-// environments, so a rebinder can tell an env's own workspace from one shared
-// by all of them. Names that don't resolve are skipped.
-func envWorkspaceIDs(customer config.Customer, workspaces []fabric.Workspace) []string {
-	var ids []string
-	for _, env := range customer.Environments {
-		for _, name := range env.AllWorkspaces() {
-			if ws, err := resolveWorkspaceByName(workspaces, name); err == nil {
-				ids = append(ids, ws.ID)
-			}
-		}
+// setCommonWorkspaces indexes the customer's common workspaces on rb. A common
+// workspace that can't be found is an error, not a skip: references into it
+// would otherwise surface as unresolved with no hint why.
+func setCommonWorkspaces(rb *deploy.Rebinder, customer config.Customer, workspaces []fabric.Workspace) error {
+	common, err := resolveWorkspaceSet(workspaces, customer.CommonWorkspaces)
+	if err != nil {
+		return fmt.Errorf("common workspaces: %w", err)
 	}
-	return ids
+	return rb.SetCommonWorkspaces(common)
 }
 
 // workspaceSeeds pairs baseline→target workspace GUIDs through the deploy
@@ -169,7 +167,9 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
-	rb.SetEnvWorkspaces(envWorkspaceIDs(rs.customer, rs.workspaces))
+	if err := setCommonWorkspaces(rb, rs.customer, rs.workspaces); err != nil {
+		return nil, err
+	}
 	rb.SetWorkspaceSeeds(map[string]string{baseWS[0].ID: targetWS[0].ID})
 	rs.cache[key] = rb
 	return rb, nil

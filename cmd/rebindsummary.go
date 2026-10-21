@@ -122,10 +122,10 @@ func printRebindGroup(changes []deploy.RebindChange) {
 		if suffix != "" && strings.HasSuffix(o, suffix) && strings.HasSuffix(n, suffix) {
 			o, n = strings.TrimSuffix(o, suffix), strings.TrimSuffix(n, suffix)
 		}
-		r := row{name: c.Name, field: endpointField(c), old: compactValue(o), new: compactValue(n)}
+		r := row{name: changeName(c), field: endpointField(c), old: compactValue(o), new: compactValue(n)}
 		r.where, r.list = whereUsed(c.Items)
 		if c.Old == deploy.ThisWorkspaceGUID {
-			r.old = "(this workspace)"
+			r.old = changeOld(c)
 		}
 		rows = append(rows, r)
 		nameW = max(nameW, utf8.RuneCountInString(r.name))
@@ -198,8 +198,25 @@ func whereUsed(items []deploy.ItemRef) (inline, list string) {
 }
 
 // typePrefix matches the naming convention that already carries an item's
-// type (NB_, PL_, LH_, SM_ …).
-var typePrefix = regexp.MustCompile(`^[A-Z]{2,4}_`)
+// type. A whitelist, not any capitals: HR_ or ERP_ name a business area, and
+// "HR_Permissions" beside NB_ rows must still say it is a semantic model.
+var typePrefix = regexp.MustCompile(`^(NB|PL|LH|SM|DF|WH|RPT|MIR|VL|ENV|SJD|KQL|EH|DS)_`)
+
+// changeName is a rebind row's name, with the target's type when the change
+// carries one (a shortcut can point at any OneLake item).
+func changeName(c deploy.RebindChange) string {
+	return itemLabel(deploy.ItemRef{Name: c.Name, Type: c.TargetType})
+}
+
+// changeOld is a rebind row's baseline value as shown to the user: the
+// all-zeros workspace GUID is Fabric's "this workspace" placeholder, not a
+// real workspace.
+func changeOld(c deploy.RebindChange) string {
+	if c.Old == deploy.ThisWorkspaceGUID {
+		return "(this workspace)"
+	}
+	return c.Old
+}
 
 // itemLabel names an item for the summary, adding its type when the name
 // doesn't already imply it — "Permissions" beside NB_ rows reads as a

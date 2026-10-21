@@ -125,6 +125,7 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 			{Alias: "TEST", Workspaces: []string{"DW - TEST - Data", "Front - TEST"}},
 			{Alias: "PROD", Workspaces: []string{"DW - PROD - Data"}},
 		},
+		CommonWorkspaces: []string{"DW - Shared - Ingest"},
 	}
 	workspaces := []fabric.Workspace{
 		{ID: "dev-data", DisplayName: "DW - DEV - Data"},
@@ -139,6 +140,7 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 		"test-data":  {{ID: "back-test-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
 		"front-dev":  {{ID: "front-dev-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
 		"front-test": {{ID: "front-test-lh", DisplayName: "LH_Data", Type: "Lakehouse"}},
+		"ingest":     {{ID: "mirror", DisplayName: "MIR_ERP", Type: "MirroredDatabase"}},
 	}}
 	rs, err := newRebinderSet(api, "tok", customer, "TEST", workspaces)
 	if err != nil {
@@ -181,18 +183,18 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 		t.Error("isolated rebinder must be cached per (baseline ws, target ws) pair")
 	}
 
-	// The isolated rebinder only indexes Front - DEV/TEST, but a shortcut into
-	// another env's workspace (DEV Data, PROD Data) still points at the
-	// customer's own env: it must warn, not be kept as a shared target. Only
-	// the workspace outside every env is shared.
+	// Both rebinders know the customer's common workspace, so a shortcut into
+	// it is kept as-is whichever mapping deploys it. Shortcuts into an env's
+	// workspace the isolated rebinder doesn't index (DEV Data, PROD Data)
+	// still warn: only the explicit common list is ever kept.
 	shortcuts := []byte(`[
 	  {"name": "dev", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "dev-data", "itemId": "back-dev-lh", "path": "Tables/t"}}},
 	  {"name": "prod", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "prod-data", "itemId": "prod-lh", "path": "Tables/t"}}},
 	  {"name": "erp", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "ingest", "itemId": "mirror", "path": "Tables/dbo"}}}]`)
 	for name, rb := range map[string]*deploy.Rebinder{"isolated": iso, "shared": shared} {
 		_, sc := rb.RebindShortcuts("LH_Front", shortcuts)
-		if len(sc.SharedShortcuts) != 1 || sc.SharedShortcuts[0].Shortcut != "erp" {
-			t.Errorf("%s: only the ingest target is shared, got %+v", name, sc.SharedShortcuts)
+		if len(sc.CommonShortcuts) != 1 || sc.CommonShortcuts[0].Shortcut != "erp" {
+			t.Errorf("%s: only the ingest target is common, got %+v", name, sc.CommonShortcuts)
 		}
 		if name == "isolated" && len(sc.Unresolved) != 2 {
 			t.Errorf("%s: DEV and PROD targets must surface as unresolved, got %+v", name, sc.Unresolved)

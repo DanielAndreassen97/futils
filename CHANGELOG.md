@@ -6,31 +6,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Common workspaces.** Some workspaces belong to no environment because
+  every environment reads from the same one: a shared ingest workspace
+  holding a mirrored database, say. List them under **Edit customer → Common
+  workspaces** (`common_workspaces` in the config). A reference to an item in
+  a common workspace deploys unchanged in every environment, whatever kind of
+  reference it is: a lakehouse shortcut, a notebook's default lakehouse, a
+  pipeline activity. Shortcuts kept this way are listed under **Common
+  workspace references (kept as-is)** in the compare and the HTML report.
+  A workspace is either common or on an environment, never both.
+
+- **One question per unknown workspace.** When unresolved references point
+  into a workspace that is on no environment and isn't common, the compare
+  groups them per workspace, and the mapping flow asks once for each:
+  *Common: shared by every environment*, or *Belongs to an environment:
+  register it*. Twenty shortcuts into one mirrored database take one answer.
+  futils never decides this on its own: a workspace on no environment may
+  just as well be a DEV workspace nobody registered, and guessing "shared"
+  would deploy TEST pointing at DEV data without a warning.
+
 ### Fixed
 
-- **Shared OneLake shortcut targets no longer surface as unresolved.**
-  A lakehouse shortcut into a workspace outside every environment — e.g. a
-  mirrored database in a shared ingest workspace that dev, test and prod all
-  read from — is the same target in every env. It already deployed unchanged,
-  but it surfaced as an unresolved reference, and the deploy prompt steered
-  toward "Map it to a specific item". Because a reference override stores only a name and resolves
-  it in the *target* env, mapping such a target could rebind the shortcut onto
-  a same-named item there — even onto the lakehouse that owns the shortcut.
-  Now such a shortcut is listed under a new **Shared shortcut targets (kept
-  as-is)** section of the compare and the HTML report, with the target
-  workspace's name. An explicit reference override still wins.
-
-  Details:
-  - The decision uses the shortcut's own `workspaceId`: the target is shared
-    when the item is unknown to both envs *and* its workspace is registered on
-    none of the customer's environments. A target inside any env's workspace
-    that can't be resolved is still reported as unresolved: one in another
-    baseline workspace than a mapping's own `BaselineWorkspace`, or one in a
-    PROD workspace during a DEV → TEST deploy.
-  - Unresolved shortcut targets no longer claim to be a `Lakehouse`. The type
-    comes from the index when known and is otherwise left empty, so the
-    override picker lists every item type (mirrored databases, semantic models
-    with OneLake integration, …) instead of hiding the real target.
+- **Unresolved shortcut targets no longer claim to be a `Lakehouse`.** The
+  type comes from the index when known and is otherwise left empty, so the
+  override picker lists every item type (mirrored databases, semantic models
+  with OneLake integration, …) instead of hiding the real target.
 
 ### Changed
 
@@ -39,13 +41,14 @@ All notable changes to this project are documented here. The format is based on
     NB_LoadOrders`). More than two items show a count, with up to six names
     on the line below and `+ N more` after that. The HTML report lists them
     all.
-  - Item names without a type prefix (`NB_`, `PL_`, `LH_` …) get their type,
-    e.g. `Permissions (SemanticModel)`.
+  - Item names without a known type prefix (`NB_`, `PL_`, `LH_`, `SM_` …) get
+    their type, e.g. `Permissions (SemanticModel)` or `HR_Access
+    (SemanticModel)`.
   - The two values of an SQL endpoint rewrite are labelled `host` and
-    `endpoint id`.
+    `endpoint id`, in the terminal and the HTML report.
   - The all-zeros workspace GUID — Fabric's git placeholder for "the workspace
     this item lives in" — reads `(this workspace)` instead of
-    `00000000…0000`.
+    `00000000…0000`, in the terminal and the HTML report.
   - Shortcut rows name the target and its type (`Report for … (SemanticModel)`)
     rather than only the target's name, which made a semantic model's OneLake
     tables look like a stray report.

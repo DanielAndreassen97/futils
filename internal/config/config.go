@@ -86,11 +86,16 @@ type Customer struct {
 	// the primary repo only — per-mapping repos are other products with their
 	// own branch layouts and keep auto-detection (see BranchForRepo). Empty =
 	// auto-detect the remote's default (origin/HEAD, then main, then master).
-	DeployBranch        string              `json:"deploy_branch,omitempty"`
-	BaselineEnvironment string              `json:"baseline_environment,omitempty"`
-	ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
-	IgnoredReferences   []string            `json:"ignored_references,omitempty"`
-	Substitutions       []Substitution      `json:"substitutions,omitempty"`
+	DeployBranch        string `json:"deploy_branch,omitempty"`
+	BaselineEnvironment string `json:"baseline_environment,omitempty"`
+	// CommonWorkspaces are workspaces every environment reads from, such as a
+	// shared ingest workspace holding a mirrored database. They belong to no
+	// environment: references into them deploy unchanged everywhere, and a
+	// workspace listed here can't also be attached to an environment.
+	CommonWorkspaces   []string            `json:"common_workspaces,omitempty"`
+	ReferenceOverrides []ReferenceOverride `json:"reference_overrides,omitempty"`
+	IgnoredReferences  []string            `json:"ignored_references,omitempty"`
+	Substitutions      []Substitution      `json:"substitutions,omitempty"`
 	// ExcludedItemTypes lists item types to skip when comparing/deploying.
 	// Empty/nil = include every discovered type (the default).
 	ExcludedItemTypes []string `json:"excluded_item_types,omitempty"`
@@ -220,6 +225,12 @@ func (c Customer) IsIgnored(guid string) bool {
 		}
 	}
 	return false
+}
+
+// IsCommonWorkspace reports whether the named workspace is one of the
+// customer's common workspaces.
+func (c Customer) IsCommonWorkspace(name string) bool {
+	return slices.Contains(c.CommonWorkspaces, name)
 }
 
 // EnvironmentByAlias returns the environment with the given alias, and whether
