@@ -228,14 +228,19 @@ func (c Customer) IsIgnored(guid string) bool {
 }
 
 // RegisteredWorkspaces is every workspace name the customer has placed: on an
-// environment (reference-only or deploy target) or among the common
-// workspaces. A workspace outside this set is one nobody has said anything
-// about yet.
+// environment (reference-only or deploy target), as a mapping's own baseline
+// workspace, or among the common workspaces. A workspace outside this set is
+// one nobody has said anything about yet.
 func (c Customer) RegisteredWorkspaces() map[string]bool {
 	out := map[string]bool{}
 	for _, e := range c.Environments {
 		for _, name := range e.AllWorkspaces() {
 			out[name] = true
+		}
+		for _, d := range e.Deployments {
+			if d.BaselineWorkspace != "" {
+				out[d.BaselineWorkspace] = true
+			}
 		}
 	}
 	for _, name := range c.CommonWorkspaces {

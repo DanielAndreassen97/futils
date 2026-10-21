@@ -355,7 +355,7 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	}
 	if len(unresolved) > 0 {
 		if ok, cerr := ui.Confirm(fmt.Sprintf("Map %d unresolved reference(s) now?", len(unresolved))); cerr == nil && ok {
-			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved, unregistered); merr != nil {
+			if merr := mapUnresolvedInteractive(client, token, configPath, customerName, customer, unresolved, unregistered, alias, workspaces); merr != nil {
 				fmt.Println(warningStyle.Render("Mapping aborted: " + merr.Error()))
 			} else {
 				// Mapping changed config; the user re-runs deploy to pick it up.
@@ -456,10 +456,16 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			// Existing (content-compared) reports get their custom-substitution
 			// unresolved via diffExistingRows; NEW reports only pass through here,
 			// so this pass also owns their substitution refs.
-			newReport := map[string]bool{}
+			newReport, newLakehouse := map[string]bool{}, map[string]bool{}
 			for _, r := range g.Rows {
-				if r.ItemType() == "Report" && r.Class == deploy.ClassNew {
+				if r.Class != deploy.ClassNew {
+					continue
+				}
+				switch r.ItemType() {
+				case "Report":
 					newReport[r.Name()] = true
+				case "Lakehouse":
+					newLakehouse[r.Name()] = true
 				}
 			}
 			for _, it := range items {
@@ -490,7 +496,9 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			// Common shortcut targets are collected here, not in the compare,
 			// for the same reason as report bindings: the compare only sees
 			// existing items, and a new lakehouse's common shortcuts are just
-			// as worth showing. Index lookups only — no API calls.
+			// as worth showing. A NEW lakehouse's unresolved shortcuts come
+			// from here too, or a shortcut into an unregistered workspace
+			// would deploy without a word. Index lookups only — no API calls.
 			for _, it := range items {
 				if it.Type != "Lakehouse" {
 					continue
@@ -502,6 +510,12 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
 					_, outcome := rb.RebindShortcuts(it.DisplayName, subbed)
 					g.CommonShortcuts = append(g.CommonShortcuts, outcome.CommonShortcuts...)
+					if newLakehouse[it.DisplayName] {
+						for _, u := range outcome.Unresolved {
+							u.ItemName = it.DisplayName
+							g.Unresolved = append(g.Unresolved, u)
+						}
+					}
 				}
 			}
 		}
@@ -2259,18 +2273,17 @@ func pickDeployScope(mappings []config.DeployMapping) ([]config.DeployMapping, e
 // mapUnresolvedInteractive walks the user through each unresolved reference,
 // offering register / override / ignore / skip, and persists the chosen
 // mutations. Returns after saving; the user re-runs the deploy to apply.
-func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string) error {
-	customer, answered, err := askUnregisteredWorkspaces(customer, refs, unregistered)
+func mapUnresolvedInteractive(client APIClient, token, configPath, customerName string, customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string, targetAlias string, workspaces []fabric.Workspace) error {
+	customer, settled, changed, err := askUnregisteredWorkspaces(customer, refs, unregistered, targetAlias, workspaces)
 	stopped := errors.Is(err, ui.ErrGoBack)
 	if err != nil && !stopped {
 		return err
 	}
-	changed := len(answered) > 0
 	for _, ref := range refs {
 		if stopped {
 			break // esc ends the whole flow; what was answered is still saved
 		}
-		if answered[ref.WorkspaceID] {
+		if settled[ref.WorkspaceID] {
 			continue // settled for its whole workspace above
 		}
 		fmt.Printf("\n%s in %s — looks like %s (%s): %s%s\n", shortGUID(ref.GUID), ref.ItemName, unresolvedKind(ref.ItemType), ref.Location, reasonText(ref.Reason), countSuffix(ref.Count))
@@ -2330,12 +2343,14 @@ const (
 // askUnregisteredWorkspaces asks once per unregistered workspace whether it is
 // common to every environment or belongs to one, and applies the answer to
 // customer. Asking per workspace, not per reference, means twenty shortcuts
-// into one mirrored database take one answer. Returns the updated customer
-// and the workspace GUIDs that got an answer, whose references the per-GUID
-// loop then skips. ui.ErrGoBack (esc) comes back with the answers so far.
-func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string) (config.Customer, map[string]bool, error) {
+// into one mirrored database take one answer. Returns the updated customer,
+// the workspace GUIDs that are settled (answered or skipped), whose references
+// the per-GUID loop then leaves alone, and whether customer changed.
+// ui.ErrGoBack (esc) comes back with everything settled so far.
+func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string, targetAlias string, workspaces []fabric.Workspace) (config.Customer, map[string]bool, bool, error) {
 	order, byWS := refsByWorkspace(refs, unregistered)
-	answered := map[string]bool{}
+	settled := map[string]bool{}
+	changed := false
 	opts := []ui.MenuOption{
 		{Label: "Common: shared by every environment, keep references into it as-is", Value: wsActionCommon},
 		{Label: "Belongs to an environment: register it (resolve by name)", Value: wsActionRegister},
@@ -2347,26 +2362,75 @@ func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.Unresolve
 			summaryDimStyle.Render(fmt.Sprintf("(%d reference(s): %s)", len(byWS[id]), strings.Join(byWS[id], ", "))))
 		choice, err := ui.NumberMenu("What is it?", opts)
 		if err != nil {
-			return customer, answered, err
+			return customer, settled, changed, err
 		}
+		// Skipping settles the workspace too: its references must not come
+		// back one prompt each.
+		settled[id] = true
 		switch choice {
 		case wsActionCommon:
 			customer = addCommonWorkspace(customer, name)
+			changed = true
 		case wsActionRegister:
 			env, err := selectEnvironment(customer)
 			if err != nil {
 				if errors.Is(err, ui.ErrGoBack) {
 					continue
 				}
-				return customer, answered, err
+				return customer, settled, changed, err
 			}
 			customer = applyRefAction(customer, deploy.UnresolvedRef{}, RefAction{Kind: refActionRegister, EnvAlias: env, Workspace: name})
-		default:
+			changed = true
+			if env != targetAlias {
+				if customer, err = registerCounterpart(customer, name, env, targetAlias, workspaces); err != nil {
+					return customer, settled, changed, err
+				}
+			}
+		}
+	}
+	return customer, settled, changed, nil
+}
+
+// registerCounterpart offers to register, on the deploy's target env, the
+// counterpart of a workspace just registered on another env. References
+// resolve by name in the target, so registering only the DEV side would turn
+// "not found in the baseline" into "not in the target" on the next run.
+// esc skips it.
+func registerCounterpart(customer config.Customer, name, fromEnv, targetAlias string, workspaces []fabric.Workspace) (config.Customer, error) {
+	placed := customer.RegisteredWorkspaces()
+	var free []string
+	for _, w := range workspaces {
+		if !placed[w.DisplayName] {
+			free = append(free, w.DisplayName)
+		}
+	}
+	fmt.Println(summaryDimStyle.Render(fmt.Sprintf("References resolve by name in %s, so %s needs its counterpart there too.", targetAlias, name)))
+	choice, err := ui.FilterMenu(fmt.Sprintf("Which workspace is its counterpart on %s? (esc to skip)", targetAlias),
+		counterpartOptions(name, fromEnv, targetAlias, free), ui.DefaultFilterRowRenderer)
+	if err != nil {
+		if errors.Is(err, ui.ErrGoBack) {
+			return customer, nil
+		}
+		return customer, err
+	}
+	return applyRefAction(customer, deploy.UnresolvedRef{}, RefAction{Kind: refActionRegister, EnvAlias: targetAlias, Workspace: choice}), nil
+}
+
+// counterpartOptions lists the candidate counterparts of a workspace on
+// another env, sorted, with the name-swapped guess ("DW - DEV - Raw" → "DW -
+// TEST - Raw") first and marked when it exists.
+func counterpartOptions(name, fromEnv, toEnv string, free []string) []ui.FilterOption {
+	guess := strings.Replace(name, fromEnv, toEnv, 1)
+	sorted := slices.Sorted(slices.Values(free))
+	opts := make([]ui.FilterOption, 0, len(sorted))
+	for _, w := range sorted {
+		if w == guess && guess != name {
+			opts = slices.Insert(opts, 0, ui.FilterOption{Label: w + " (suggested)", Value: w})
 			continue
 		}
-		answered[id] = true
+		opts = append(opts, ui.FilterOption{Label: w, Value: w})
 	}
-	return customer, answered, nil
+	return opts
 }
 
 // addCommonWorkspace appends name to the customer's common workspaces,
@@ -2387,6 +2451,9 @@ func pickWorkspaceAndEnv(client APIClient, token string, customer config.Custome
 	}
 	wsOpts := make([]ui.FilterOption, 0, len(workspaces))
 	for _, w := range workspaces {
+		if customer.IsCommonWorkspace(w.DisplayName) {
+			continue // a workspace is either common or on an env, never both
+		}
 		wsOpts = append(wsOpts, ui.FilterOption{Label: w.DisplayName, Value: w.DisplayName})
 	}
 	workspace, err = ui.FilterMenu("Which workspace does it live in?", wsOpts, ui.DefaultFilterRowRenderer)

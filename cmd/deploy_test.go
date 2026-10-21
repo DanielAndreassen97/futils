@@ -848,25 +848,29 @@ func newDeployGroupsRebinder(t *testing.T, fake *deployFakeAPI) *deploy.Rebinder
 	return rb
 }
 
-// A new lakehouse's common shortcut targets surface in the compare too: the
-// compare only content-diffs existing items, and a brand-new lakehouse's
-// "kept as-is" shortcuts are just as worth showing.
+// A new lakehouse's shortcuts surface in the compare too: the compare only
+// content-diffs existing items. Its common targets are listed as kept, and a
+// target in an unregistered workspace must come back as unresolved, or a new
+// lakehouse would deploy pointing at DEV without a word.
 func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 	fake := &deployFakeAPI{
 		workspaces: []fabric.Workspace{
 			{ID: "ws-dev", DisplayName: "DEV"}, {ID: "ws-tgt", DisplayName: "TGT"},
 			{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
+			{ID: "ws-raw", DisplayName: "DW - DEV - Raw"},
 		},
 		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {},
 			"ws-ingest": {{ID: "mirror-erp", DisplayName: "MIR_ERP", Type: "MirroredDatabase"}}},
 	}
 	rb := newDeployGroupsRebinder(t, fake)
-	if err := rb.SetCommonWorkspaces(fake.workspaces[2:]); err != nil {
+	if err := rb.SetCommonWorkspaces(fake.workspaces[2:3]); err != nil {
 		t.Fatal(err)
 	}
 	lh := deploy.LocalItem{Type: "Lakehouse", DisplayName: "LH_New", FolderPath: "Data",
 		Parts: []deploy.Part{{Path: "shortcuts.metadata.json", Content: []byte(`[{"name": "erp", "path": "/Tables",
-		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-ingest", "itemId": "mirror-erp", "path": "Tables/dbo"}}}]`)}}}
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-ingest", "itemId": "mirror-erp", "path": "Tables/dbo"}}},
+		  {"name": "raw", "path": "/Tables",
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-raw", "itemId": "raw-lh", "path": "Tables/events"}}}]`)}}}
 	customer := config.Customer{RepoPath: "/repo"}
 	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Data", Workspace: "TGT"}},
@@ -877,6 +881,10 @@ func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 	got := groups[0].CommonShortcuts
 	if len(got) != 1 || got[0].Shortcut != "erp" || got[0].WorkspaceName != "DW - Shared - Ingest" {
 		t.Errorf("CommonShortcuts = %+v", got)
+	}
+	unres := groups[0].Unresolved
+	if len(unres) != 1 || unres[0].ItemName != "LH_New" || unres[0].WorkspaceID != "ws-raw" {
+		t.Errorf("the new lakehouse's unregistered-workspace shortcut must be unresolved: %+v", unres)
 	}
 }
 
@@ -1622,10 +1630,12 @@ func TestPrintCommonShortcuts(t *testing.T) {
 // an env, or that the caller can't see, keeps its refs in the normal list.
 func TestUnregisteredWorkspacesGroupedApart(t *testing.T) {
 	customer := config.Customer{
-		Environments:     []config.Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}}},
+		Environments: []config.Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"},
+			Deployments: []config.DeployMapping{{Folder: "Front", Workspace: "DW - DEV - Data", BaselineWorkspace: "DW - DEV - Front"}}}},
 		CommonWorkspaces: []string{"DW - Shared - Old"},
 	}
 	workspaces := []fabric.Workspace{
+		{ID: "ws-front", DisplayName: "DW - DEV - Front"},
 		{ID: "ws-data", DisplayName: "DW - DEV - Data"},
 		{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
 		{ID: "ws-old", DisplayName: "DW - Shared - Old"},
@@ -1634,6 +1644,7 @@ func TestUnregisteredWorkspacesGroupedApart(t *testing.T) {
 		{GUID: "11111111-1111-1111-1111-111111111111", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-ingest"},
 		{GUID: "22222222-2222-2222-2222-222222222222", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-data"},
 		{GUID: "33333333-3333-3333-3333-333333333333", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-hidden"},
+		{GUID: "44444444-4444-4444-4444-444444444444", ItemName: "LH_Bronze", Location: "shortcut target", Reason: deploy.ReasonNameUnknown, WorkspaceID: "ws-front"},
 	}}}
 	unregistered := unregisteredWorkspaces(groups, customer, workspaces)
 	if len(unregistered) != 1 || unregistered["ws-ingest"] != "DW - Shared - Ingest" {
@@ -1646,8 +1657,27 @@ func TestUnregisteredWorkspacesGroupedApart(t *testing.T) {
 	if !strings.Contains(out, "1 reference(s) into workspaces that aren't on any environment") || !strings.Contains(out, "DW - Shared - Ingest") {
 		t.Errorf("missing per-workspace group:\n%s", out)
 	}
-	if !strings.Contains(out, "2 unresolved reference(s)") || strings.Contains(out, "11111111") {
+	if !strings.Contains(out, "3 unresolved reference(s)") || strings.Contains(out, "11111111") {
 		t.Errorf("the grouped ref must not repeat in the unresolved list:\n%s", out)
+	}
+}
+
+// After registering "DW - DEV - Raw" on DEV, the target env needs its
+// counterpart too, or the reference just moves from "not in the baseline" to
+// "not in the target". The name-swapped guess comes first and is marked; the
+// rest stay available, sorted.
+func TestCounterpartOptionsSuggestsNameSwap(t *testing.T) {
+	opts := counterpartOptions("DW - DEV - Raw", "DEV", "TEST", []string{"DW - TEST - Raw", "DW - Archive", "DW - PROD - Raw"})
+	var got []string
+	for _, o := range opts {
+		got = append(got, o.Label)
+	}
+	want := []string{"DW - TEST - Raw (suggested)", "DW - Archive", "DW - PROD - Raw"}
+	if !slices.Equal(got, want) {
+		t.Errorf("options = %v, want %v", got, want)
+	}
+	if opts[0].Value != "DW - TEST - Raw" {
+		t.Errorf("the suggestion's value must be the bare name, got %q", opts[0].Value)
 	}
 }
 

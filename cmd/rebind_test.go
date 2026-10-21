@@ -202,6 +202,30 @@ func TestRebinderSetIsolatedMapping(t *testing.T) {
 	}
 }
 
+// A common workspace that can't be found (renamed in Fabric, or the user has
+// no access) must not block every deploy: it is skipped with a warning, and
+// references into it surface as unresolved.
+func TestBuildRebinderSkipsMissingCommonWorkspace(t *testing.T) {
+	customer := config.Customer{
+		BaselineEnvironment: "DEV",
+		Environments: []config.Environment{
+			{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}},
+			{Alias: "TEST", Workspaces: []string{"DW - TEST - Data"}},
+		},
+		CommonWorkspaces: []string{"DW - Shared - Gone"},
+	}
+	workspaces := []fabric.Workspace{{ID: "dev-data", DisplayName: "DW - DEV - Data"}, {ID: "test-data", DisplayName: "DW - TEST - Data"}}
+	var rb *deploy.Rebinder
+	var err error
+	out := captureStdout(t, func() { rb, err = buildRebinder(&deployFakeAPI{}, "tok", customer, "TEST", workspaces) })
+	if err != nil || rb == nil {
+		t.Fatalf("a missing common workspace must not fail the rebinder: rb=%v err=%v", rb, err)
+	}
+	if !strings.Contains(out, "DW - Shared - Gone") {
+		t.Errorf("the skip must be explained:\n%s", out)
+	}
+}
+
 func TestToDeploySubstitutionsPerEnv(t *testing.T) {
 	subs := []config.Substitution{
 		{FindValue: "dev", Literals: map[string]string{"TEST": "test", "PROD": "prod"}},

@@ -61,13 +61,19 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 	return rb, nil
 }
 
-// setCommonWorkspaces indexes the customer's common workspaces on rb. A common
-// workspace that can't be found is an error, not a skip: references into it
-// would otherwise surface as unresolved with no hint why.
+// setCommonWorkspaces indexes the customer's common workspaces on rb. One that
+// can't be found (renamed, or no access) is skipped with a warning rather than
+// failing every deploy: references into it then show up as unresolved, and the
+// warning says why.
 func setCommonWorkspaces(rb *deploy.Rebinder, customer config.Customer, workspaces []fabric.Workspace) error {
-	common, err := resolveWorkspaceSet(workspaces, customer.CommonWorkspaces)
-	if err != nil {
-		return fmt.Errorf("common workspaces: %w", err)
+	common := make([]fabric.Workspace, 0, len(customer.CommonWorkspaces))
+	for _, name := range customer.CommonWorkspaces {
+		ws, err := resolveWorkspaceByName(workspaces, name)
+		if err != nil {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("Common workspace %q not found (renamed, or no access?) — references into it will show as unresolved.", name)))
+			continue
+		}
+		common = append(common, ws)
 	}
 	return rb.SetCommonWorkspaces(common)
 }
