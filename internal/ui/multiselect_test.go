@@ -175,7 +175,7 @@ func typeString(m checkboxModel, s string) checkboxModel {
 }
 
 func TestMultiSelectFilter_QueryNarrowsAndSpaceToggles(t *testing.T) {
-	m := newTestModel([]string{"DP - TEST - Config", "FUTILSTest", "Rapport - Test"}, nil)
+	m := newTestModel([]string{"DW - TEST - Config", "FUTILSTest", "Rapport - Test"}, nil)
 	m.filter = true
 	m = typeString(m, "fut")
 	vis := m.visibleIdx()

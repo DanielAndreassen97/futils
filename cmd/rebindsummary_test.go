@@ -49,7 +49,7 @@ func TestPrintRebindSummaryCompactLayout(t *testing.T) {
 		{Kind: "Lakehouse", Name: "LH_ConfigLog", Old: "b2c3d4e5-1111-4222-8333-444455556666", New: "e1f2a3b4-1111-4222-8333-444455556666"},
 		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + dom, New: "zyxwvutsrqponmlkjihgfedcba" + dom},
 		{Kind: "SQL endpoint", Name: "LH_ConfigLog", Old: "5e1d0000-1111-4000-8000-0000000000e1", New: "5e1d0000-2222-4000-8000-0000000000e2"},
-		{Kind: "Workspace", Name: "DW - TEST - Data", Old: "534b9b92-abdc-4fa2-94cc-0b7d50e8d60d", New: "7c3c0fc8-6943-422c-9a0d-79e9a0d28b57"},
+		{Kind: "Workspace", Name: "DW - TEST - Data", Old: "d0d0d0d0-0000-4000-8000-00000000da7a", New: "7e577e57-0000-4000-8000-00000000da7a"},
 	}}}
 	out := captureStdout(t, func() { printRebindSummary(groups) })
 

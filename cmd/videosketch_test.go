@@ -26,9 +26,9 @@ func TestWriteVideoDeployReport(t *testing.T) {
 		{
 			Folder: "Backend", Target: wsData,
 			Changes: []deploy.RebindChange{
-				{Kind: "Lakehouse", Name: "LH_Silver", Old: "3f2ab4c1-88d2-4e01-9c55-72aa01b3fd12", New: "9d41c7e8-52f0-47b3-a1c9-08b64de52d77"},
-				{Kind: "SQL endpoint", Name: "LH_Silver", Old: "kx2mdpq7lrguvfobwq33aehk4u.datawarehouse.fabric.microsoft.com", New: "t7pvz2ncw4bfjcqm5hqk6lu2ma.datawarehouse.fabric.microsoft.com"},
-				{Kind: "Workspace", Name: "DW - TEST - Data", Old: "5a17c9de-30b4-4f8e-bd26-91c07aa4e1f3", New: "c2e84b06-77d1-4a92-8f35-6bd90211c8a4"},
+				{Kind: "Lakehouse", Name: "LH_Silver", Old: "d0d0d0d0-1111-4000-8000-000000051171", New: "7e577e57-1111-4000-8000-000000051171"},
+				{Kind: "SQL endpoint", Name: "LH_Silver", Old: "devsilverexamplehost00000.datawarehouse.fabric.microsoft.com", New: "testsilverexamplehost0000.datawarehouse.fabric.microsoft.com"},
+				{Kind: "Workspace", Name: "DW - TEST - Data", Old: "d0d0d0d0-0000-4000-8000-00000000da7a", New: "7e577e57-0000-4000-8000-00000000da7a"},
 			},
 			Diffs: []ItemDiff{
 				{

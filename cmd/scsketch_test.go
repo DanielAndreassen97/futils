@@ -46,7 +46,7 @@ func TestWriteSchemaCompareSketch(t *testing.T) {
 			},
 		},
 	}
-	html := renderSchemaCompareReport("DP - DEV - Data", "DP - TEST - Data", diffs)
+	html := renderSchemaCompareReport("DW - DEV - Data", "DW - TEST - Data", diffs)
 	if err := os.WriteFile(out, []byte(html), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -61,16 +61,16 @@ func TestWriteDeployReportSketch(t *testing.T) {
 	if out == "" {
 		t.Skip("set FUTILS_DEPLOY_SKETCH=<path> to write the sketch")
 	}
-	wsData := fabric.Workspace{ID: "ws-data", DisplayName: "DP - TEST - Data"}
-	wsSem := fabric.Workspace{ID: "ws-sem", DisplayName: "DP - TEST - SemMod"}
+	wsData := fabric.Workspace{ID: "ws-data", DisplayName: "DW - TEST - Data"}
+	wsSem := fabric.Workspace{ID: "ws-sem", DisplayName: "DW - TEST - SemMod"}
 	groups := []deployGroup{
 		{
 			Folder: "Backend", Target: wsData,
 			Changes: []deploy.RebindChange{
-				{Kind: "Lakehouse", Name: "LH_Gold", Old: "1eb7fce4-1bd7-7916-37b8-d691f0cea556", New: "8244188e-2835-a6b1-ad48-8ba07a869431"},
-				{Kind: "Workspace", Name: "DP - TEST - Data", Old: "2ca25a08-3655-3ce5-6b6c-eb643f3cd974", New: "327b42d0-4e4b-c1b2-8a49-2a0e48d903af"},
+				{Kind: "Lakehouse", Name: "LH_Gold", Old: "d0d0d0d0-1111-4000-8000-00000000601d", New: "7e577e57-1111-4000-8000-00000000601d"},
+				{Kind: "Workspace", Name: "DW - TEST - Data", Old: "d0d0d0d0-0000-4000-8000-00000000da7a", New: "7e577e57-0000-4000-8000-00000000da7a"},
 				{Kind: "SQL endpoint", Name: "LH_Gold", Old: "abcdef12-3456-7890-abcd-ef1234567890.datawarehouse.fabric.microsoft.com", New: "fedcba98-7654-3210-fedc-ba9876543210.datawarehouse.fabric.microsoft.com"},
-				{Kind: "Shortcut", Name: "LH_Silver", Old: "954039b4-ccc9-836a-475d-8fa2b4ad5ecf", New: "92ea579c-04e4-bc1b-28a4-92a0e48d903a"},
+				{Kind: "Shortcut", Name: "LH_Silver", Old: "d0d0d0d0-1111-4000-8000-000000051171", New: "7e577e57-1111-4000-8000-000000051171"},
 			},
 			Diffs: []ItemDiff{{
 				Name: "nb_transform_sales", Type: "Notebook",
@@ -91,8 +91,8 @@ func TestWriteDeployReportSketch(t *testing.T) {
 		{
 			Folder: "Frontend", Target: wsSem,
 			ReportBindings: []deploy.ReportBinding{
-				{Report: "Salgsrapport", Model: "SM_Sales", Workspace: "DP - TEST - SemMod"},
-				{Report: "HR Dashboard", Model: "SM_HR", Workspace: "DP - TEST - SemMod"},
+				{Report: "Salgsrapport", Model: "SM_Sales", Workspace: "DW - TEST - SemMod"},
+				{Report: "HR Dashboard", Model: "SM_HR", Workspace: "DW - TEST - SemMod"},
 			},
 		},
 	}
@@ -118,9 +118,9 @@ func TestWriteDeployReportSketch(t *testing.T) {
 		{Name: "nb_gammel", Type: "Notebook", Action: deploy.ActionDelete, ID: "id6", WorkspaceID: "ws-data"},
 	}
 	postRuns := []postDeployOutcome{
-		{Run: postDeployRun{Name: "nb_ingest_sales", WorkspaceName: "DP - TEST - Data"}, Status: "Failed",
+		{Run: postDeployRun{Name: "nb_ingest_sales", WorkspaceName: "DW - TEST - Data"}, Status: "Failed",
 			Err: errors.New("job Failed: NotebookExecutionException — Table 'sales' not found"), Duration: 41 * time.Second},
-		{Run: postDeployRun{Name: "PL_refresh_sales", WorkspaceName: "DP - TEST - Data"}, Status: postDeployStatusSkipped,
+		{Run: postDeployRun{Name: "PL_refresh_sales", WorkspaceName: "DW - TEST - Data"}, Status: postDeployStatusSkipped,
 			SkippedAfter: "nb_ingest_sales"},
 	}
 	ctx := &deployReportContext{
