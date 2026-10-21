@@ -114,7 +114,7 @@ func printRebindGroup(changes []deploy.RebindChange) {
 	fmt.Println()
 	fmt.Println(header)
 
-	type row struct{ name, field, old, new, where, list string }
+	type row struct{ name, field, old, new, where string }
 	rows := make([]row, 0, len(changes))
 	nameW, fieldW, oldW, newW := 0, 0, 0, 0
 	for _, c := range changes {
@@ -123,7 +123,7 @@ func printRebindGroup(changes []deploy.RebindChange) {
 			o, n = strings.TrimSuffix(o, suffix), strings.TrimSuffix(n, suffix)
 		}
 		r := row{name: changeName(c), field: endpointField(c), old: compactValue(displayOld(o)), new: compactValue(n)}
-		r.where, r.list = whereUsed(c.Items)
+		r.where = whereUsed(c.Items)
 		rows = append(rows, r)
 		nameW = max(nameW, utf8.RuneCountInString(r.name))
 		fieldW = max(fieldW, utf8.RuneCountInString(r.field))
@@ -149,9 +149,6 @@ func printRebindGroup(changes []deploy.RebindChange) {
 			line += r.new
 		}
 		fmt.Println(line)
-		if r.list != "" {
-			fmt.Println(summaryDimStyle.Render(wrapIndented(r.list, 6)))
-		}
 	}
 }
 
@@ -168,29 +165,22 @@ func endpointField(c deploy.RebindChange) string {
 	return "endpoint id"
 }
 
-// whereUsedListMax caps the names listed under a row. A workspace reference
-// can sit in every notebook of a mapping, and fifty names per row would bury
-// the summary; the diff report lists them all.
-const whereUsedListMax = 6
-
-// whereUsed renders which items carry a reference. Up to two fit inline;
-// more would push the row off-screen, so the row gets a count and the names
-// go on their own wrapped line beneath it (list), capped at whereUsedListMax.
-func whereUsed(items []deploy.ItemRef) (inline, list string) {
-	labels := make([]string, len(items))
-	for i, it := range items {
-		labels[i] = itemLabel(it)
-	}
+// whereUsed renders which items carry a reference, always within the row:
+// up to two by name, more as a count. A workspace reference can sit in every
+// notebook of a mapping, and listing those under the row broke the one line
+// per reference the summary is read by; the diff report names them all.
+func whereUsed(items []deploy.ItemRef) string {
 	switch {
-	case len(labels) == 0:
-		return "", ""
-	case len(labels) <= 2:
-		return "in " + strings.Join(labels, ", "), ""
-	case len(labels) <= whereUsedListMax:
-		return fmt.Sprintf("in %d items", len(labels)), strings.Join(labels, ", ")
+	case len(items) == 0:
+		return ""
+	case len(items) <= 2:
+		labels := make([]string, len(items))
+		for i, it := range items {
+			labels[i] = itemLabel(it)
+		}
+		return "in " + strings.Join(labels, ", ")
 	default:
-		return fmt.Sprintf("in %d items", len(labels)), strings.Join(labels[:whereUsedListMax], ", ") +
-			fmt.Sprintf(" + %d more (all in the diff report)", len(labels)-whereUsedListMax)
+		return fmt.Sprintf("in %d items", len(items))
 	}
 }
 

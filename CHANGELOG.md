@@ -38,9 +38,8 @@ All notable changes to this project are documented here. The format is based on
 
 - **Clearer rebind summary in the compare.**
   - Every rebind row says which item(s) carry the reference (`in
-    NB_LoadOrders`). More than two items show a count, with up to six names
-    on the line below and `+ N more` after that. The HTML report lists them
-    all.
+    NB_LoadOrders`). More than two items show a count (`in 42 items`), so a
+    row stays one line. The HTML report lists them all.
   - Item names without a known type prefix (`NB_`, `PL_`, `LH_`, `SM_` …) get
     their type, e.g. `Permissions (SemanticModel)` or `HR_Access
     (SemanticModel)`.

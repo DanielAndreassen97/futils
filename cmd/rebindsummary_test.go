@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -103,6 +102,8 @@ func TestPrintRebindSummarySingularHeadline(t *testing.T) {
 // Each rebind row says which item(s) carry the reference — the summary groups
 // by WHAT a value is, so without this a user can't tell where an SQL endpoint
 // rewrite lands. Duplicates across items merge into one row naming them all.
+// More than two items become a count, and the row stays one line: a list
+// under it (42 notebook names) made the summary unreadable.
 func TestPrintRebindSummaryShowsWhereUsed(t *testing.T) {
 	groups := []deployGroup{
 		{Changes: []deploy.RebindChange{
@@ -122,26 +123,8 @@ func TestPrintRebindSummaryShowsWhereUsed(t *testing.T) {
 	if !strings.Contains(out, "in 3 items") {
 		t.Errorf("more than two items lead with a count:\n%s", out)
 	}
-	if !strings.Contains(out, "PL_1, PL_2, Permissions (SemanticModel)") {
-		t.Errorf("the items behind a count must still be listed, on their own line:\n%s", out)
-	}
-}
-
-// A workspace reference can sit in every notebook of a mapping. Fifty names
-// under one row would bury the summary, so the list stops after a few names
-// and points at the diff report, which lists them all.
-func TestWhereUsedCapsLongLists(t *testing.T) {
-	var items []deploy.ItemRef
-	for i := range 52 {
-		items = append(items, deploy.ItemRef{Name: fmt.Sprintf("NB_%02d", i), Type: "Notebook"})
-	}
-	inline, list := whereUsed(items)
-	if inline != "in 52 items" {
-		t.Errorf("inline = %q", inline)
-	}
-	want := "NB_00, NB_01, NB_02, NB_03, NB_04, NB_05 + 46 more (all in the diff report)"
-	if list != want {
-		t.Errorf("list = %q, want %q", list, want)
+	if strings.Contains(out, "PL_1") {
+		t.Errorf("the items behind a count belong in the diff report, not under the row:\n%s", out)
 	}
 }
 
