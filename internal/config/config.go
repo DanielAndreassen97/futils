@@ -227,21 +227,32 @@ func (c Customer) IsIgnored(guid string) bool {
 	return false
 }
 
-// RegisteredWorkspaces is every workspace name the customer has placed: on an
-// environment (reference-only or deploy target), as a mapping's own baseline
-// workspace, or among the common workspaces. A workspace outside this set is
-// one nobody has said anything about yet.
-func (c Customer) RegisteredWorkspaces() map[string]bool {
-	out := map[string]bool{}
+// EnvironmentWorkspaces maps every workspace placed on an environment to that
+// environment's alias: its own workspaces (reference-only or deploy target)
+// and its mappings' baseline workspaces. The one definition of "on an env";
+// a name on two envs keeps the last alias.
+func (c Customer) EnvironmentWorkspaces() map[string]string {
+	out := map[string]string{}
 	for _, e := range c.Environments {
 		for _, name := range e.AllWorkspaces() {
-			out[name] = true
+			out[name] = e.Alias
 		}
 		for _, d := range e.Deployments {
 			if d.BaselineWorkspace != "" {
-				out[d.BaselineWorkspace] = true
+				out[d.BaselineWorkspace] = e.Alias
 			}
 		}
+	}
+	return out
+}
+
+// RegisteredWorkspaces is every workspace name the customer has placed: on an
+// environment (see EnvironmentWorkspaces) or among the common workspaces. A
+// workspace outside this set is one nobody has said anything about yet.
+func (c Customer) RegisteredWorkspaces() map[string]bool {
+	out := map[string]bool{}
+	for name := range c.EnvironmentWorkspaces() {
+		out[name] = true
 	}
 	for _, name := range c.CommonWorkspaces {
 		out[name] = true

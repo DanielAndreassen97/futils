@@ -751,6 +751,10 @@ func availableWorkspaceNames(client APIClient, token string, customer config.Cus
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 
+	// Narrower than Customer.RegisteredWorkspaces on purpose: a deploy target
+	// or a mapping's baseline that isn't in an env's own list must stay on
+	// offer, since adding it as a reference workspace is a normal step.
+	// Common workspaces are hidden: a workspace is common or on an env.
 	used := make(map[string]bool)
 	for _, e := range customer.Environments {
 		for _, ws := range e.Workspaces {
@@ -758,7 +762,7 @@ func availableWorkspaceNames(client APIClient, token string, customer config.Cus
 		}
 	}
 	for _, ws := range customer.CommonWorkspaces {
-		used[ws] = true // a workspace is either common or on an env, never both
+		used[ws] = true
 	}
 	available := make([]string, 0, len(workspaces))
 	for _, ws := range workspaces {

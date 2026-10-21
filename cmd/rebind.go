@@ -18,6 +18,12 @@ import (
 // rebinder is built with an empty baseline workspace set (auto-rebind no-ops,
 // but custom substitutions still apply).
 func buildRebinder(client deploy.FabricClient, token string, customer config.Customer, targetAlias string, workspaces []fabric.Workspace) (*deploy.Rebinder, error) {
+	return buildRebinderWithCommon(client, token, customer, targetAlias, workspaces, resolveCommonWorkspaces(customer, workspaces))
+}
+
+// buildRebinderWithCommon is buildRebinder with the common workspaces already
+// resolved, so a rebinderSet resolves (and warns about) them once.
+func buildRebinderWithCommon(client deploy.FabricClient, token string, customer config.Customer, targetAlias string, workspaces, common []fabric.Workspace) (*deploy.Rebinder, error) {
 	hasSubs := len(customer.Substitutions) > 0
 	if customer.BaselineEnvironment == "" && !hasSubs {
 		return nil, nil
@@ -52,7 +58,7 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
-	setCommonWorkspaces(rb, resolveCommonWorkspaces(customer, workspaces))
+	setCommonWorkspaces(rb, common)
 	if customer.BaselineEnvironment != "" {
 		rb.SetWorkspaceSeeds(workspaceSeeds(baselineEnv, targetEnv, workspaces))
 	}
@@ -67,17 +73,7 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 //     there). The environment wins, so its references keep rebinding by name
 //     instead of silently staying on the baseline's GUIDs.
 func resolveCommonWorkspaces(customer config.Customer, workspaces []fabric.Workspace) []fabric.Workspace {
-	onEnv := map[string]string{}
-	for _, e := range customer.Environments {
-		for _, name := range e.AllWorkspaces() {
-			onEnv[name] = e.Alias
-		}
-		for _, d := range e.Deployments {
-			if d.BaselineWorkspace != "" {
-				onEnv[d.BaselineWorkspace] = e.Alias
-			}
-		}
-	}
+	onEnv := customer.EnvironmentWorkspaces()
 	common := make([]fabric.Workspace, 0, len(customer.CommonWorkspaces))
 	for _, name := range customer.CommonWorkspaces {
 		if alias, ok := onEnv[name]; ok {
@@ -154,23 +150,21 @@ type rebinderSet struct {
 	workspaces  []fabric.Workspace
 	shared      *deploy.Rebinder // env-level; nil when rebinding is disabled
 	cache       map[string]*deploy.Rebinder
-	// commonSrc is the first rebinder that indexed the common workspaces;
-	// every later one shares its index, so the workspaces are resolved,
-	// listed and warned about once per deploy.
-	commonSrc *deploy.Rebinder
+	common      []fabric.Workspace // resolved once, so each problem warns once per deploy
 }
 
 // newRebinderSet builds the shared env-level rebinder eagerly (same semantics
 // as buildRebinder, including the nil-when-disabled case) and defers isolated
 // per-mapping rebinders until a mapping actually needs one.
 func newRebinderSet(client deploy.FabricClient, token string, customer config.Customer, targetAlias string, workspaces []fabric.Workspace) (*rebinderSet, error) {
-	shared, err := buildRebinder(client, token, customer, targetAlias, workspaces)
+	common := resolveCommonWorkspaces(customer, workspaces)
+	shared, err := buildRebinderWithCommon(client, token, customer, targetAlias, workspaces, common)
 	if err != nil {
 		return nil, err
 	}
 	return &rebinderSet{
 		client: client, token: token, customer: customer, targetAlias: targetAlias, workspaces: workspaces,
-		shared: shared, cache: map[string]*deploy.Rebinder{}, commonSrc: shared,
+		shared: shared, cache: map[string]*deploy.Rebinder{}, common: common,
 	}, nil
 }
 
@@ -202,12 +196,7 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
-	if rs.commonSrc != nil {
-		rb.ShareCommon(rs.commonSrc)
-	} else {
-		setCommonWorkspaces(rb, resolveCommonWorkspaces(rs.customer, rs.workspaces))
-		rs.commonSrc = rb
-	}
+	setCommonWorkspaces(rb, rs.common)
 	rb.SetWorkspaceSeeds(map[string]string{baseWS[0].ID: targetWS[0].ID})
 	rs.cache[key] = rb
 	return rb, nil

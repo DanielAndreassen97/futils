@@ -491,11 +491,7 @@ func whereUsedHTML(items []deploy.ItemRef) string {
 	case len(items) == 0:
 		return ""
 	case len(items) <= 2:
-		labels := make([]string, len(items))
-		for i, it := range items {
-			labels[i] = itemLabel(it)
-		}
-		return ` <span class="type">in ` + html.EscapeString(strings.Join(labels, ", ")) + `</span>`
+		return ` <span class="type">in ` + html.EscapeString(joinLabels(items)) + `</span>`
 	}
 	byType := map[string][]string{}
 	for _, it := range items {

@@ -477,18 +477,10 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			// Existing (content-compared) reports get their custom-substitution
 			// unresolved via diffExistingRows; NEW reports only pass through here,
 			// so this pass also owns their substitution refs.
-			newReport, newLakehouse := map[string]bool{}, map[string]bool{}
 			newItems := map[[2]string]bool{} // {name, type} of every item this mapping creates
 			for _, r := range g.Rows {
-				if r.Class != deploy.ClassNew {
-					continue
-				}
-				newItems[[2]string{r.Name(), r.ItemType()}] = true
-				switch r.ItemType() {
-				case "Report":
-					newReport[r.Name()] = true
-				case "Lakehouse":
-					newLakehouse[r.Name()] = true
+				if r.Class == deploy.ClassNew {
+					newItems[[2]string{r.Name(), r.ItemType()}] = true
 				}
 			}
 			for _, it := range items {
@@ -506,7 +498,7 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					_, outcome := rb.RebindReportConnection(it, subbed)
 					g.ReportBindings = append(g.ReportBindings, outcome.ReportBindings...)
 					unres := outcome.Unresolved
-					if newReport[it.DisplayName] {
+					if newItems[[2]string{it.DisplayName, "Report"}] {
 						unres = append(unres, subOutcome.Unresolved...)
 					}
 					for i := range unres {
@@ -533,7 +525,7 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					subbed, _ := rb.ApplyCustomSubstitutions(it, part.Path, part.Content)
 					_, outcome := rb.RebindShortcuts(it.DisplayName, subbed)
 					g.CommonShortcuts = append(g.CommonShortcuts, outcome.CommonShortcuts...)
-					if newLakehouse[it.DisplayName] {
+					if newItems[[2]string{it.DisplayName, "Lakehouse"}] {
 						for _, u := range outcome.Unresolved {
 							if createdThisRun(u, rb, logicalIDs, newItems) {
 								continue
@@ -2446,14 +2438,15 @@ func registerCounterpart(customer config.Customer, name, fromEnv, targetAlias st
 // another env, sorted, with the name-swapped guess ("DW - DEV - Raw" → "DW -
 // TEST - Raw") first and marked when it exists.
 func counterpartOptions(name, fromEnv, toEnv string, free []string) []ui.FilterOption {
-	guess := strings.Replace(name, fromEnv, toEnv, 1)
 	sorted := slices.Sorted(slices.Values(free))
 	opts := make([]ui.FilterOption, 0, len(sorted))
-	for _, w := range sorted {
-		if w == guess && guess != name {
-			opts = slices.Insert(opts, 0, ui.FilterOption{Label: w + " (suggested)", Value: w})
-			continue
+	if guess := strings.Replace(name, fromEnv, toEnv, 1); guess != name {
+		if i := slices.Index(sorted, guess); i >= 0 {
+			sorted = slices.Delete(sorted, i, i+1)
+			opts = append(opts, ui.FilterOption{Label: guess + " (suggested)", Value: guess})
 		}
+	}
+	for _, w := range sorted {
 		opts = append(opts, ui.FilterOption{Label: w, Value: w})
 	}
 	return opts

@@ -297,13 +297,6 @@ func (rb *Rebinder) SetCommonWorkspaces(workspaces []fabric.Workspace) error {
 	return nil
 }
 
-// ShareCommon gives rb the common-workspace index src already built. The index
-// is read-only after SetCommonWorkspaces, so rebinders can share it instead of
-// listing the same workspaces again.
-func (rb *Rebinder) ShareCommon(src *Rebinder) {
-	rb.common, rb.commonWSNames = src.common, src.commonWSNames
-}
-
 // BaselineItem returns the baseline item a GUID names, if the baseline index
 // has it.
 func (rb *Rebinder) BaselineItem(guid string) (IndexedItem, bool) {

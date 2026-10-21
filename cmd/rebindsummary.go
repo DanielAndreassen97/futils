@@ -174,14 +174,19 @@ func whereUsed(items []deploy.ItemRef) string {
 	case len(items) == 0:
 		return ""
 	case len(items) <= 2:
-		labels := make([]string, len(items))
-		for i, it := range items {
-			labels[i] = itemLabel(it)
-		}
-		return "in " + strings.Join(labels, ", ")
+		return "in " + joinLabels(items)
 	default:
 		return fmt.Sprintf("in %d items", len(items))
 	}
+}
+
+// joinLabels names items for a where-used column, comma-separated.
+func joinLabels(items []deploy.ItemRef) string {
+	labels := make([]string, len(items))
+	for i, it := range items {
+		labels[i] = itemLabel(it)
+	}
+	return strings.Join(labels, ", ")
 }
 
 // typePrefix matches the naming convention that already carries an item's
