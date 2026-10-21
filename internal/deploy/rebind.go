@@ -363,6 +363,20 @@ func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, boo
 	return it, st == LookupFound, reasonForStatus(st)
 }
 
+// resolveNamedGUIDReason resolves a GUID that travels with the item's name,
+// like a notebook's default lakehouse. The name decides — it survives a
+// lakehouse being recreated under a new GUID — unless an override or a common
+// workspace claims the GUID, which take precedence as for any GUID.
+func (rb *Rebinder) resolveNamedGUIDReason(guid, name, nameType string) (IndexedItem, bool, string) {
+	_, overridden := rb.overrides[guid]
+	_, common := rb.commonItem(guid)
+	if overridden || common || name == "" {
+		return rb.resolveGUIDReason(guid, "")
+	}
+	it, st := rb.target.LookupName(name, nameType)
+	return it, st == LookupFound, reasonForStatus(st)
+}
+
 // resolveNameReason resolves a NAME-form reference — the baseline index plays
 // no part, because the reference already carries the item name (e.g.
 // Sql.Database("host", "LH_Gold")). An override keyed by the literal name takes
@@ -501,19 +515,8 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 			continue // self-reference Fabric maps to the current lakehouse
 		}
 		it, ok, reason := rb.resolveGUIDReason(itemID, "")
-		if ok {
-			if wsName, common := rb.commonWSNames[it.WorkspaceID]; common {
-				name, _ := sc["name"].(string)
-				out.CommonShortcuts = append(out.CommonShortcuts, CommonShortcut{
-					Lakehouse: lakehouse, Shortcut: name, Target: it.Name, TargetType: it.Type, WorkspaceName: wsName,
-				})
-			}
-		}
 		if !ok {
 			wsID, _ := ol["workspaceId"].(string)
-			if isZeroOrEmptyGUID(wsID) {
-				wsID = ""
-			}
 			// The type is only known when something indexed the GUID. A guessed
 			// "Lakehouse" made the override picker hide the real target (a
 			// mirrored database, a semantic model's OneLake tables, ...).
@@ -523,8 +526,14 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 			} else if base, known := rb.baseline.ItemByGUID(itemID); known {
 				itemType = base.Type
 			}
-			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: itemType, Location: "shortcut target", Reason: reason, WorkspaceID: wsID})
+			out.AddUnresolved(UnresolvedRef{GUID: itemID, ItemType: itemType, Location: "shortcut target", Reason: reason, WorkspaceID: realWorkspaceID(wsID)})
 			continue
+		}
+		if wsName, common := rb.commonWSNames[it.WorkspaceID]; common {
+			name, _ := sc["name"].(string)
+			out.CommonShortcuts = append(out.CommonShortcuts, CommonShortcut{
+				Lakehouse: lakehouse, Shortcut: name, Target: it.Name, TargetType: it.Type, WorkspaceName: wsName,
+			})
 		}
 		if itemID != it.GUID {
 			if recordChangePair(&out, seen, "Shortcut", it.Name, itemID, it.GUID) {
@@ -553,6 +562,15 @@ func (rb *Rebinder) RebindShortcuts(lakehouse string, content []byte) ([]byte, R
 		return content, RebindOutcome{Unresolved: out.Unresolved, CommonShortcuts: out.CommonShortcuts}
 	}
 	return rewritten, out
+}
+
+// realWorkspaceID returns a workspace GUID a reference names, or "" for the
+// empty or all-zeros placeholder, which names no workspace of its own.
+func realWorkspaceID(guid string) string {
+	if isZeroOrEmptyGUID(guid) {
+		return ""
+	}
+	return guid
 }
 
 // isZeroOrEmptyGUID reports whether a shortcut GUID is a self-reference: empty,
@@ -601,18 +619,7 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 	seen := map[string]bool{}
 
 	if lh.DefaultLakehouse != "" {
-		var it IndexedItem
-		var resolved bool
-		var reason string
-		_, isCommon := rb.commonItem(lh.DefaultLakehouse)
-		if _, hasOverride := rb.overrides[lh.DefaultLakehouse]; !hasOverride && !isCommon && lh.DefaultLakehouseName != "" {
-			var st LookupStatus
-			it, st = rb.target.LookupName(lh.DefaultLakehouseName, "Lakehouse")
-			resolved = st == LookupFound
-			reason = reasonForStatus(st)
-		} else {
-			it, resolved, reason = rb.resolveGUIDReason(lh.DefaultLakehouse, "")
-		}
+		it, resolved, reason := rb.resolveNamedGUIDReason(lh.DefaultLakehouse, lh.DefaultLakehouseName, "Lakehouse")
 		if resolved {
 			addChange(&out, seen, "Lakehouse", it.Name, lh.DefaultLakehouse, it.GUID)
 			// The zero GUID never goes through applyChanges (a global replace
@@ -621,11 +628,8 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 				addChange(&out, seen, "Workspace", rb.workspaceName(it.WorkspaceID), lh.DefaultLakehouseWorkspaceID, it.WorkspaceID)
 			}
 		} else {
-			wsID := lh.DefaultLakehouseWorkspaceID
-			if isZeroOrEmptyGUID(wsID) {
-				wsID = ""
-			}
-			out.AddUnresolved(UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason, WorkspaceID: wsID})
+			out.AddUnresolved(UnresolvedRef{GUID: lh.DefaultLakehouse, ItemType: "Lakehouse", Location: "default_lakehouse", Reason: reason,
+				WorkspaceID: realWorkspaceID(lh.DefaultLakehouseWorkspaceID)})
 		}
 	}
 	for _, k := range lh.KnownLakehouses {

@@ -1611,7 +1611,7 @@ func TestPrintCommonShortcuts(t *testing.T) {
 		t.Errorf("duplicates across groups must collapse:\n%s", out)
 	}
 	report := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
-	if !strings.Contains(report, "Common workspace references") || !strings.Contains(report, "in DW - Shared - Ingest") {
+	if !strings.Contains(report, "Shortcuts into common workspaces") || !strings.Contains(report, "in DW - Shared - Ingest") {
 		t.Errorf("the HTML report must list common shortcut targets too:\n%s", report)
 	}
 }

@@ -14,8 +14,8 @@ All notable changes to this project are documented here. The format is based on
   workspaces** (`common_workspaces` in the config). A reference to an item in
   a common workspace deploys unchanged in every environment, whatever kind of
   reference it is: a lakehouse shortcut, a notebook's default lakehouse, a
-  pipeline activity. Shortcuts kept this way are listed under **Common
-  workspace references (kept as-is)** in the compare and the HTML report.
+  pipeline activity. Shortcuts kept this way are listed under **Shortcuts
+  into common workspaces (kept as-is)** in the compare and the HTML report.
   A workspace is either common or on an environment, never both.
 
 - **One question per unknown workspace.** When unresolved references point

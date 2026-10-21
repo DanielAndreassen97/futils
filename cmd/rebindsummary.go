@@ -122,11 +122,8 @@ func printRebindGroup(changes []deploy.RebindChange) {
 		if suffix != "" && strings.HasSuffix(o, suffix) && strings.HasSuffix(n, suffix) {
 			o, n = strings.TrimSuffix(o, suffix), strings.TrimSuffix(n, suffix)
 		}
-		r := row{name: changeName(c), field: endpointField(c), old: compactValue(o), new: compactValue(n)}
+		r := row{name: changeName(c), field: endpointField(c), old: compactValue(displayOld(o)), new: compactValue(n)}
 		r.where, r.list = whereUsed(c.Items)
-		if c.Old == deploy.ThisWorkspaceGUID {
-			r.old = changeOld(c)
-		}
 		rows = append(rows, r)
 		nameW = max(nameW, utf8.RuneCountInString(r.name))
 		fieldW = max(fieldW, utf8.RuneCountInString(r.field))
@@ -208,14 +205,14 @@ func changeName(c deploy.RebindChange) string {
 	return itemLabel(deploy.ItemRef{Name: c.Name, Type: c.TargetType})
 }
 
-// changeOld is a rebind row's baseline value as shown to the user: the
+// displayOld is a rebind row's baseline value as shown to the user: the
 // all-zeros workspace GUID is Fabric's "this workspace" placeholder, not a
 // real workspace.
-func changeOld(c deploy.RebindChange) string {
-	if c.Old == deploy.ThisWorkspaceGUID {
+func displayOld(v string) string {
+	if v == deploy.ThisWorkspaceGUID {
 		return "(this workspace)"
 	}
-	return c.Old
+	return v
 }
 
 // itemLabel names an item for the summary, adding its type when the name

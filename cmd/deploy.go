@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -2015,7 +2016,7 @@ func printCommonShortcuts(groups []deployGroup) {
 		return
 	}
 	fmt.Println()
-	fmt.Println(infoStyle.Render("Common workspace references (kept as-is):"))
+	fmt.Println(infoStyle.Render("Shortcuts into common workspaces (kept as-is):"))
 	labels := make([]string, len(all))
 	labelW := 0
 	for i, s := range all {
@@ -2036,19 +2037,11 @@ func printCommonShortcuts(groups []deployGroup) {
 // workspaces the caller can see qualify: answering needs the name. Returns
 // workspace GUID -> display name; nil when there are none.
 func unregisteredWorkspaces(groups []deployGroup, customer config.Customer, workspaces []fabric.Workspace) map[string]string {
-	known := map[string]bool{}
-	for _, e := range customer.Environments {
-		for _, name := range e.AllWorkspaces() {
-			known[name] = true
-		}
-	}
-	for _, name := range customer.CommonWorkspaces {
-		known[name] = true
-	}
+	known := customer.RegisteredWorkspaces()
 	var out map[string]string
 	for _, g := range groups {
 		for _, u := range g.Unresolved {
-			if u.WorkspaceID == "" || u.Reason == deploy.ReasonLeftover {
+			if u.WorkspaceID == "" {
 				continue
 			}
 			ws, ok := workspaceByID(workspaces, u.WorkspaceID)
@@ -2072,31 +2065,39 @@ func printUnregisteredWorkspaces(groups []deployGroup, unregistered map[string]s
 	if len(unregistered) == 0 {
 		return
 	}
-	byWS := map[string][]string{}
-	total := 0
+	var refs []deploy.UnresolvedRef
 	for _, g := range groups {
-		for _, u := range g.Unresolved {
-			if _, ok := unregistered[u.WorkspaceID]; !ok || u.Reason == deploy.ReasonLeftover {
-				continue
-			}
-			byWS[u.WorkspaceID] = append(byWS[u.WorkspaceID], fmt.Sprintf("%s (%s)", u.ItemName, u.Location))
-			total++
-		}
+		refs = append(refs, g.Unresolved...)
 	}
-	ids := make([]string, 0, len(byWS))
-	nameW := 0
-	for id := range byWS {
-		ids = append(ids, id)
+	ids, byWS := refsByWorkspace(refs, unregistered)
+	total, nameW := 0, 0
+	for _, id := range ids {
+		total += len(byWS[id])
 		nameW = max(nameW, utf8.RuneCountInString(unregistered[id]))
 	}
-	sort.Slice(ids, func(i, j int) bool { return unregistered[ids[i]] < unregistered[ids[j]] })
 	fmt.Println()
 	fmt.Println(warningStyle.Render(fmt.Sprintf("%d reference(s) into workspaces that aren't on any environment — left as-is:", total)))
 	for _, id := range ids {
-		refs := byWS[id]
-		fmt.Printf("  %s  %s\n", summaryNameStyle.Render(padRight(unregistered[id], nameW)), summaryDimStyle.Render(fmt.Sprintf("%d reference(s): ", len(refs)))+strings.Join(refs, ", "))
+		labels := byWS[id]
+		fmt.Printf("  %s  %s\n", summaryNameStyle.Render(padRight(unregistered[id], nameW)), summaryDimStyle.Render(fmt.Sprintf("%d reference(s): ", len(labels)))+strings.Join(labels, ", "))
 	}
 	fmt.Println(wrapIndented(infoStyle.Render("Is it shared by every environment? Mark it common. Does it belong to one? Register it there. Answer when asked to map the references below, or under Edit customer."), 2))
+}
+
+// refsByWorkspace groups the refs that point into an unregistered workspace,
+// labelled "<item> (<location>)", and returns the workspace GUIDs sorted by
+// name. Shared by the compare output and the mapping flow so both list the
+// same references in the same order.
+func refsByWorkspace(refs []deploy.UnresolvedRef, unregistered map[string]string) ([]string, map[string][]string) {
+	byWS := map[string][]string{}
+	for _, r := range refs {
+		if _, ok := unregistered[r.WorkspaceID]; ok {
+			byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], fmt.Sprintf("%s (%s)", r.ItemName, r.Location))
+		}
+	}
+	ids := slices.Collect(maps.Keys(byWS))
+	sort.Slice(ids, func(i, j int) bool { return unregistered[ids[i]] < unregistered[ids[j]] })
+	return ids, byWS
 }
 
 // printUnresolved lists reference GUIDs the rebinder could not translate, with
@@ -2333,17 +2334,7 @@ const (
 // and the workspace GUIDs that got an answer, whose references the per-GUID
 // loop then skips. ui.ErrGoBack (esc) comes back with the answers so far.
 func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.UnresolvedRef, unregistered map[string]string) (config.Customer, map[string]bool, error) {
-	byWS := map[string][]string{}
-	var order []string
-	for _, r := range refs {
-		if _, ok := unregistered[r.WorkspaceID]; !ok {
-			continue
-		}
-		if _, seen := byWS[r.WorkspaceID]; !seen {
-			order = append(order, r.WorkspaceID)
-		}
-		byWS[r.WorkspaceID] = append(byWS[r.WorkspaceID], fmt.Sprintf("%s (%s)", r.ItemName, r.Location))
-	}
+	order, byWS := refsByWorkspace(refs, unregistered)
 	answered := map[string]bool{}
 	opts := []ui.MenuOption{
 		{Label: "Common: shared by every environment, keep references into it as-is", Value: wsActionCommon},
@@ -2362,7 +2353,7 @@ func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.Unresolve
 		case wsActionCommon:
 			customer = addCommonWorkspace(customer, name)
 		case wsActionRegister:
-			env, err := pickEnvAlias(customer)
+			env, err := selectEnvironment(customer)
 			if err != nil {
 				if errors.Is(err, ui.ErrGoBack) {
 					continue
@@ -2379,7 +2370,7 @@ func askUnregisteredWorkspaces(customer config.Customer, refs []deploy.Unresolve
 }
 
 // addCommonWorkspace appends name to the customer's common workspaces,
-// idempotently. Pure — no I/O.
+// idempotently.
 func addCommonWorkspace(c config.Customer, name string) config.Customer {
 	if !c.IsCommonWorkspace(name) {
 		c.CommonWorkspaces = append(slices.Clone(c.CommonWorkspaces), name)
@@ -2402,21 +2393,15 @@ func pickWorkspaceAndEnv(client APIClient, token string, customer config.Custome
 	if err != nil {
 		return "", "", err
 	}
-	envAlias, err = pickEnvAlias(customer)
-	if err != nil {
-		return "", "", err
-	}
-	return workspace, envAlias, nil
-}
-
-// pickEnvAlias asks which of the customer's environments to register a
-// workspace on.
-func pickEnvAlias(customer config.Customer) (string, error) {
 	envOpts := make([]ui.MenuOption, len(customer.Environments))
 	for i, e := range customer.Environments {
 		envOpts[i] = ui.MenuOption{Label: e.Alias, Value: e.Alias}
 	}
-	return ui.NumberMenu("Register it on which environment?", envOpts)
+	envAlias, err = ui.NumberMenu("Register it on which environment?", envOpts)
+	if err != nil {
+		return "", "", err
+	}
+	return workspace, envAlias, nil
 }
 
 // pickTargetItem lets the user pick a target workspace then an item of the

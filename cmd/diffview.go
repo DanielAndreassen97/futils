@@ -724,7 +724,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					field = `<span class="type">` + f + `</span> `
 				}
 				b.WriteString(`<tr><td class="name">` + nameCell + `</td>` +
-					`<td class="detail rb">` + field + `<span class="rb-old">` + html.EscapeString(changeOld(c)) +
+					`<td class="detail rb">` + field + `<span class="rb-old">` + html.EscapeString(displayOld(c.Old)) +
 					`</span><span class="rb-arrow">→</span><span class="rb-new">` + html.EscapeString(c.New) + `</span>` + where + `</td></tr>`)
 			}
 			b.WriteString(`</table></div>`)
@@ -793,10 +793,10 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 		b.WriteString(`</table></div>`)
 	}
 
-	// Common workspace references: OneLake shortcuts kept as-is because their
+	// Shortcuts into common workspaces: OneLake shortcuts kept as-is because their
 	// target sits in one of the customer's common workspaces.
 	if common := collectCommonShortcuts(groups); len(common) > 0 {
-		fmt.Fprintf(&b, `<h2>Common workspace references <span class="note">— kept as-is · %d shortcut(s)</span></h2>`, len(common))
+		fmt.Fprintf(&b, `<h2>Shortcuts into common workspaces <span class="note">— kept as-is · %d shortcut(s)</span></h2>`, len(common))
 		b.WriteString(`<div class="panel"><table>`)
 		for _, sc := range common {
 			b.WriteString(`<tr><td class="name">` + html.EscapeString(sc.Lakehouse+" › "+sc.Shortcut) + ` <span class="type">Shortcut</span></td>` +
