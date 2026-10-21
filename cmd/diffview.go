@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -384,6 +386,11 @@ const deployReportStyle = `<style>
   .rb{font-family:"SF Mono",Menlo,monospace;font-size:.78rem;word-break:break-all}
   .rb .rb-old{color:var(--delfg)} .rb .rb-new{color:var(--addfg)}
   .rb .rb-arrow{color:#5d6b61;padding:0 .45rem;word-break:normal}
+  .rb details.where{margin-top:.3rem;color:var(--muted);word-break:normal}
+  .rb details.where summary{cursor:pointer;font-size:.78rem;width:max-content}
+  .rb details.where[open] summary .hint{display:none}
+  .rb .where-list{padding:.2rem 0 .3rem 1.1rem;line-height:1.55}
+  .rb .where-type{color:#d8b3ea;font-weight:600;margin-top:.35rem}
 
   /* ── inline hint (e.g. schedules ride along) ── */
   .hintline{display:flex;align-items:baseline;gap:.6rem;margin:.15rem 0 .7rem;padding:.55rem .85rem;
@@ -473,6 +480,42 @@ func (c *deployReportContext) heroContextLine() string {
 		return ""
 	}
 	return `<div class="sub">` + strings.Join(parts, " · ") + `</div>`
+}
+
+// whereUsedHTML renders, for the HTML report, which items carry a reference.
+// Up to two sit inline after the values. More fold into a collapsed list,
+// grouped by item type with one name per line: a workspace reference in 42
+// notebooks otherwise filled the row with a paragraph of names.
+func whereUsedHTML(items []deploy.ItemRef) string {
+	switch {
+	case len(items) == 0:
+		return ""
+	case len(items) <= 2:
+		labels := make([]string, len(items))
+		for i, it := range items {
+			labels[i] = itemLabel(it)
+		}
+		return ` <span class="type">in ` + html.EscapeString(strings.Join(labels, ", ")) + `</span>`
+	}
+	byType := map[string][]string{}
+	for _, it := range items {
+		byType[it.Type] = append(byType[it.Type], it.Name)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `<details class="where"><summary>in %d items<span class="hint"> · click to expand</span></summary><div class="where-list">`, len(items))
+	for _, typ := range slices.Sorted(maps.Keys(byType)) {
+		names := byType[typ]
+		label := typ
+		if label == "" {
+			label = "Other"
+		}
+		fmt.Fprintf(&b, `<div class="where-type">%s (%d)</div>`, html.EscapeString(label), len(names))
+		for _, n := range names {
+			b.WriteString(`<div>` + html.EscapeString(n) + `</div>`)
+		}
+	}
+	b.WriteString(`</div></details>`)
+	return b.String()
 }
 
 // renderDeployReport builds a self-contained HTML deploy report. When results
@@ -711,14 +754,7 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 					nameCell = html.EscapeString(changeName(c)) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
 					lastKind, lastName = c.Kind, c.Name
 				}
-				where := ""
-				if len(c.Items) > 0 {
-					labels := make([]string, len(c.Items))
-					for i, it := range c.Items {
-						labels[i] = itemLabel(it)
-					}
-					where = ` <span class="type">in ` + html.EscapeString(strings.Join(labels, ", ")) + `</span>`
-				}
+				where := whereUsedHTML(c.Items)
 				field := ""
 				if f := endpointField(c); f != "" {
 					field = `<span class="type">` + f + `</span> `

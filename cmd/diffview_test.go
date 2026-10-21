@@ -771,3 +771,29 @@ func TestRenderDeployDiffHTMLOmitsToggleWithoutOrderNoise(t *testing.T) {
 		t.Error("no order noise means no toggle")
 	}
 }
+
+// A reference carried by many items folds into a collapsed list grouped by
+// item type, one name per line: a workspace reference in 42 notebooks
+// otherwise filled its row with a paragraph of names. Two items or fewer stay
+// inline, where a click would cost more than it saves.
+func TestRenderDeployReportCollapsesLongWhereUsed(t *testing.T) {
+	groups := []deployGroup{{
+		Target: fabric.Workspace{DisplayName: "DW - TEST - Config"},
+		Changes: []deploy.RebindChange{
+			{Kind: "Lakehouse", Name: "LH_Bronze", Old: "dev-lh", New: "test-lh", Items: []deploy.ItemRef{
+				{Name: "NB_Load", Type: "Notebook"}, {Name: "PL_Main", Type: "DataPipeline"}, {Name: "NB_Fact", Type: "Notebook"},
+			}},
+			{Kind: "Lakehouse", Name: "LH_Gold", Old: "dev-gold", New: "test-gold", Items: []deploy.ItemRef{{Name: "NB_Gold", Type: "Notebook"}}},
+		},
+	}}
+	out := renderDeployReport(groups, nil, nil, time.Unix(0, 0), nil)
+	if strings.Count(out, `<details class="where">`) != 1 || !strings.Contains(out, "in 3 items") || !strings.Contains(out, "click to expand") {
+		t.Errorf("three items must fold into one collapsed list:\n%s", out)
+	}
+	if !strings.Contains(out, `<div class="where-type">DataPipeline (1)</div><div>PL_Main</div><div class="where-type">Notebook (2)</div><div>NB_Load</div><div>NB_Fact</div>`) {
+		t.Errorf("the list must group by type, one name per line:\n%s", out)
+	}
+	if !strings.Contains(out, `<span class="type">in NB_Gold</span>`) {
+		t.Errorf("a single item stays inline:\n%s", out)
+	}
+}
