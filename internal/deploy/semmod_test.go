@@ -47,6 +47,25 @@ func TestRebindOneLakeSource(t *testing.T) {
 	}
 }
 
+// A Direct Lake source names its workspace in the URL, so an unresolved one
+// carries that workspace and joins the deploy's per-workspace question. In a
+// common workspace the same source resolves to itself and stays as-is.
+func TestRebindOneLakeSourceCommonOrUnregisteredWorkspace(t *testing.T) {
+	in := string(semmodOneLake("ingest", commonLH))
+
+	var out RebindOutcome
+	newRebindFixture(t, nil).rebindOneLakeSources(in, &out)
+	if len(out.Unresolved) != 1 || out.Unresolved[0].WorkspaceID != "ingest" {
+		t.Errorf("unresolved source must carry its workspace: %#v", out.Unresolved)
+	}
+
+	out = RebindOutcome{}
+	got := withCommonIngest(t, newRebindFixture(t, nil)).rebindOneLakeSources(in, &out)
+	if got != in || len(out.Unresolved) != 0 || len(out.Changes) != 0 {
+		t.Errorf("a common source must stay as-is: unresolved=%#v changes=%#v", out.Unresolved, out.Changes)
+	}
+}
+
 // TestRebindOneLakeSharedWorkspaceDifferentTargets proves that two OneLake
 // sources sharing the SAME baseline workspace whose lakehouses resolve to
 // DIFFERENT target workspaces are each rewritten to their own workspace — the

@@ -297,6 +297,19 @@ func (rb *Rebinder) SetCommonWorkspaces(workspaces []fabric.Workspace) error {
 	return nil
 }
 
+// ShareCommon gives rb the common-workspace index src already built. The index
+// is read-only after SetCommonWorkspaces, so rebinders can share it instead of
+// listing the same workspaces again.
+func (rb *Rebinder) ShareCommon(src *Rebinder) {
+	rb.common, rb.commonWSNames = src.common, src.commonWSNames
+}
+
+// BaselineItem returns the baseline item a GUID names, if the baseline index
+// has it.
+func (rb *Rebinder) BaselineItem(guid string) (IndexedItem, bool) {
+	return rb.baseline.ItemByGUID(guid)
+}
+
 // commonItem returns the common-workspace item with this GUID, if any.
 func (rb *Rebinder) commonItem(guid string) (IndexedItem, bool) {
 	if rb.common == nil {
@@ -342,7 +355,7 @@ func (rb *Rebinder) resolveGUIDReason(guid, targetType string) (IndexedItem, boo
 		it, st := rb.target.LookupName(ov.ItemName, ov.ItemType)
 		return it, st == LookupFound, reasonForStatus(st)
 	}
-	if it, ok := rb.commonItem(guid); ok {
+	if it, ok := rb.commonItem(guid); ok && (targetType == "" || it.Type == targetType) {
 		return it, true, "" // common to every env: the reference stays as-is
 	}
 	base, ok := rb.baseline.ItemByGUID(guid)
@@ -633,7 +646,10 @@ func (rb *Rebinder) RebindNotebookLakehouses(content []byte) ([]byte, RebindOutc
 		}
 	}
 	for _, k := range lh.KnownLakehouses {
-		if k.ID == "" || seen[k.ID] {
+		// The default lakehouse usually repeats here; it was rebound or
+		// reported above, and a second unresolved entry without its
+		// workspace would dodge the per-workspace question.
+		if k.ID == "" || seen[k.ID] || k.ID == lh.DefaultLakehouse {
 			continue
 		}
 		if it, ok, reason := rb.resolveGUIDReason(k.ID, ""); ok {

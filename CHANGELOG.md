@@ -12,11 +12,14 @@ All notable changes to this project are documented here. The format is based on
   every environment reads from the same one: a shared ingest workspace
   holding a mirrored database, say. List them under **Edit customer → Common
   workspaces** (`common_workspaces` in the config). A reference to an item in
-  a common workspace deploys unchanged in every environment, whatever kind of
-  reference it is: a lakehouse shortcut, a notebook's default lakehouse, a
-  pipeline activity. Shortcuts kept this way are listed under **Shortcuts
-  into common workspaces (kept as-is)** in the compare and the HTML report.
-  A workspace is either common or on an environment, never both.
+  a common workspace deploys unchanged in every environment: a lakehouse
+  shortcut, a notebook's lakehouse, a semantic model's Direct Lake (OneLake)
+  source, a pipeline activity. Semantic-model SQL endpoint connections
+  (`Sql.Database(host, …)`) aren't covered yet and still show as unresolved.
+  Shortcuts kept this way are listed under **Shortcuts into common workspaces
+  (kept as-is)** in the compare and the HTML report. A workspace is either
+  common or on an environment, never both; one listed in both places is
+  treated as part of the environment, with a warning.
 
 - **One question per unknown workspace.** When unresolved references point
   into a workspace that is on no environment and isn't common, the compare

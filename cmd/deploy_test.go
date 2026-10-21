@@ -851,7 +851,9 @@ func newDeployGroupsRebinder(t *testing.T, fake *deployFakeAPI) *deploy.Rebinder
 // A new lakehouse's shortcuts surface in the compare too: the compare only
 // content-diffs existing items. Its common targets are listed as kept, and a
 // target in an unregistered workspace must come back as unresolved, or a new
-// lakehouse would deploy pointing at DEV without a word.
+// lakehouse would deploy pointing at DEV without a word. A target this deploy
+// creates (LH_Other, by DEV GUID or by logicalId) resolves at publish and must
+// not be flagged.
 func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 	fake := &deployFakeAPI{
 		workspaces: []fabric.Workspace{
@@ -859,7 +861,7 @@ func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 			{ID: "ws-ingest", DisplayName: "DW - Shared - Ingest"},
 			{ID: "ws-raw", DisplayName: "DW - DEV - Raw"},
 		},
-		items: map[string][]fabric.Item{"ws-dev": {}, "ws-tgt": {},
+		items: map[string][]fabric.Item{"ws-dev": {{ID: "dev-other", DisplayName: "LH_Other", Type: "Lakehouse"}}, "ws-tgt": {},
 			"ws-ingest": {{ID: "mirror-erp", DisplayName: "MIR_ERP", Type: "MirroredDatabase"}}},
 	}
 	rb := newDeployGroupsRebinder(t, fake)
@@ -870,11 +872,16 @@ func TestBuildDeployGroupsListsCommonShortcuts(t *testing.T) {
 		Parts: []deploy.Part{{Path: "shortcuts.metadata.json", Content: []byte(`[{"name": "erp", "path": "/Tables",
 		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-ingest", "itemId": "mirror-erp", "path": "Tables/dbo"}}},
 		  {"name": "raw", "path": "/Tables",
-		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-raw", "itemId": "raw-lh", "path": "Tables/events"}}}]`)}}}
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-raw", "itemId": "raw-lh", "path": "Tables/events"}}},
+		  {"name": "other_by_guid", "path": "/Tables",
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-dev", "itemId": "dev-other", "path": "Tables/t"}}},
+		  {"name": "other_by_logical", "path": "/Tables",
+		  "target": {"type": "OneLake", "oneLake": {"workspaceId": "ws-dev", "itemId": "lid-other", "path": "Tables/t"}}}]`)}}}
+	other := deploy.LocalItem{Type: "Lakehouse", DisplayName: "LH_Other", FolderPath: "Data", LogicalID: "lid-other"}
 	customer := config.Customer{RepoPath: "/repo"}
 	groups, err := buildDeployGroups(fake, "tok", customer,
 		[]config.DeployMapping{{Folder: "Data", Workspace: "TGT"}},
-		map[string][]deploy.LocalItem{customer.RepoPath: {lh}}, fake.workspaces, &rebinderSet{shared: rb}, nil)
+		map[string][]deploy.LocalItem{customer.RepoPath: {lh, other}}, fake.workspaces, &rebinderSet{shared: rb}, nil)
 	if err != nil {
 		t.Fatalf("buildDeployGroups: %v", err)
 	}

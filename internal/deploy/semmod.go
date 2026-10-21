@@ -345,7 +345,7 @@ func (rb *Rebinder) rebindOneLakeSources(s string, out *RebindOutcome) string {
 		seenURL[full] = true
 		it, ok, reason := rb.resolveGUIDReason(lhGUID, "")
 		if !ok {
-			out.AddUnresolved(UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason})
+			out.AddUnresolved(UnresolvedRef{GUID: lhGUID, ItemType: "Lakehouse", Location: "onelake source", Reason: reason, WorkspaceID: realWorkspaceID(wsGUID)})
 			continue
 		}
 		newWS := wsGUID

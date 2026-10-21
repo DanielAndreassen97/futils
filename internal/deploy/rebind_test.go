@@ -698,6 +698,31 @@ func TestRebindNotebookDefaultLakehouseInCommonWorkspace(t *testing.T) {
 	}
 }
 
+// A notebook lists its default lakehouse again under known_lakehouses. When it
+// is unresolved, it must be reported once, with its workspace: a second entry
+// without the workspace dodged the per-workspace question and was asked about
+// again after the workspace had been answered.
+func TestRebindNotebookUnresolvedDefaultReportedOnce(t *testing.T) {
+	nb := rebindNotebook(commonLH, "ingest", "LH_Common", commonLH)
+	_, outcome := newRebindFixture(t, nil).RebindNotebookLakehouses(nb)
+	if len(outcome.Unresolved) != 1 || outcome.Unresolved[0].WorkspaceID != "ingest" {
+		t.Errorf("want one unresolved ref in ingest, got %#v", outcome.Unresolved)
+	}
+}
+
+// A common item only stands in for a reference of its own type: a lookup that
+// wants a Lakehouse must not get the common mirrored database, or the caller
+// treats it as a lakehouse (SQL endpoint lookups on a non-lakehouse id).
+func TestCommonItemRespectsTargetType(t *testing.T) {
+	rb := withCommonIngest(t, newRebindFixture(t, nil))
+	if _, ok, _ := rb.resolveGUIDReason(commonMirror, "Lakehouse"); ok {
+		t.Error("a MirroredDatabase must not resolve for a Lakehouse lookup")
+	}
+	if it, ok, _ := rb.resolveGUIDReason(commonMirror, ""); !ok || it.GUID != commonMirror {
+		t.Errorf("an untyped lookup resolves the common item to itself, got %+v %v", it, ok)
+	}
+}
+
 // The summary row for a rewritten shortcut must say what kind of item it
 // points at — the bare target name made a semantic model's OneLake tables look
 // like a stray report. The type rides in TargetType, not the name, so the cmd

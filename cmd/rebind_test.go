@@ -226,6 +226,45 @@ func TestBuildRebinderSkipsMissingCommonWorkspace(t *testing.T) {
 	}
 }
 
+// A workspace that is common AND on an environment (a mapping or mapping
+// baseline can put it there) is treated as the environment's: its references
+// keep rebinding by name. The conflict is reported once per deploy, not once
+// per rebinder, and the isolated rebinders share the shared one's index.
+func TestCommonWorkspaceAlsoOnEnvIsTreatedAsEnv(t *testing.T) {
+	customer := config.Customer{
+		BaselineEnvironment: "DEV",
+		Environments: []config.Environment{
+			{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"}},
+			{Alias: "TEST", Workspaces: []string{"DW - TEST - Data"}, Deployments: []config.DeployMapping{
+				{Folder: "Front", Workspace: "DW - TEST - Data", BaselineWorkspace: "DW - Shared - Ingest"},
+			}},
+		},
+		CommonWorkspaces: []string{"DW - Shared - Ingest"},
+	}
+	workspaces := []fabric.Workspace{
+		{ID: "dev-data", DisplayName: "DW - DEV - Data"}, {ID: "test-data", DisplayName: "DW - TEST - Data"},
+		{ID: "ingest", DisplayName: "DW - Shared - Ingest"},
+	}
+	api := &deployFakeAPI{items: map[string][]fabric.Item{"ingest": {{ID: "mirror", DisplayName: "MIR_ERP", Type: "MirroredDatabase"}}}}
+	var rs *rebinderSet
+	out := captureStdout(t, func() {
+		var err error
+		if rs, err = newRebinderSet(api, "tok", customer, "TEST", workspaces); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rs.For(customer.Environments[1].Deployments[0]); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if n := strings.Count(out, "is also on environment"); n != 1 {
+		t.Errorf("the conflict must be reported once, got %d:\n%s", n, out)
+	}
+	_, sc := rs.shared.RebindShortcuts("LH", []byte(`[{"name": "erp", "path": "/Tables", "target": {"type": "OneLake", "oneLake": {"workspaceId": "ingest", "itemId": "mirror", "path": "Tables/dbo"}}}]`))
+	if len(sc.CommonShortcuts) != 0 {
+		t.Errorf("a workspace that is also on an env is not common: %+v", sc.CommonShortcuts)
+	}
+}
+
 func TestToDeploySubstitutionsPerEnv(t *testing.T) {
 	subs := []config.Substitution{
 		{FindValue: "dev", Literals: map[string]string{"TEST": "test", "PROD": "prod"}},

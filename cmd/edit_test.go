@@ -210,4 +210,14 @@ func TestAvailableWorkspaceNamesHidesCommonAndEnvWorkspaces(t *testing.T) {
 	if !slices.Contains(names, demoRawWS("DEV")) {
 		t.Errorf("an unattached workspace must be offered: %v", names)
 	}
+	// A deploy-target workspace that isn't in the env's own list stays on
+	// offer: adding it as a reference workspace is a normal step.
+	customer.Environments[1].Workspaces = nil
+	names, err = availableWorkspaceNames(api, "tok", customer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(names, demoConfigWS("TEST")) {
+		t.Errorf("a mapping target missing from the env's list must still be offered: %v", names)
+	}
 }

@@ -750,9 +750,9 @@ func renderDeployReport(groups []deployGroup, results []deploy.Result, postRuns 
 			lastKind, lastName := "", ""
 			for _, c := range auto {
 				nameCell := ""
-				if c.Kind != lastKind || c.Name != lastName {
-					nameCell = html.EscapeString(changeName(c)) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
-					lastKind, lastName = c.Kind, c.Name
+				if name := changeName(c); c.Kind != lastKind || name != lastName {
+					nameCell = html.EscapeString(name) + ` <span class="type">` + html.EscapeString(c.Kind) + `</span>`
+					lastKind, lastName = c.Kind, name
 				}
 				where := whereUsedHTML(c.Items)
 				field := ""

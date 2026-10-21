@@ -400,6 +400,19 @@ func DeployWithAPI(configPath string, client APIClient) error {
 	return nil
 }
 
+// createdThisRun reports whether an unresolved reference from a NEW item will
+// resolve once this deploy creates its target, so the compare doesn't flag it:
+// a repo item's logicalId (the publish swaps it for the created item's GUID),
+// or a baseline item whose same-named counterpart this mapping creates (the
+// publish registers it in the target index before later items go out).
+func createdThisRun(u deploy.UnresolvedRef, rb *deploy.Rebinder, logicalIDs map[string]bool, newItems map[[2]string]bool) bool {
+	if logicalIDs[u.GUID] {
+		return true
+	}
+	base, ok := rb.BaselineItem(u.GUID)
+	return ok && newItems[[2]string{base.Name, base.Type}]
+}
+
 // diffConcurrency bounds how many deployed item definitions are fetched in
 // parallel during the compare. The reference dry-run runs 20 wide with a 1s
 // poll and never throttles, which showed concurrency was never the limiter —
@@ -415,6 +428,14 @@ const diffConcurrency = 16
 // ClassUnchanged; items it can't verify stay ClassExists.
 func buildDeployGroups(client APIClient, token string, customer config.Customer, mappings []config.DeployMapping, itemsByRepo map[string][]deploy.LocalItem, workspaces []fabric.Workspace, rs *rebinderSet, excluded map[string]bool) ([]deployGroup, error) {
 	groups := make([]deployGroup, 0, len(mappings))
+	logicalIDs := map[string]bool{}
+	for _, items := range itemsByRepo {
+		for _, it := range items {
+			if it.LogicalID != "" {
+				logicalIDs[it.LogicalID] = true
+			}
+		}
+	}
 	for _, m := range mappings {
 		target, err := resolveWorkspaceByName(workspaces, m.Workspace)
 		if err != nil {
@@ -457,10 +478,12 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 			// unresolved via diffExistingRows; NEW reports only pass through here,
 			// so this pass also owns their substitution refs.
 			newReport, newLakehouse := map[string]bool{}, map[string]bool{}
+			newItems := map[[2]string]bool{} // {name, type} of every item this mapping creates
 			for _, r := range g.Rows {
 				if r.Class != deploy.ClassNew {
 					continue
 				}
+				newItems[[2]string{r.Name(), r.ItemType()}] = true
 				switch r.ItemType() {
 				case "Report":
 					newReport[r.Name()] = true
@@ -512,6 +535,9 @@ func buildDeployGroups(client APIClient, token string, customer config.Customer,
 					g.CommonShortcuts = append(g.CommonShortcuts, outcome.CommonShortcuts...)
 					if newLakehouse[it.DisplayName] {
 						for _, u := range outcome.Unresolved {
+							if createdThisRun(u, rb, logicalIDs, newItems) {
+								continue
+							}
 							u.ItemName = it.DisplayName
 							g.Unresolved = append(g.Unresolved, u)
 						}

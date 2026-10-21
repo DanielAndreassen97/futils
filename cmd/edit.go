@@ -751,8 +751,15 @@ func availableWorkspaceNames(client APIClient, token string, customer config.Cus
 		return nil, fmt.Errorf("list workspaces: %w", err)
 	}
 
-	// A workspace is either common or on an env, never both.
-	used := customer.RegisteredWorkspaces()
+	used := make(map[string]bool)
+	for _, e := range customer.Environments {
+		for _, ws := range e.Workspaces {
+			used[ws] = true
+		}
+	}
+	for _, ws := range customer.CommonWorkspaces {
+		used[ws] = true // a workspace is either common or on an env, never both
+	}
 	available := make([]string, 0, len(workspaces))
 	for _, ws := range workspaces {
 		if !used[ws.DisplayName] {

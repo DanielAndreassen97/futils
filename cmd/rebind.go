@@ -52,22 +52,38 @@ func buildRebinder(client deploy.FabricClient, token string, customer config.Cus
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(customer.Substitutions, targetAlias))
-	if err := setCommonWorkspaces(rb, customer, workspaces); err != nil {
-		return nil, err
-	}
+	setCommonWorkspaces(rb, resolveCommonWorkspaces(customer, workspaces))
 	if customer.BaselineEnvironment != "" {
 		rb.SetWorkspaceSeeds(workspaceSeeds(baselineEnv, targetEnv, workspaces))
 	}
 	return rb, nil
 }
 
-// setCommonWorkspaces indexes the customer's common workspaces on rb. One that
-// can't be found (renamed, or no access) is skipped with a warning rather than
-// failing every deploy: references into it then show up as unresolved, and the
-// warning says why.
-func setCommonWorkspaces(rb *deploy.Rebinder, customer config.Customer, workspaces []fabric.Workspace) error {
+// resolveCommonWorkspaces resolves the customer's common workspaces by name.
+// Problems skip the workspace with a warning rather than failing every
+// deploy, and references into it then show up as unresolved:
+//   - not found (renamed, or no access);
+//   - also on an environment (a deploy mapping or mapping baseline can put it
+//     there). The environment wins, so its references keep rebinding by name
+//     instead of silently staying on the baseline's GUIDs.
+func resolveCommonWorkspaces(customer config.Customer, workspaces []fabric.Workspace) []fabric.Workspace {
+	onEnv := map[string]string{}
+	for _, e := range customer.Environments {
+		for _, name := range e.AllWorkspaces() {
+			onEnv[name] = e.Alias
+		}
+		for _, d := range e.Deployments {
+			if d.BaselineWorkspace != "" {
+				onEnv[d.BaselineWorkspace] = e.Alias
+			}
+		}
+	}
 	common := make([]fabric.Workspace, 0, len(customer.CommonWorkspaces))
 	for _, name := range customer.CommonWorkspaces {
+		if alias, ok := onEnv[name]; ok {
+			fmt.Println(warningStyle.Render(fmt.Sprintf("Common workspace %q is also on environment %s — treating it as part of %s. Remove it from one of them under Edit customer.", name, alias, alias)))
+			continue
+		}
 		ws, err := resolveWorkspaceByName(workspaces, name)
 		if err != nil {
 			fmt.Println(warningStyle.Render(fmt.Sprintf("Common workspace %q not found (renamed, or no access?) — references into it will show as unresolved.", name)))
@@ -75,7 +91,16 @@ func setCommonWorkspaces(rb *deploy.Rebinder, customer config.Customer, workspac
 		}
 		common = append(common, ws)
 	}
-	return rb.SetCommonWorkspaces(common)
+	return common
+}
+
+// setCommonWorkspaces indexes the common workspaces on rb. A listing failure
+// (a transient error, a 429 past the retries) warns instead of aborting the
+// deploy: the references then show up as unresolved.
+func setCommonWorkspaces(rb *deploy.Rebinder, common []fabric.Workspace) {
+	if err := rb.SetCommonWorkspaces(common); err != nil {
+		fmt.Println(warningStyle.Render(fmt.Sprintf("Couldn't list the common workspaces (%v) — references into them will show as unresolved.", err)))
+	}
 }
 
 // workspaceSeeds pairs baseline→target workspace GUIDs through the deploy
@@ -129,6 +154,10 @@ type rebinderSet struct {
 	workspaces  []fabric.Workspace
 	shared      *deploy.Rebinder // env-level; nil when rebinding is disabled
 	cache       map[string]*deploy.Rebinder
+	// commonSrc is the first rebinder that indexed the common workspaces;
+	// every later one shares its index, so the workspaces are resolved,
+	// listed and warned about once per deploy.
+	commonSrc *deploy.Rebinder
 }
 
 // newRebinderSet builds the shared env-level rebinder eagerly (same semantics
@@ -141,7 +170,7 @@ func newRebinderSet(client deploy.FabricClient, token string, customer config.Cu
 	}
 	return &rebinderSet{
 		client: client, token: token, customer: customer, targetAlias: targetAlias, workspaces: workspaces,
-		shared: shared, cache: map[string]*deploy.Rebinder{},
+		shared: shared, cache: map[string]*deploy.Rebinder{}, commonSrc: shared,
 	}, nil
 }
 
@@ -173,8 +202,11 @@ func (rs *rebinderSet) For(m config.DeployMapping) (*deploy.Rebinder, error) {
 		return nil, err
 	}
 	rb.SetSubstitutions(toDeploySubstitutions(rs.customer.Substitutions, rs.targetAlias))
-	if err := setCommonWorkspaces(rb, rs.customer, rs.workspaces); err != nil {
-		return nil, err
+	if rs.commonSrc != nil {
+		rb.ShareCommon(rs.commonSrc)
+	} else {
+		setCommonWorkspaces(rb, resolveCommonWorkspaces(rs.customer, rs.workspaces))
+		rs.commonSrc = rb
 	}
 	rb.SetWorkspaceSeeds(map[string]string{baseWS[0].ID: targetWS[0].ID})
 	rs.cache[key] = rb
