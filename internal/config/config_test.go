@@ -749,3 +749,47 @@ func TestLoadDropsOrphanedRunOrder(t *testing.T) {
 		t.Fatalf("phases = %v, want only NB_A", c.PostDeployPhases)
 	}
 }
+
+// Every Customer field must survive Save → Load. UnmarshalJSON decodes through
+// a hand-written aux struct (for legacy migration), so a new field that isn't
+// copied there is written to disk and then silently dropped on the next read:
+// the setting "saves" but never takes effect. The literal below sets every
+// field, and the reflection check forces a new field to be added here too.
+func TestEveryCustomerFieldSurvivesSaveLoad(t *testing.T) {
+	want := Customer{
+		Environments: []Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Data"},
+			Deployments: []DeployMapping{{Folder: "Backend", Workspace: "DW - DEV - Data"}}}},
+		Favorites:           []NotebookFavorite{{Name: "nb_load", Parameters: []string{"run_date"}}},
+		RepoPath:            "/repo",
+		DeployBranch:        "main",
+		BaselineEnvironment: "DEV",
+		CommonWorkspaces:    []string{"DW - Shared - Ingest"},
+		ReferenceOverrides:  []ReferenceOverride{{SourceGUID: "g", ItemType: "Lakehouse", ItemName: "LH_Silver"}},
+		IgnoredReferences:   []string{"ignored"},
+		Substitutions:       []Substitution{{FindValue: "dev", Literal: "test"}},
+		ExcludedItemTypes:   []string{"Dashboard"},
+		DeployHistoryPath:   "deploy-history",
+		PostDeployRuns:      []string{"nb_load"},
+		PostDeployPhases:    map[string]int{"nb_load": 2},
+		ParallelPostDeploy:  true,
+		SkipSchedules:       true,
+		UseBulkDeploy:       true,
+	}
+	v := reflect.ValueOf(want)
+	for i := range v.NumField() {
+		if v.Field(i).IsZero() {
+			t.Fatalf("set Customer.%s in this test so its round trip is checked", v.Type().Field(i).Name)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := Save(path, Config{Customers: map[string]Customer{"Fabrikam": want}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Customers["Fabrikam"]; !reflect.DeepEqual(got, want) {
+		t.Errorf("round trip lost data:\n got %+v\nwant %+v", got, want)
+	}
+}

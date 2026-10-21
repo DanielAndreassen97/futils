@@ -303,6 +303,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		RepoPath            string              `json:"repo_path,omitempty"`
 		DeployBranch        string              `json:"deploy_branch,omitempty"`
 		BaselineEnvironment string              `json:"baseline_environment,omitempty"`
+		CommonWorkspaces    []string            `json:"common_workspaces,omitempty"`
 		ReferenceOverrides  []ReferenceOverride `json:"reference_overrides,omitempty"`
 		IgnoredReferences   []string            `json:"ignored_references,omitempty"`
 		Substitutions       []Substitution      `json:"substitutions,omitempty"`
@@ -321,6 +322,7 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 	c.RepoPath = aux.RepoPath
 	c.DeployBranch = aux.DeployBranch
 	c.BaselineEnvironment = aux.BaselineEnvironment
+	c.CommonWorkspaces = aux.CommonWorkspaces
 	c.ReferenceOverrides = aux.ReferenceOverrides
 	c.IgnoredReferences = aux.IgnoredReferences
 	c.Substitutions = aux.Substitutions
