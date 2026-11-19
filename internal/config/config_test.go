@@ -774,6 +774,7 @@ func TestEveryCustomerFieldSurvivesSaveLoad(t *testing.T) {
 		ParallelPostDeploy:  true,
 		SkipSchedules:       true,
 		UseBulkDeploy:       true,
+		Tenant:              TenantRef{ID: "11111111-2222-3333-4444-555555555555", Domain: "contoso.no"},
 	}
 	v := reflect.ValueOf(want)
 	for i := range v.NumField() {
@@ -791,5 +792,113 @@ func TestEveryCustomerFieldSurvivesSaveLoad(t *testing.T) {
 	}
 	if got := cfg.Customers["Fabrikam"]; !reflect.DeepEqual(got, want) {
 		t.Errorf("round trip lost data:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestTenantRoundTrips: a customer bound to a tenant must still be bound after
+// a save and a load. Without it the customer silently falls back to the
+// default sign-in and lists another tenant's workspaces.
+func TestTenantRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	want := TenantRef{ID: "11111111-2222-3333-4444-555555555555", Domain: "contoso.no"}
+	if err := AddCustomer(path, "Contoso", Customer{Tenant: want}); err != nil {
+		t.Fatalf("AddCustomer: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Customers["Contoso"].Tenant; got != want {
+		t.Errorf("tenant after round trip = %+v, want %+v", got, want)
+	}
+}
+
+// TestCustomerWithoutTenantWritesNoTenantKey: an unbound customer's JSON must
+// not gain a "tenant" key, so existing configs stay byte-compatible.
+func TestCustomerWithoutTenantWritesNoTenantKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	c := Customer{Environments: []Environment{{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}}}}
+	if err := AddCustomer(path, "Fabrikam", c); err != nil {
+		t.Fatalf("AddCustomer: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"tenant"`) {
+		t.Errorf("unbound customer wrote a tenant key:\n%s", data)
+	}
+}
+
+// TestLegacyShapesKeepTenant: the two older environment shapes return early
+// from UnmarshalJSON. A tenant on such a customer must load anyway, and a
+// legacy customer without one must load unbound.
+func TestLegacyShapesKeepTenant(t *testing.T) {
+	const tenant = `"tenant":{"id":"11111111-2222-3333-4444-555555555555","domain":"contoso.no"}`
+	shapes := map[string]string{
+		"pattern":        `"workspace_pattern":"DW - {env}","environments":["DEV","TEST"]`,
+		"workspace_name": `"environments":[{"alias":"DEV","workspace_name":"DW - DEV"}]`,
+		"no envs":        `"environments":[]`,
+	}
+	for name, body := range shapes {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			raw := `{"customers":{"Bound":{` + body + `,` + tenant + `},"Unbound":{` + body + `}}}`
+			if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Customers["Bound"].Tenant.ID; got != "11111111-2222-3333-4444-555555555555" {
+				t.Errorf("bound legacy customer lost its tenant, got %q", got)
+			}
+			if got := cfg.Customers["Unbound"].Tenant; got != (TenantRef{}) {
+				t.Errorf("unbound legacy customer got a tenant: %+v", got)
+			}
+		})
+	}
+}
+
+// TestUpdateCustomerKeepsWhatWasSavedSinceTheCallerLoaded: a flow that loads a
+// customer, signs in, and then saves its own copy writes back whatever that
+// copy held when it was loaded. If the sign-in saved a tenant in between, the
+// copy erases it. UpdateCustomer changes the customer as it is on disk now.
+func TestUpdateCustomerKeepsWhatWasSavedSinceTheCallerLoaded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := AddCustomer(path, "Contoso", Customer{}); err != nil {
+		t.Fatal(err)
+	}
+	// Something else saves a tenant after a caller would have loaded its copy.
+	tenant := TenantRef{ID: "11111111-2222-3333-4444-555555555555", Domain: "contoso.no"}
+	if err := EditCustomer(path, "Contoso", Customer{Tenant: tenant}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := UpdateCustomer(path, "Contoso", func(c *Customer) {
+		c.Environments = append(c.Environments, Environment{Alias: "DEV", Workspaces: []string{"DW - DEV - Config"}})
+	})
+	if err != nil {
+		t.Fatalf("UpdateCustomer: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Customers["Contoso"]
+	if got.Tenant != tenant || len(got.Environments) != 1 {
+		t.Errorf("after update: tenant %+v, %d environment(s); both must be there", got.Tenant, len(got.Environments))
+	}
+}
+
+func TestUpdateCustomerUnknownCustomerReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	called := false
+	if err := UpdateCustomer(path, "Nobody", func(*Customer) { called = true }); err == nil {
+		t.Error("expected an error for a customer that is not in the config")
+	}
+	if called {
+		t.Error("the change was applied to a customer that does not exist")
 	}
 }

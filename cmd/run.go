@@ -39,6 +39,9 @@ var (
 // APIClient abstracts the Fabric calls the run flow needs. Lets us swap
 // in a fake for tests or demo mode without touching command logic.
 type APIClient interface {
+	// GetAccessToken signs the customer in. A flow that a customer with no
+	// environments can reach calls signInCustomer (tenant.go) instead, which
+	// adds the question of which tenant the customer lives in.
 	GetAccessToken(profile string) (string, error)
 	GetWorkspaceID(token, workspaceName string) (string, error)
 	ListWorkspaces(token string) ([]fabric.Workspace, error)

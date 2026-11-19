@@ -161,12 +161,16 @@ func SchemaCompareWithAPI(configPath string, client APIClient) error {
 	if err != nil {
 		return err
 	}
+	if len(cfg.Customers) == 0 {
+		fmt.Println("No customers configured. Add a customer first.")
+		return nil
+	}
 	customerName, customer, err := selectCustomer(cfg)
 	if err != nil {
 		return err
 	}
 
-	token, err := client.GetAccessToken(customerName)
+	token, err := signInCustomer(configPath, client, customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}

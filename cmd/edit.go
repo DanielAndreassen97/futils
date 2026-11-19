@@ -33,6 +33,7 @@ const (
 	editActionPostDeployMode = "__post_deploy_mode"
 	editActionFavorites      = "__favorites"
 	editActionCommonWS       = "__common_ws"
+	editActionTenant         = "__tenant"
 	envActionAddWS           = "__add_ws"
 	envActionRemoveWS        = "__remove_ws"
 	envActionRenameAlias     = "__rename_alias"
@@ -81,7 +82,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 			return fmt.Errorf("customer %q disappeared from config", customerName)
 		}
 
-		action, err := editCustomerMenu(customerName, customer)
+		// The tenant row needs a client that can list and bind tenants. Demo
+		// mode and test fakes can't, so the row is hidden for them.
+		_, showTenant := client.(tenantAPI)
+		action, err := editCustomerMenu(customerName, customer, showTenant)
 		if err != nil {
 			if errors.Is(err, ui.ErrGoBack) {
 				return nil
@@ -105,6 +109,10 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 				if errors.Is(err, ui.ErrGoBack) {
 					continue
 				}
+				return err
+			}
+		case action == editActionTenant:
+			if err := editTenant(configPath, client, customerName); err != nil && !errors.Is(err, ui.ErrGoBack) {
 				return err
 			}
 		case action == editActionCommonWS:
@@ -181,12 +189,17 @@ func editCustomerLoop(configPath string, client APIClient, customerName string) 
 // for the session — see the resolve site in editCustomerMenu.
 var autoBranchBadge = map[string]string{}
 
-func editCustomerMenu(customerName string, customer config.Customer) (string, error) {
+func editCustomerMenu(customerName string, customer config.Customer, showTenant bool) (string, error) {
 	// The menu below now conveys the env list (as "Edit <alias> (N workspace)"
 	// rows under the Environments header) and baseline status (via the badge),
 	// so the pre-print is just the customer title for context.
 	fmt.Printf("\nEditing: %s\n", customerName)
+	return ui.NumberMenu("Action", editCustomerOptions(customer, showTenant))
+}
 
+// editCustomerOptions builds the rows of the customer edit menu. showTenant
+// adds the "Tenant" row, which only a client with a real sign-in can act on.
+func editCustomerOptions(customer config.Customer, showTenant bool) []ui.MenuOption {
 	// Surface the configured baseline's name right on the row — not just
 	// whether one is set — so the user can confirm which env auto-rebind
 	// treats as the source of truth without pressing ? for the Info box.
@@ -239,7 +252,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 	// the environments themselves, one-time deploy configuration, and what
 	// runs after a deploy. Labels are terse — the footer Description carries
 	// the detail — so rows stay short and the headers do the explaining.
-	options := make([]ui.MenuOption, 0, len(customer.Environments)+13)
+	options := make([]ui.MenuOption, 0, len(customer.Environments)+15)
 	options = append(options, ui.MenuOption{Label: "Environments", IsHeader: true})
 	for _, e := range customer.Environments {
 		label := fmt.Sprintf("Edit %s (%d workspace%s", e.Alias, len(e.Workspaces), pluralS(len(e.Workspaces)))
@@ -263,7 +276,22 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 			Description: "Workspaces every environment reads from, e.g. a shared ingest workspace. References into them deploy unchanged.",
 			Info:        "Some workspaces belong to no environment because every environment uses the same one: a shared ingest workspace holding a mirrored database, say. Shortcuts, notebooks and pipelines in DEV, TEST and PROD all point at the same item there, so a deploy must keep those references as they are. List such workspaces here. A workspace that is on no environment and not listed here is treated as a mistake instead (often a DEV workspace nobody registered), and the deploy warns about references into it.",
 		},
-
+	)
+	// After the environment rows, so Enter on a fresh customer still lands on
+	// "Add environment" and those rows keep their numbers.
+	if showTenant {
+		options = append(options,
+			ui.MenuOption{Label: "Sign-in", IsHeader: true},
+			ui.MenuOption{
+				Label:       "Tenant",
+				Value:       editActionTenant,
+				Badge:       tenantBadge(customer),
+				Description: "Which Microsoft tenant futils signs in to for this customer.",
+				Info:        "A tenant is an organisation's Microsoft directory, and Fabric workspaces belong to exactly one. DEFAULT signs in to your account's own tenant, which is right when the account lives in the customer's tenant. If your account is a guest there instead, pick the customer's tenant here. Otherwise this customer lists your own tenant's workspaces.",
+			},
+		)
+	}
+	options = append(options,
 		ui.MenuOption{Label: "Deploy setup", IsHeader: true},
 		ui.MenuOption{
 			Label:       "Primary repo path",
@@ -350,7 +378,7 @@ func editCustomerMenu(customerName string, customer config.Customer) (string, er
 
 		ui.MenuOption{Label: "Back", Value: editActionBack},
 	)
-	return ui.NumberMenu("Action", options)
+	return options
 }
 
 // editEnvironmentLoop is the per-env sub-menu where the user can add or
@@ -516,7 +544,9 @@ func addEnvironment(configPath string, client APIClient, customerName string, cu
 	}
 
 	fmt.Println(infoStyle.Render("Authenticating..."))
-	token, err := client.GetAccessToken(customerName)
+	// signInCustomer: this is usually a new customer's first sign-in, which is
+	// where it is asked which tenant it lives in.
+	token, err := signInCustomer(configPath, client, customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}
@@ -533,11 +563,13 @@ func addEnvironment(configPath string, client APIClient, customerName string, cu
 		return nil
 	}
 
-	customer.Environments = append(customer.Environments, config.Environment{
-		Alias:      alias,
-		Workspaces: chosen,
+	// UpdateCustomer, not EditCustomer: the sign-in above may have saved a
+	// tenant since `customer` was loaded, and writing that copy back would
+	// erase it.
+	err = config.UpdateCustomer(configPath, customerName, func(c *config.Customer) {
+		c.Environments = append(c.Environments, config.Environment{Alias: alias, Workspaces: chosen})
 	})
-	if err := config.EditCustomer(configPath, customerName, customer); err != nil {
+	if err != nil {
 		return fmt.Errorf("save customer: %w", err)
 	}
 	fmt.Printf("Added environment %q with %d workspace%s: %s\n", alias, len(chosen), pluralS(len(chosen)), strings.Join(chosen, ", "))
@@ -621,7 +653,7 @@ func manageCommonWorkspaces(configPath string, client APIClient, customerName st
 			customer.CommonWorkspaces = slices.DeleteFunc(slices.Clone(customer.CommonWorkspaces), func(w string) bool { return w == name })
 		} else {
 			fmt.Println(infoStyle.Render("Authenticating..."))
-			token, err := client.GetAccessToken(customerName)
+			token, err := signInCustomer(configPath, client, customerName)
 			if err != nil {
 				return fmt.Errorf("authentication failed: %w", err)
 			}
@@ -632,7 +664,13 @@ func manageCommonWorkspaces(configPath string, client APIClient, customerName st
 				}
 				return err
 			}
-			customer = addCommonWorkspace(customer, name)
+			// Same as Add environment: the sign-in above may have saved a
+			// tenant since `customer` was loaded, so change what is on disk.
+			err = config.UpdateCustomer(configPath, customerName, func(c *config.Customer) { *c = addCommonWorkspace(*c, name) })
+			if err != nil {
+				return fmt.Errorf("save customer: %w", err)
+			}
+			continue
 		}
 		if err := config.EditCustomer(configPath, customerName, customer); err != nil {
 			return fmt.Errorf("save customer: %w", err)

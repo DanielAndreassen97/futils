@@ -146,7 +146,9 @@ func WorkspacesWithAPI(configPath string, client APIClient) error {
 
 	fmt.Println()
 	fmt.Println(infoStyle.Render("Authenticating..."))
-	token, err := client.GetAccessToken(customerName)
+	// signInCustomer: this flow lists every workspace in the tenant and can be
+	// opened for a customer that has no environments yet.
+	token, err := signInCustomer(configPath, client, customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}

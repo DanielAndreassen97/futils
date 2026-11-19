@@ -184,6 +184,17 @@ Uses OAuth2 Authorization Code Flow with the Azure CLI public client ID. On firs
 
 Use `futils logout` to clear all cached credentials.
 
+### Guest accounts and tenants
+
+A tenant is an organisation's Microsoft directory, and a Fabric workspace belongs to exactly one. By default futils signs in to your account's own tenant. That is right when the account lives in the customer's tenant, and wrong when the account is a guest there: a customer added for Contoso would then list Fabrikam's workspaces.
+
+Bind the customer to its tenant to fix that:
+
+- **futils asks on its own.** When you sign in for a customer that has no tenant and no environments yet, and your account belongs to more than one tenant, futils lists them (`contoso.no · Contoso · 11111111…`) and asks which one the customer is in. It then shows how many workspaces are visible there, so you can confirm the pick by what you recognise.
+- **Or set it yourself** under **Edit customer → Tenant**. The row shows the bound tenant, or `DEFAULT` for your account's own tenant, and is also where you change or clear it. If the list can't be fetched you can type a tenant ID or a domain.
+
+A bound customer shows its tenant on every sign-in (`Tenant: contoso.no`). Customers without a tenant behave exactly as before. The binding is stored as `tenant` on the customer in the config.
+
 ## License
 
 MIT

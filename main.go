@@ -42,6 +42,9 @@ func main() {
 		ui.DemoNotice = "DEMO MODE — fake tenant · unset FUTILS_DEMO to leave"
 	}
 	configPath := config.GetConfigPath()
+	// Every sign-in asks which tenant its customer is bound to. The answer
+	// lives in the config, which the fabric package cannot import.
+	fabric.SetTenantResolver(cmd.TenantResolver(configPath))
 	args := os.Args[1:]
 
 	if len(args) == 0 {

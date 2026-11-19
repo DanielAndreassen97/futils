@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,10 +26,12 @@ import (
 
 // OAuth2 configuration. We reuse the Azure CLI public client ID because it's
 // pre-consented for Fabric and PowerBI scopes — no app registration needed.
+//
+// The authorize and token URLs are built per customer by authorityURL
+// (tenant.go): /common/ for an unbound customer, the customer's tenant
+// otherwise.
 const (
-	authorizeURL = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-	tokenURL     = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-	clientID     = "1950a258-227b-4e31-a9cf-717495945fc2"
+	clientID = "1950a258-227b-4e31-a9cf-717495945fc2"
 	// Fabric-native scope. Covers workspaces, items, getDefinition, and the
 	// jobs API (RunNotebook) in a single token.
 	scope = "https://api.fabric.microsoft.com/.default offline_access"
@@ -85,10 +88,20 @@ func saveTokens(profile string, tr tokenResponse) {
 	}
 }
 
-func loadCachedToken(profile string) (string, bool) {
+// loadCachedToken returns the cached access token while it has more than five
+// minutes left. For a customer bound to a tenant it also requires that the
+// token was issued by that tenant: a token from any other tenant, or one whose
+// tenant cannot be read, is not served. An unbound customer (tenant "") gets
+// no such check, so its cache behaves exactly as before tenants existed.
+func loadCachedToken(profile, tenant string) (string, bool) {
 	token, err := keyring.Get(keyringService, keyFor(profile, "access_token"))
 	if err != nil || token == "" {
 		return "", false
+	}
+	if tenant != "" {
+		if tid, ok := tenantIDFromToken(token); !ok || !strings.EqualFold(tid, tenant) {
+			return "", false
+		}
 	}
 	expiryStr, err := keyring.Get(keyringService, keyFor(profile, "token_expiry"))
 	if err != nil {
@@ -104,31 +117,21 @@ func loadCachedToken(profile string) (string, bool) {
 	return "", false
 }
 
-func refreshAccessToken(profile string) (string, bool) {
+// refreshAccessToken trades the stored refresh token for a new Fabric access
+// token at the given tenant ("" = /common/) and caches the result. It returns
+// ErrNoRefreshToken when nothing is stored, and otherwise the reason the
+// grant failed, so the caller can tell the user why a browser is opening.
+func refreshAccessToken(profile, tenant string) (string, error) {
 	rt, err := keyring.Get(keyringService, keyFor(profile, "refresh_token"))
 	if err != nil || rt == "" {
-		return "", false
+		return "", ErrNoRefreshToken
 	}
-	data := url.Values{
-		"client_id":     {clientID},
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {rt},
-		"scope":         {scope},
-	}
-	resp, err := http.PostForm(tokenURL, data)
+	tr, err := tokenGrant(tenant, scope, rt)
 	if err != nil {
-		return "", false
-	}
-	defer resp.Body.Close()
-	var tr tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return "", false
-	}
-	if tr.Error != "" || tr.AccessToken == "" {
-		return "", false
+		return "", err
 	}
 	saveTokens(profile, tr)
-	return tr.AccessToken, true
+	return tr.AccessToken, nil
 }
 
 // storageScope is the OneLake/Storage audience used for the OneLake Table API.
@@ -149,23 +152,40 @@ var tokenPost = func(endpoint string, data url.Values) (tokenResponse, error) {
 	return tr, nil
 }
 
-// storageTokenGrant exchanges a refresh token for a Storage-audience access
-// token. It does NOT persist anything — persisting would overwrite the cached
-// Fabric access token/expiry and break the Fabric token cache.
-func storageTokenGrant(refreshToken string) (string, error) {
-	tr, err := tokenPost(tokenURL, url.Values{
+// tokenGrant exchanges a refresh token for an access token of the given scope
+// at the given tenant ("" = /common/). It does NOT persist anything: callers
+// that want the result cached save it themselves, and the Storage and Azure
+// Resource Manager grants must never be saved, because that would overwrite
+// the cached Fabric access token and expiry.
+func tokenGrant(tenant, scope, refreshToken string) (tokenResponse, error) {
+	endpoint, err := authorityURL(tenant, "token")
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	tr, err := tokenPost(endpoint, url.Values{
 		"client_id":     {clientID},
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refreshToken},
-		"scope":         {storageScope},
+		"scope":         {scope},
 	})
 	if err != nil {
-		return "", err
+		return tokenResponse{}, err
 	}
-	if tr.Error != "" || tr.AccessToken == "" {
-		return "", fmt.Errorf("storage token grant failed: %s — %s", tr.Error, tr.ErrorDesc)
+	return checkTokenResponse(tr)
+}
+
+// checkTokenResponse turns an error reply from the token endpoint into a Go
+// error. Only the first line of Entra's description is kept: the rest is
+// trace IDs and timestamps.
+func checkTokenResponse(tr tokenResponse) (tokenResponse, error) {
+	if tr.Error != "" {
+		desc, _, _ := strings.Cut(tr.ErrorDesc, "\n")
+		return tokenResponse{}, fmt.Errorf("%s: %s", tr.Error, strings.TrimSpace(desc))
 	}
-	return tr.AccessToken, nil
+	if tr.AccessToken == "" {
+		return tokenResponse{}, errors.New("token endpoint returned no access token")
+	}
+	return tr, nil
 }
 
 // GetStorageToken returns an access token for the OneLake Table API (Storage
@@ -176,7 +196,17 @@ func GetStorageToken(profile string) (string, error) {
 	if err != nil || rt == "" {
 		return "", fmt.Errorf("no stored credentials for %q — sign in first", profile)
 	}
-	return storageTokenGrant(rt)
+	// Same tenant as the Fabric token: OneLake data lives in the tenant the
+	// workspaces do.
+	tenant, err := tenantFor(profile)
+	if err != nil {
+		return "", fmt.Errorf("resolve tenant for %q: %w", profile, err)
+	}
+	tr, err := tokenGrant(tenant.ID, storageScope, rt)
+	if err != nil {
+		return "", fmt.Errorf("storage token grant failed: %w", err)
+	}
+	return tr.AccessToken, nil
 }
 
 // GetAccessToken returns a Fabric access token for the given profile name,
@@ -186,16 +216,49 @@ func GetStorageToken(profile string) (string, error) {
 // As a side effect, the profile is remembered package-wide via SetProfile
 // so the HTTP wrappers' 401-retry path can mint a fresh token mid-flow
 // without every caller threading the profile through pollers / interfaces.
+//
+// A customer bound to a tenant (see SetTenantResolver) gets every step at
+// that tenant, and the tenant is printed so a wrong binding is visible
+// wherever workspaces are about to be listed. An unbound customer takes the
+// exact /common/ path it always has and prints nothing new.
 func GetAccessToken(profile string) (string, error) {
 	SetProfile(profile)
-	if token, ok := loadCachedToken(profile); ok {
+	tenant, err := tenantFor(profile)
+	if err != nil {
+		return "", fmt.Errorf("resolve tenant for %q: %w", profile, err)
+	}
+	if tenant.ID != "" {
+		fmt.Fprintf(authNotice, "  Tenant: %s\n", tenant.Label())
+	}
+	if token, ok := loadCachedToken(profile, tenant.ID); ok {
 		return token, nil
 	}
-	if token, ok := refreshAccessToken(profile); ok {
+	token, err := refreshAccessToken(profile, tenant.ID)
+	if err == nil {
 		return token, nil
 	}
-	return browserAuth(profile)
+	// An unbound customer goes straight to the browser, as it always has. A
+	// bound one is told why first (see browserAfterRefusedGrant).
+	var tr tokenResponse
+	if tenant.ID == "" {
+		tr, err = browserSignIn("")
+	} else {
+		tr, err = browserAfterRefusedGrant(tenant.ID, tenant.Label(), err)
+	}
+	if err != nil {
+		return "", err
+	}
+	saveTokens(profile, tr)
+	return tr.AccessToken, nil
 }
+
+// authNotice is where sign-in lines for bound customers go. A variable so
+// tests can capture them.
+var authNotice io.Writer = os.Stderr
+
+// browserSignIn runs the interactive browser flow. A variable so tests can
+// cover the fallback without opening a browser.
+var browserSignIn = browserAuth
 
 // ClearCachedTokens wipes all stored tokens for a profile. It returns a
 // non-nil error if any keyring delete fails for a reason other than the
@@ -246,7 +309,11 @@ func pkcePair() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
-func buildAuthorizeURL(redirectURI, state, codeChallenge string) string {
+func buildAuthorizeURL(tenant, redirectURI, state, codeChallenge string) (string, error) {
+	endpoint, err := authorityURL(tenant, "authorize")
+	if err != nil {
+		return "", err
+	}
 	params := url.Values{
 		"client_id":             {clientID},
 		"response_type":         {"code"},
@@ -257,7 +324,7 @@ func buildAuthorizeURL(redirectURI, state, codeChallenge string) string {
 		"code_challenge":        {codeChallenge},
 		"code_challenge_method": {"S256"},
 	}
-	return authorizeURL + "?" + params.Encode()
+	return endpoint + "?" + params.Encode(), nil
 }
 
 func openBrowser(u string) error {
@@ -271,11 +338,15 @@ func openBrowser(u string) error {
 	}
 }
 
-func browserAuth(profile string) (string, error) {
+// browserAuth signs in through the browser at the given tenant ("" =
+// /common/) and returns the token reply. It stores nothing: the caller saves
+// the reply under the right profile.
+func browserAuth(tenant string) (tokenResponse, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", fmt.Errorf("failed to start local server: %w", err)
+		return tokenResponse{}, fmt.Errorf("failed to start local server: %w", err)
 	}
+	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 	// Bind the listener to the IPv4 loopback for a deterministic address,
 	// but advertise "localhost" in the redirect URI. AAD only ignores the
@@ -288,11 +359,15 @@ func browserAuth(profile string) (string, error) {
 	redirectURI := fmt.Sprintf("http://localhost:%d", port)
 	state, err := randomState()
 	if err != nil {
-		return "", err
+		return tokenResponse{}, err
 	}
 	verifier, challenge, err := pkcePair()
 	if err != nil {
-		return "", err
+		return tokenResponse{}, err
+	}
+	authURL, err := buildAuthorizeURL(tenant, redirectURI, state, challenge)
+	if err != nil {
+		return tokenResponse{}, err
 	}
 
 	codeCh := make(chan string, 1)
@@ -348,7 +423,6 @@ func browserAuth(profile string) (string, error) {
 		_ = server.Shutdown(ctx)
 	}()
 
-	authURL := buildAuthorizeURL(redirectURI, state, challenge)
 	fmt.Fprintln(os.Stderr, "Opening browser for Microsoft login…")
 	if err := openBrowser(authURL); err != nil {
 		fmt.Fprintf(os.Stderr, "Couldn't open browser automatically. Open this URL manually:\n%s\n", authURL)
@@ -356,35 +430,56 @@ func browserAuth(profile string) (string, error) {
 
 	select {
 	case code := <-codeCh:
-		return exchangeCode(profile, code, redirectURI, verifier)
+		tr, err := exchangeCode(tenant, code, redirectURI, verifier)
+		return tr, explainIfBound(tenant, err)
 	case err := <-errCh:
-		return "", err
+		return tokenResponse{}, explainIfBound(tenant, err)
 	case <-time.After(2 * time.Minute):
-		return "", fmt.Errorf("authentication timed out after 2 minutes")
+		return tokenResponse{}, browserTimeoutError(tenant)
 	}
 }
 
-func exchangeCode(profile, code, redirectURI, verifier string) (string, error) {
-	data := url.Values{
+// explainIfBound applies explainTenantError only when the sign-in targeted a
+// tenant, so an unbound customer's errors read exactly as before.
+func explainIfBound(tenant string, err error) error {
+	if tenant == "" {
+		return err
+	}
+	return explainTenantError(tenant, err)
+}
+
+// exchangeCode trades the authorization code from the browser redirect for
+// tokens at the given tenant ("" = /common/). It stores nothing.
+func exchangeCode(tenant, code, redirectURI, verifier string) (tokenResponse, error) {
+	endpoint, err := authorityURL(tenant, "token")
+	if err != nil {
+		return tokenResponse{}, err
+	}
+	tr, err := tokenPost(endpoint, url.Values{
 		"client_id":     {clientID},
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"redirect_uri":  {redirectURI},
 		"scope":         {scope},
 		"code_verifier": {verifier},
-	}
-	resp, err := http.PostForm(tokenURL, data)
+	})
 	if err != nil {
-		return "", fmt.Errorf("token exchange failed: %w", err)
+		return tokenResponse{}, fmt.Errorf("token exchange failed: %w", err)
 	}
-	defer resp.Body.Close()
-	var tr tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
-		return "", fmt.Errorf("parse token response: %w", err)
+	tr, err = checkTokenResponse(tr)
+	if err != nil {
+		return tokenResponse{}, fmt.Errorf("auth error: %w", err)
 	}
-	if tr.Error != "" {
-		return "", fmt.Errorf("auth error: %s — %s", tr.Error, tr.ErrorDesc)
+	return tr, nil
+}
+
+// browserTimeoutError is what a browser sign-in returns when no redirect came
+// back. A wrong account or tenant shows Entra's error page in the browser and
+// never redirects, so for a sign-in at a tenant this is the only place futils
+// can say which tenant it was for.
+func browserTimeoutError(tenant string) error {
+	if tenant == "" {
+		return errors.New("authentication timed out after 2 minutes")
 	}
-	saveTokens(profile, tr)
-	return tr.AccessToken, nil
+	return fmt.Errorf("authentication timed out after 2 minutes. If the browser showed an error, the account may have no access to %s", tenant)
 }

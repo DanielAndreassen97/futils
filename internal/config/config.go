@@ -75,10 +75,23 @@ type Environment struct {
 	Deployments []DeployMapping `json:"deployments,omitempty"`
 }
 
+// TenantRef names the Entra tenant a customer signs in to. ID is the tenant's
+// GUID and is the identity: a domain can be renamed, the ID cannot. Domain is
+// kept only so menus can show something recognisable.
+type TenantRef struct {
+	ID     string `json:"id"`
+	Domain string `json:"domain,omitempty"`
+}
+
 // Customer groups one tenant's environments and notebook favourites.
 // A customer with zero Environments is valid — they just can't run
 // notebooks until they add at least one via `futils edit`.
 type Customer struct {
+	// Tenant binds every sign-in for this customer to one Entra tenant. The
+	// zero value means the default sign-in, which lands in the account's own
+	// tenant. That is right unless the account is a guest in the customer's
+	// tenant.
+	Tenant       TenantRef          `json:"tenant,omitzero"`
 	Environments []Environment      `json:"environments"`
 	Favorites    []NotebookFavorite `json:"favorites,omitempty"`
 	RepoPath     string             `json:"repo_path,omitempty"`
@@ -330,10 +343,14 @@ func (c *Customer) UnmarshalJSON(data []byte) error {
 		ParallelPostDeploy  bool                `json:"parallel_post_deploy,omitempty"`
 		SkipSchedules       bool                `json:"skip_schedules,omitempty"`
 		UseBulkDeploy       bool                `json:"use_bulk_deploy,omitempty"`
+		Tenant              TenantRef           `json:"tenant,omitzero"`
 	}{}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
+	// Copied before the legacy-shape early returns below, so a tenant survives
+	// on every environment shape.
+	c.Tenant = aux.Tenant
 	c.Favorites = aux.Favorites
 	c.RepoPath = aux.RepoPath
 	c.DeployBranch = aux.DeployBranch
@@ -507,6 +524,24 @@ func EditCustomer(path string, name string, customer Customer) error {
 	if _, ok := cfg.Customers[name]; !ok {
 		return fmt.Errorf("customer '%s' not found in config", name)
 	}
+	cfg.Customers[name] = customer
+	return Save(path, cfg)
+}
+
+// UpdateCustomer loads the customer as it is on disk now, applies change, and
+// saves. Use it instead of EditCustomer whenever something else may have saved
+// the customer since the caller loaded its own copy (a sign-in can save a
+// tenant): EditCustomer would write that older copy back over it.
+func UpdateCustomer(path string, name string, change func(*Customer)) error {
+	cfg, err := Load(path)
+	if err != nil {
+		return err
+	}
+	customer, ok := cfg.Customers[name]
+	if !ok {
+		return fmt.Errorf("customer '%s' not found in config", name)
+	}
+	change(&customer)
 	cfg.Customers[name] = customer
 	return Save(path, cfg)
 }

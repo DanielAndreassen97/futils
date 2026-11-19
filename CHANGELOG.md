@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Tenant per customer.** A customer can be bound to one Entra tenant, so
+  every sign-in for it goes there. This is for accounts that are a guest in
+  the customer's tenant: without a binding, futils signs in to the account's
+  own tenant and the customer lists another organisation's workspaces. When
+  you sign in for a customer that has no tenant and no environments, and your
+  account belongs to more than one tenant, futils lists them and asks which
+  one the customer is in. You can also set, change or clear it under **Edit
+  customer → Tenant** (`tenant` in the config), by picking from the list or
+  typing a tenant ID or domain. Nothing is saved until futils has signed in
+  to the chosen tenant, and it then shows how many workspaces are visible
+  there. A bound customer shows its tenant on every sign-in. Customers
+  without a tenant are unchanged.
+
+### Fixed
+
+- **`futils schemacompare` with no customers configured** now says so,
+  instead of failing with an internal menu error.
+
+### Changed
+
+- **Don't use a config with a bound customer in an older futils.** A version
+  from before this release doesn't know the `tenant` key and drops it the
+  next time it saves the config.
+
 ## [0.15.0] - 2026-10-21
 
 ### Added

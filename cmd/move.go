@@ -70,7 +70,7 @@ func MoveWithAPI(configPath string, client APIClient) error {
 
 	fmt.Println()
 	fmt.Println(infoStyle.Render("Authenticating..."))
-	token, err := client.GetAccessToken(customerName)
+	token, err := signInCustomer(configPath, client, customerName)
 	if err != nil {
 		return fmt.Errorf("authentication failed: %w", err)
 	}

@@ -5,9 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zalando/go-keyring"
 )
 
 func TestThrottleDelayHonorsRetryAfter(t *testing.T) {
@@ -700,5 +703,31 @@ func TestUpdateDefinitionDoesNotRetryTransportError(t *testing.T) {
 	}
 	if len(transport.calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(transport.calls))
+	}
+}
+
+// A 401 in the middle of a flow refreshes the token. That refresh knows only
+// the customer name, so it must look the tenant up itself or it would mint a
+// token for the account's own tenant halfway through a bound customer's run.
+func TestRetryWithFreshTokenUsesCustomerTenant(t *testing.T) {
+	keyring.MockInit()
+	if err := keyring.Set(keyringService, keyFor("Contoso", "refresh_token"), "rt-1"); err != nil {
+		t.Fatal(err)
+	}
+	SetProfile("Contoso")
+	t.Cleanup(func() { SetProfile("") })
+	resolveTo(t, Tenant{ID: tenantContoso}, nil)
+	fresh := fakeAccessToken(tenantContoso)
+	endpoints := stubTokenPost(t, func(string, url.Values) (tokenResponse, error) {
+		return tokenResponse{AccessToken: fresh, ExpiresIn: 3600}, nil
+	})
+
+	tok, ok := retryWithFreshToken()
+	if !ok || tok != fresh {
+		t.Fatalf("retryWithFreshToken = %q, %v", tok, ok)
+	}
+	want := "https://login.microsoftonline.com/" + tenantContoso + "/oauth2/v2.0/token"
+	if len(*endpoints) != 1 || (*endpoints)[0] != want {
+		t.Errorf("retry refreshed at %v, want %s", *endpoints, want)
 	}
 }

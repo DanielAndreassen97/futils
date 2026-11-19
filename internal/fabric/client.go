@@ -853,10 +853,17 @@ func retryWithFreshToken() (string, bool) {
 	// loadCachedToken first — if the keyring already has a non-expired
 	// token (e.g. a parallel flow already refreshed) we use that and
 	// avoid an unnecessary refresh-token round-trip.
-	if token, ok := loadCachedToken(profile); ok {
+	// The retry knows only the profile, so it looks the customer's tenant up
+	// the same way GetAccessToken does. If the binding can't be read, the 401
+	// bubbles up rather than refreshing at a guessed tenant.
+	tenant, err := tenantFor(profile)
+	if err != nil {
+		return "", false
+	}
+	if token, ok := loadCachedToken(profile, tenant.ID); ok {
 		return token, true
 	}
-	if token, ok := refreshAccessToken(profile); ok {
+	if token, err := refreshAccessToken(profile, tenant.ID); err == nil {
 		return token, true
 	}
 	return "", false
